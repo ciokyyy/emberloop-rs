@@ -27,7 +27,7 @@ enum OpKind {
     Delete,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Op {
     kind: OpKind,
     start: usize,
@@ -64,14 +64,9 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     if args.input.trim().is_empty() {
         return Err(ToolError::msg("input is required"));
     }
-    let parsed = parse_patch(&args.input)?;
+    let mut parsed = parse_patch(&args.input)?;
     let path = toolbox.jail().resolve(&parsed.path)?;
     let original = fs::read(&path)?;
-    let actual_hash = content_hash(&original);
-    let actual_tag = content_tag(&original);
-    if actual_tag != parsed.tag {
-        return Err(stale_tag_error(&path, &parsed.tag, &actual_tag, &original));
-    }
     let text = String::from_utf8(original.clone()).map_err(|_| {
         ToolError::msg(format!(
             "{} is binary; edit only text files",
@@ -79,24 +74,55 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
         ))
     })?;
     let lines = lines_of(&text);
+    let actual_hash = content_hash(&original);
+    let actual_tag = content_tag(&original);
+    let mut rebase_warning: Option<String> = None;
+    if actual_tag != parsed.tag {
+        let rebased_opt = toolbox
+            .seen()
+            .lookup_tag(&path, &parsed.tag)
+            .and_then(|old_snap| {
+                rebase_ops(&parsed.ops, &old_snap.content_lines, &lines, &parsed.tag)
+                    .map(|(rebased, msg)| (old_snap, rebased, msg))
+            });
+        if let Some((old_snap, rebased, msg)) = rebased_opt {
+            check_seen(
+                toolbox,
+                &path,
+                &old_snap.hash,
+                &parsed.ops,
+                old_snap.content_lines.len(),
+            )?;
+            parsed.ops = rebased;
+            rebase_warning = Some(msg);
+        } else {
+            return Err(stale_tag_error(&path, &parsed.tag, &actual_tag, &original));
+        }
+    } else {
+        check_seen(toolbox, &path, &actual_hash, &parsed.ops, lines.len())?;
+    }
     validate_ops(&parsed.ops, lines.len())?;
     check_overlap(&parsed.ops)?;
-    check_seen(toolbox, &path, &actual_hash, &parsed.ops, lines.len())?;
     let applied = apply(&parsed.ops, &lines);
     let new_text = join_lines(&applied.lines, &text);
     let new_hash = content_hash(new_text.as_bytes());
     let new_tag = content_tag(new_text.as_bytes());
     ensure_unchanged(&path, &actual_hash)?;
     fs::write(&path, &new_text)?;
-    toolbox
-        .seen()
-        .record_replacing(&path, &new_hash, 1..=line_count(&new_text) as u32);
+    toolbox.seen().record_with_content(
+        &path,
+        &new_hash,
+        applied.lines.clone(),
+        1..=line_count(&new_text) as u32,
+        true,
+    );
     Ok(reply(
         &path,
         &new_tag,
         &applied.lines,
         &applied.changed,
         &parsed.ops,
+        rebase_warning.as_deref(),
     ))
 }
 
@@ -470,12 +496,24 @@ fn stale_tag_error(path: &Path, expected: &str, actual: &str, original: &[u8]) -
     ToolError::msg(out)
 }
 
-fn reply(path: &Path, tag: &str, lines: &[String], changed: &[usize], ops: &[Op]) -> String {
+fn reply(
+    path: &Path,
+    tag: &str,
+    lines: &[String],
+    changed: &[usize],
+    ops: &[Op],
+    rebase_warning: Option<&str>,
+) -> String {
     let mut out = format!(
         "[{}#{tag}] updated successfully ({} lines)\n",
         path.display(),
         lines.len()
     );
+    if let Some(warn) = rebase_warning {
+        out.push_str("Warnings: ");
+        out.push_str(warn);
+        out.push('\n');
+    }
     let net = deletion_net(ops);
     if net >= DELETION_WARN_NET {
         out.push_str(&format!(
@@ -484,6 +522,59 @@ fn reply(path: &Path, tag: &str, lines: &[String], changed: &[usize], ops: &[Op]
     }
     out.push_str(&render_changed(lines, changed));
     out
+}
+
+fn rebase_ops(
+    ops: &[Op],
+    old_lines: &[String],
+    new_lines: &[&str],
+    old_tag: &str,
+) -> Option<(Vec<Op>, String)> {
+    let mut prefix = 0usize;
+    while prefix < old_lines.len()
+        && prefix < new_lines.len()
+        && old_lines[prefix] == new_lines[prefix]
+    {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix < old_lines.len().saturating_sub(prefix)
+        && suffix < new_lines.len().saturating_sub(prefix)
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let middle_end = old_lines.len() - suffix;
+    let shift = new_lines.len() as isize - old_lines.len() as isize;
+    let mut rebased = Vec::with_capacity(ops.len());
+    let mut active_delta: Option<isize> = None;
+    for op in ops {
+        for anchor in op_anchors(op) {
+            let n = anchor as usize;
+            if n >= prefix && n <= middle_end + 1 {
+                return None;
+            }
+        }
+        let mut next = op.clone();
+        if op.kind != OpKind::Append {
+            let delta = if op.start > prefix { shift } else { 0 };
+            if let Some(prev) = active_delta {
+                if prev != delta {
+                    return None;
+                }
+            }
+            active_delta = Some(delta);
+            next.start = (op.start as isize + delta) as usize;
+            next.end = (op.end as isize + delta) as usize;
+        }
+        rebased.push(next);
+    }
+    let effective = active_delta.unwrap_or(0);
+    let msg = format!(
+        "tag {old_tag} was stale; rebased {} ops, lines shifted by {effective:+}",
+        ops.len()
+    );
+    Some((rebased, msg))
 }
 
 fn render_changed(lines: &[String], changed: &[usize]) -> String {

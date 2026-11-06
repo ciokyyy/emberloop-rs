@@ -219,14 +219,13 @@ fn ranges(matches: &[usize], context: usize, line_count: usize) -> Vec<(usize, u
 }
 
 fn record_seen(hit: &FileHits, context: usize, seen: &crate::SeenLines) {
+    let mut visible = Vec::new();
     for &line in &hit.matches {
-        seen.record_range(
-            &hit.path,
-            &hit.hash,
-            line.saturating_sub(context).max(1) as u32,
-            (line + context).min(hit.lines.len()) as u32,
-        );
+        let start = line.saturating_sub(context).max(1) as u32;
+        let end = (line + context).min(hit.lines.len()) as u32;
+        visible.extend(start..=end);
     }
+    seen.record_with_content(&hit.path, &hit.hash, hit.lines.clone(), visible, false);
 }
 
 fn display_path(path: &Path, root: &Path) -> String {

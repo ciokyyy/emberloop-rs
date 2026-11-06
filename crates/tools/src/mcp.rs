@@ -149,6 +149,73 @@ fn tool_specs() -> Vec<Value> {
                 },
                 "required": ["action"]
             }
+        },
+        {
+            "name": "write",
+            "description": "Write a whole file inside the project root, creating parent directories.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"}
+                },
+                "required": ["path", "content"]
+            }
+        },
+        {
+            "name": "find",
+            "description": "Locate files, symbols and line ranges implementing a concept or behavior. Modes: search, outline, architecture, trace.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "grep_keywords": {"type": "array", "items": {"type": "string"}},
+                    "path": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["search", "outline", "architecture", "trace"]},
+                    "limit": {"type": "integer"}
+                }
+            }
+        },
+        {
+            "name": "readurl",
+            "description": "Fetch a web URL as Markdown or plain text through a tiered reader.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "offset": {"type": "integer"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["url"]
+            }
+        },
+        {
+            "name": "websearch",
+            "description": "Search the web (Brave/Exa) with optional freshness and domain filters.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "count": {"type": "integer"},
+                    "freshness": {"type": "string", "enum": ["day", "week", "month", "year"]},
+                    "domains": {"type": "array", "items": {"type": "string"}},
+                    "provider": {"type": "string", "enum": ["auto", "brave", "exa", "deepseek"]},
+                    "fresh": {"type": "boolean"}
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "execute",
+            "description": "Run a Python script (stdlib only) that calls el tools via `import tools` over a local bridge.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "timeout": {"type": "integer"}
+                },
+                "required": ["code"]
+            }
         }
     ]);
     serde_json::from_value(specs).unwrap_or_default()

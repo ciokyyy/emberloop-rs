@@ -124,9 +124,14 @@ fn render_file(toolbox: &Toolbox, path: &Path, offset: usize, limit: usize) -> T
     let tag = &hash[..4];
     let lines = lines_of(&text);
     let (start, end) = window(&lines, offset, limit);
-    toolbox
-        .seen()
-        .record_range(path, &hash, (start + 1) as u32, end as u32);
+    let owned_lines: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+    toolbox.seen().record_with_content(
+        path,
+        &hash,
+        owned_lines,
+        (start + 1) as u32..=end as u32,
+        false,
+    );
     Ok(render_window(
         &format!("{}#{}", path.display(), tag),
         &lines,

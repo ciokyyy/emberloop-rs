@@ -2637,6 +2637,7 @@ dependencies = [
  "ignore",
  "libc",
  "regex",
+ "reqwest",
  "rmcp",
  "serde",
  "serde_json",

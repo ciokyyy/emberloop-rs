@@ -29,6 +29,11 @@ pub const TOOL_EDIT: &str = "tool.edit.description";
 pub const TOOL_BASH: &str = "tool.bash.description";
 pub const TOOL_BACKGROUND: &str = "tool.background.description";
 pub const TOOL_GREP: &str = "tool.grep.description";
+pub const TOOL_WRITE: &str = "tool.write.description";
+pub const TOOL_FIND: &str = "tool.find.description";
+pub const TOOL_READURL: &str = "tool.readurl.description";
+pub const TOOL_WEBSEARCH: &str = "tool.websearch.description";
+pub const TOOL_EXECUTE: &str = "tool.execute.description";
 
 pub const PROMPT_IDS: &[&str] = &[
     PONYTAIL,
@@ -42,6 +47,11 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_BASH,
     TOOL_BACKGROUND,
     TOOL_GREP,
+    TOOL_WRITE,
+    TOOL_FIND,
+    TOOL_READURL,
+    TOOL_WEBSEARCH,
+    TOOL_EXECUTE,
 ];
 
 pub const ALLOWED_PLACEHOLDERS: &[&str] = &[
@@ -65,6 +75,11 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_BASH => defaults::TOOL_BASH,
         TOOL_BACKGROUND => defaults::TOOL_BACKGROUND,
         TOOL_GREP => defaults::TOOL_GREP,
+        TOOL_WRITE => defaults::TOOL_WRITE,
+        TOOL_FIND => defaults::TOOL_FIND,
+        TOOL_READURL => defaults::TOOL_READURL,
+        TOOL_WEBSEARCH => defaults::TOOL_WEBSEARCH,
+        TOOL_EXECUTE => defaults::TOOL_EXECUTE,
         _ => "",
     }
 }

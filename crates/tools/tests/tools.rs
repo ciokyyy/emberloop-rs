@@ -308,6 +308,22 @@ fn edit_refuses_stale_tags_with_current_lines() {
 }
 
 #[test]
+fn edit_rebases_stale_tag_when_change_is_distant() {
+    let fixture = setup();
+    let path = write(&fixture, "rebase.txt", "one\ntwo\nthree\nfour\nfive\n");
+    let old_tag = tag_of(&read(&fixture, &path, 1, 0));
+    fs::write(&path, "zero\none\ntwo\nthree\nfour\nfive\n").expect("external insert at top");
+    let patch = format!("[{}#{old_tag}]\nPUT 5.=5:\n+FIVE\n", path.display());
+    let reply = call(&fixture, "edit", json!({"input": patch})).expect("rebased edit");
+    assert!(reply.contains("Warnings: tag"), "{reply}");
+    assert!(reply.contains("lines shifted by +1"), "{reply}");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "zero\none\ntwo\nthree\nfour\nFIVE\n"
+    );
+}
+
+#[test]
 fn edit_refuses_unseen_and_overlapping_ops() {
     let fixture = setup();
     let path = write(&fixture, "lines.txt", "1\n2\n3\n4\n");
@@ -457,7 +473,21 @@ fn mcp_serves_tools_and_errors() {
         .into_iter()
         .map(|tool| tool.name.to_string())
         .collect();
-    assert_eq!(names, vec!["read", "grep", "edit", "bash", "background"]);
+    assert_eq!(
+        names,
+        vec![
+            "read",
+            "grep",
+            "edit",
+            "bash",
+            "background",
+            "write",
+            "find",
+            "readurl",
+            "websearch",
+            "execute"
+        ]
+    );
 
     let call = runtime.block_on(server.call(
         "read",

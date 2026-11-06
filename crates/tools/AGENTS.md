@@ -8,13 +8,17 @@ MCP tool server and tool implementations served to every harness over MCP.
 path jail, spill store and seen-line store:
 
 - `jail`: canonicalizes the Project root and refuses resolved paths outside it, symlinks included.
-- `read`: plain text, numbered lines, 2 MiB cap, `[path#TAG] (lines A-B)`; directories list; `ctx:<handle>:<range>` pages spilled output.
+- `read`: plain text, numbered lines, 2 MiB cap, `[path#TAG] (lines A-B)`; directories list; `ctx:<handle>:<range>` pages spilled output; URLs delegate to `readurl`.
 - `grep`: regex over `ignore`'s `.gitignore`-aware walk; content, files or count output.
-- `edit`: hashline grammar (`PUT N.=M:`, `PUT <N:`, `PUT >N:`, `PUT >$:`, `CUT N`, `CUT N.=M`), one-pass apply against original numbering, sha256 tag check, stale tag refused with current lines, anchors must have been shown by the tag's view.
+- `find`: lexical code finder with `search`, `outline`, `architecture`, and `trace` modes; search hits feed the seen-line store.
+- `edit`: hashline grammar (`PUT N.=M:`, `PUT <N:`, `PUT >N:`, `PUT >$:`, `CUT N`, `CUT N.=M`), one-pass apply against original numbering, sha256 tag check, stale-tag rebase when changes miss anchored lines, anchors must have been shown by the tag's view.
+- `write`: writes a complete file inside the Project root, creating parent directories and recording the snapshot in the seen store.
+- `readurl`: fetches `http(s)://` and `www.` URLs via direct HTTP (HTML-to-Markdown, JSON pretty-print) with Jina reader fallback and loopback SSRF guard.
+- `websearch`: searches Brave and Exa APIs with freshness, domain filters, and 15-minute file cache.
+- `execute`: runs `python3 -I` in its own process group with a generated `tools.py` Unix-socket bridge (`tools.parallel`, `tools.store`/`load`, `tools.save`/`run`, 500-call cap).
 - `bash`: `sh -c` in the root, own process group, timeout kill, 1 MiB output cap, `cat`/`head`/`tail`/`sed -n`/`grep -n` views feed the seen store.
 - `background`: `list`, `read` (next byte offset), `wait`, `stop`; log files live in `spill/`.
 - `overflow`: rendered output over `overflow_threshold` is written to `<data root>/sessions/<id>/spill/<handle>` and replaced by a head/tail summary naming `ctx:<handle>`.
-
 ## Limits
 
 Seen-line snapshots persist in the Session's `seen/` directory (`state.json`,

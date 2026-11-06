@@ -2,14 +2,18 @@
 pub mod background;
 pub mod bash;
 pub mod edit;
+pub mod execute;
+pub mod find;
 pub mod grep;
 pub mod jail;
 pub mod mcp;
 pub mod overflow;
 pub mod read;
+pub mod readurl;
 pub mod seen;
 pub mod tag;
-
+pub mod websearch;
+pub mod write;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -63,14 +67,14 @@ impl ToolConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct Toolbox {
     config: ToolConfig,
     jail: ProjectJail,
     seen: Arc<SeenLines>,
-    overflow: OverflowStore,
-    background: background::BackgroundManager,
+    overflow: Arc<OverflowStore>,
+    background: Arc<background::BackgroundManager>,
 }
-
 impl Toolbox {
     pub fn new(config: ToolConfig) -> io::Result<Self> {
         let spill_dir = config.spill_dir.clone();
@@ -78,9 +82,12 @@ impl Toolbox {
             .parent()
             .map(|session| session.join("seen"))
             .unwrap_or_else(|| spill_dir.join("seen"));
-        let overflow = OverflowStore::new(spill_dir.clone(), config.overflow_threshold);
+        let overflow = Arc::new(OverflowStore::new(
+            spill_dir.clone(),
+            config.overflow_threshold,
+        ));
         let jail = ProjectJail::new(&config.root)?;
-        let background = background::BackgroundManager::new(spill_dir, &config.root);
+        let background = Arc::new(background::BackgroundManager::new(spill_dir, &config.root));
         Ok(Self {
             background,
             config,
@@ -144,11 +151,32 @@ impl Toolbox {
 
     pub async fn call(&self, name: &str, args: &Value) -> ToolResult<String> {
         match name {
-            "read" => read::run(self, args),
+            "execute" => execute::run(Arc::new(self.clone()), args).await,
+            other => self.call_inner(other, args).await,
+        }
+    }
+
+    pub async fn call_inner(&self, name: &str, args: &Value) -> ToolResult<String> {
+        match name {
+            "read" => {
+                if args
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(readurl::is_url_target)
+                {
+                    readurl::run(self, args).await
+                } else {
+                    read::run(self, args)
+                }
+            }
+            "readurl" => readurl::run(self, args).await,
             "grep" => grep::run(self, args),
+            "find" => find::run(self, args),
             "edit" => edit::run(self, args),
+            "write" => write::run(self, args),
             "bash" => bash::run(self, args).await,
             "background" => self.background.run(args).await,
+            "websearch" => websearch::run(self, args).await,
             other => Err(ToolError::msg(format!("unknown tool {other:?}"))),
         }
     }
