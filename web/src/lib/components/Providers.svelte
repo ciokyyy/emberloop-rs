@@ -3,7 +3,10 @@
   import { api } from '$lib/api';
   import { fade } from 'svelte/transition';
   import { flip, flipAnimation, flipReady, motionParams, rise, rowEnter, slide, slideDown } from '$lib/motion';
-  import type { LoginView, ProviderView } from '$lib/api/types';
+  import type { LoginView, Model, ProviderView } from '$lib/api/types';
+
+  // The Session shell owns the model list; a new credential changes it.
+  let { onmodels = () => {} }: { onmodels?: (models: Model[]) => void } = $props();
 
   let providers = $state<ProviderView[]>([]);
   let login = $state<LoginView | null>(null);
@@ -59,7 +62,7 @@
           if (codex.state !== 'running') {
             stopCodexWatch();
             await refresh();
-            if (codex.state === 'succeeded') await api.refreshModels();
+            if (codex.state === 'succeeded') onmodels(await api.refreshModels());
           }
         } catch (cause) {
           error = String(cause);
@@ -163,7 +166,7 @@
       pickedKey = '';
       picked = null;
       await refresh();
-      await api.refreshModels();
+      onmodels(await api.refreshModels());
     } catch (cause) {
       error = String(cause);
     } finally {

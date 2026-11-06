@@ -435,7 +435,7 @@
         onsave={(next) => void saveSettings(next)}
       />
     {:else if view === 'providers'}
-      <Providers />
+      <Providers onmodels={(list) => (models = list)} />
     {:else if view === 'usage'}
       <Usage />
     {:else if loading}
