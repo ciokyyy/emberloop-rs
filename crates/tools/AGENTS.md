@@ -19,7 +19,7 @@ path jail, spill store and seen-line store:
 - `background`: `list`, `read` (next byte offset), `wait`, `stop`; log files live in `spill/`.
 - `git`: read-only inspection (diff, log, show, blame, status, ls-files, grep, rev-parse, merge-base, cat-file, branch/tag listing); writing, executing and configuring flags are refused by prefix, config environment cleared.
 - `check`: runs a named check from `<root>/.emberloop/check` (plain command or JSON name-to-command map with one `{args}` slot, shell metacharacters refused); answers a pass/FAIL/TIMED OUT verdict plus the last 60 lines.
-- `todo`: the plan for the turn as one ordered list, rewritten whole, persisted as `todos.json` in the Session directory (temp name plus rename) and rendered as a pending/in-progress/completed checklist.
+- `todo`: the plan as one ordered list addressed by stable ids (`t1`, `t2`, …), one tool with `action` of `read`, `set`, `add`, `update`, `remove` or `clear`; statuses `pending`, `in_progress`, `completed`, `cancelled`, at most one in progress; ids never reused, `set` restarts them; persisted as `todos.json` in the Session directory (temp name plus rename).
 - `ctx_search`: term-scored snippets over the Session's spill files, each with a pageable `ctx:<id>:<start>-<end>`.
 - `overflow`: rendered output over `overflow_threshold` is written to `<data root>/sessions/<id>/spill/<handle>` and replaced by a head/tail summary naming `ctx:<handle>`.
 ## Limits

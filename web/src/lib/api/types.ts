@@ -31,6 +31,19 @@ export interface Model {
 export interface Settings {
   proxy_compression: boolean;
   ponytail_default_level: string;
+  todo_reminders: boolean;
+  todo_reminders_max: number;
+  todo_auto_expand: boolean;
+  todo_hide_when_done: boolean;
+  max_context_limit: number;
+  min_pressure_benefit_tokens: number;
+  emergency_threshold_percent: number;
+  preserve_recent_messages: number;
+  protected_tools: string[];
+  inject_tool: boolean;
+  inject_nudge: boolean;
+  tier2_trigger: number;
+  tier3_trigger: number;
 }
 
 export interface PromptInfo {
@@ -53,7 +66,7 @@ export interface PromptImage {
 }
 
 export type SessionStatus = 'idle' | 'working' | 'failed' | 'paused';
-export type SteerRoute = 'pending' | 'injected' | 'idle';
+export type SteerRoute = 'pending' | 'injected' | 'idle' | 'cap';
 
 export type EventKind =
   | 'status'
@@ -65,6 +78,7 @@ export type EventKind =
   | 'steer_queued'
   | 'steer_delivered'
   | 'notice'
+  | 'todos'
   | 'compression'
   | 'usage'
   | 'error'
@@ -98,6 +112,9 @@ export interface LoginView {
   id: string;
   state: 'running' | 'succeeded' | 'failed' | 'canceled';
   url?: string;
+  userCode?: string;
+  verificationUri?: string;
+  expiresAt?: number;
   output?: string;
   error?: string;
   tier?: string;

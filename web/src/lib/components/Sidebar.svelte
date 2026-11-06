@@ -13,12 +13,15 @@
     selectedId,
     settingsActive = false,
     providersActive = false,
+    usageActive = false,
     onselect,
     onnew,
+    onnewproject,
     onrename,
     ondelete,
     onsettings,
-    onproviders
+    onproviders,
+    onusage
   }: {
     projects: Project[];
     sessions: Session[];
@@ -26,12 +29,16 @@
     selectedId: string | null;
     settingsActive?: boolean;
     providersActive?: boolean;
+    usageActive?: boolean;
     onselect: (id: string) => void;
     onnew: () => void;
+    /** When set, the second button opens the new-Project dialog. */
+    onnewproject?: () => void;
     onrename: (session: Session) => void;
     ondelete: (session: Session) => void;
     onsettings: () => void;
     onproviders: () => void;
+    onusage: () => void;
   } = $props();
 
   const dotClass: Record<SessionStatus, string> = {
@@ -53,8 +60,11 @@
   <div class="flex items-center justify-between px-4 pt-4 pb-3">
     <div class="font-semibold tracking-tight">Emberloop <span class="chip ml-1">rust</span></div>
   </div>
-  <div class="px-3 pb-2">
-    <Button variant="primary" class="w-full" onclick={onnew}>New session</Button>
+  <div class="flex gap-2 px-3 pb-2">
+    <Button variant="primary" class="flex-1" onclick={onnew}>New session</Button>
+    {#if onnewproject}
+      <Button class="flex-1" onclick={onnewproject}>New project</Button>
+    {/if}
   </div>
 
   <nav class="min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label="Projects and sessions">
@@ -112,6 +122,10 @@
   </nav>
 
   <div class="border-t border-border p-2">
+    <button
+      class={cn('row w-full px-3 py-2 text-left text-[14px]', usageActive && 'sel')}
+      onclick={onusage}
+    >Usage</button>
     <button
       class={cn('row w-full px-3 py-2 text-left text-[14px]', providersActive && 'sel')}
       onclick={onproviders}

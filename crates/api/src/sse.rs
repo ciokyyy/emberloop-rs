@@ -11,7 +11,7 @@ use crate::state::AppState;
 
 use axum::extract::{Path, State};
 use axum::Json;
-use emberloop_core::events::SessionEvent;
+use emberloop_core::events::{EventKind, SessionEvent};
 
 /// A page of history behind the tail window: the newest `limit` blocks (runs of chunks, whole tool calls, prompts) with
 /// `seq < before`. The client asks for one page per click, so its cost never
@@ -69,6 +69,14 @@ pub async fn session_events_handler(
                 }
             }
         }
+        // A first load shows only the tail window, which can sit far past the last status and
+        // usage event of a long Session. The snapshot carries both, last, so it wins over any
+        // older copy inside the window.
+        if query.after.filter(|after| *after > 0).is_none() && query.limit.is_some() {
+            if let Some(snapshot) = snapshot_event(&log).await {
+                initial_events.push(snapshot);
+            }
+        }
     }
 
     let initial_stream = tokio_stream::iter(initial_events.into_iter().map(Ok));
@@ -88,4 +96,20 @@ pub async fn session_events_handler(
     let stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
         Box::pin(initial_stream.chain(live_stream));
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// The Session's current status and context usage as one named SSE frame. It is not a log event
+/// and has no seq, so paging behind the window never sees it.
+async fn snapshot_event(log: &store::EventLog) -> Option<Event> {
+    let status = log.latest(&EventKind::Status).await.ok().flatten();
+    let usage = log.latest(&EventKind::Usage).await.ok().flatten();
+    let todos = log.latest(&EventKind::Todos).await.ok().flatten();
+    let body = serde_json::json!({
+        "status": status.map(|event| event.data),
+        "usage": usage.map(|event| event.data),
+        "todos": todos.map(|event| event.data),
+    });
+    serde_json::to_string(&body)
+        .ok()
+        .map(|json| Event::default().event("snapshot").data(json))
 }

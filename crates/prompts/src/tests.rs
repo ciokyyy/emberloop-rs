@@ -9,6 +9,7 @@ fn vars() -> PromptVars {
         level: "full".into(),
         date: "2026-11-05".into(),
         session_id: "ses_1".into(),
+        ..Default::default()
     }
 }
 
@@ -164,6 +165,30 @@ fn ponytail_off_is_empty_and_levels_keep_their_row() {
 }
 
 #[test]
+fn caveman_register_keeps_only_the_ultra_row_and_examples() {
+    let dir = tempdir().unwrap();
+    let store = PromptStore::new(dir.path());
+    let text = caveman_text(&store, &vars()).unwrap();
+
+    assert!(text.starts_with("CAVEMAN MODE ACTIVE — level: ultra"));
+    assert!(text.contains("| **ultra** |"));
+    assert!(!text.contains("| **lite** |"));
+    assert!(!text.contains("| **full** |"));
+    assert!(!text.contains("| **wenyan-ultra** |"));
+    assert!(text.contains("- ultra: \"Inline obj prop, new ref, re-render. `useMemo`.\""));
+    assert!(!text.contains("- full: "));
+    assert!(!text.contains("- wenyan-ultra: "));
+    // The skill's frontmatter is not model-facing.
+    assert!(!text.contains("argument-hint"));
+    assert!(text.ends_with(
+        "CAVEMAN MODE ACTIVE (ultra). Enforce this reply: Drop articles, filler, \
+         pleasantries, hedging, and excess conjunctions. Prefer fragments over full \
+         natural-prose sentences. State each fact once. No preamble or recap. \
+         Technical terms, code, commands, paths, and errors stay exact."
+    ));
+}
+
+#[test]
 fn watcher_sees_change_for_a_new_pin_and_reports_a_broken_file() {
     let dir = tempdir().unwrap();
     let store = Arc::new(PromptStore::new(dir.path()));
@@ -209,4 +234,37 @@ fn wait_until(mut done: impl FnMut() -> bool) {
         );
         std::thread::yield_now();
     }
+}
+
+#[test]
+fn nudge_ids_are_listed_and_emergency_shares_the_pressure_body() {
+    assert!(PROMPT_IDS.contains(&NUDGE_FIRST));
+    assert!(PROMPT_IDS.contains(&NUDGE_PRESSURE));
+    assert!(PROMPT_IDS.contains(&NUDGE_EMERGENCY));
+    assert_eq!(default_text(NUDGE_EMERGENCY), default_text(NUDGE_PRESSURE));
+    assert_ne!(default_text(NUDGE_FIRST), default_text(NUDGE_PRESSURE));
+    assert!(default_text(NUDGE_FIRST).starts_with("This is an efficiency nudge"));
+    assert!(default_text(NUDGE_PRESSURE).starts_with("⚠️ Context limit reached"));
+}
+
+#[test]
+fn nudge_templates_keep_raw_placeholders_when_pinned_and_render_per_request() {
+    let dir = tempdir().unwrap();
+    let store = PromptStore::new(dir.path().join("prompts"));
+    let pins = PinnedPrompts::pin(&store, &vars()).unwrap();
+    let raw = pins.text(NUDGE_PRESSURE).unwrap();
+    assert!(raw.contains("{{ context_breakdown }}"));
+    assert!(raw.contains("{{ compressible_ranges }}"));
+
+    let nudge_vars = PromptVars {
+        context_breakdown: "Context breakdown: 48.0K tool | 4 text".into(),
+        since_last_nudge: "+48.0K since last nudge".into(),
+        compressible_ranges: "Compressible ranges (1, oldest first):\n  turns 1–77  77 turns"
+            .into(),
+        ..vars()
+    };
+    let rendered = render_text(NUDGE_PRESSURE, raw, &nudge_vars).unwrap();
+    assert!(rendered.contains("Context breakdown: 48.0K tool | 4 text"));
+    assert!(rendered.contains("turns 1–77"));
+    assert!(!rendered.contains("{{"));
 }

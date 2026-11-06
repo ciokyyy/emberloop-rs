@@ -394,7 +394,7 @@ fn env_path(name: &str, fallback: &str) -> PathBuf {
 
 /// install_root holds `releases/` and `current`.
 pub fn install_root() -> PathBuf {
-    env_path("EMBERLOOP_HOME", ".local/share/emberloop")
+    env_path("EMBERLOOP_HOME", ".local/share/emberloop-rs")
 }
 
 /// launcher_path is the path people and units run; it follows `current`.

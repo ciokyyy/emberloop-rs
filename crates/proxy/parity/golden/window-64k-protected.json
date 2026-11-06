@@ -1,0 +1,2266 @@
+{
+  "name": "window-64k-protected",
+  "kernelVersion": "0.0.178",
+  "windowTokens": 64000,
+  "steps": 90,
+  "bytesPerStep": 3000,
+  "toolName": "read",
+  "overrides": {
+    "protectedTools": [
+      "read"
+    ]
+  },
+  "compresses": [],
+  "frames": [
+    {
+      "step": 1,
+      "tokenCount": 767,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 0 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 0,
+      "text": null,
+      "status": {
+        "contextUsage": 0.011984375,
+        "tokenCount": 767,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 2,
+      "tokenCount": 1520,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 753 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 753,
+      "text": null,
+      "status": {
+        "contextUsage": 0.02375,
+        "tokenCount": 1520,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 3,
+      "tokenCount": 2273,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 1506 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 1506,
+      "text": null,
+      "status": {
+        "contextUsage": 0.035515625,
+        "tokenCount": 2273,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 4,
+      "tokenCount": 3026,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 2259 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 2259,
+      "text": null,
+      "status": {
+        "contextUsage": 0.04728125,
+        "tokenCount": 3026,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 5,
+      "tokenCount": 3779,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 3012 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 3012,
+      "text": null,
+      "status": {
+        "contextUsage": 0.059046875,
+        "tokenCount": 3779,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 6,
+      "tokenCount": 4532,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 3765 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 3765,
+      "text": null,
+      "status": {
+        "contextUsage": 0.0708125,
+        "tokenCount": 4532,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 7,
+      "tokenCount": 5285,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 4518 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 4518,
+      "text": null,
+      "status": {
+        "contextUsage": 0.082578125,
+        "tokenCount": 5285,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 8,
+      "tokenCount": 6038,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 5271 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 5271,
+      "text": null,
+      "status": {
+        "contextUsage": 0.09434375,
+        "tokenCount": 6038,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 9,
+      "tokenCount": 6791,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 6024 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 6024,
+      "text": null,
+      "status": {
+        "contextUsage": 0.106109375,
+        "tokenCount": 6791,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 10,
+      "tokenCount": 7544,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 6777 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 6777,
+      "text": null,
+      "status": {
+        "contextUsage": 0.117875,
+        "tokenCount": 7544,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 11,
+      "tokenCount": 8297,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 7530 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 7530,
+      "text": null,
+      "status": {
+        "contextUsage": 0.129640625,
+        "tokenCount": 8297,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 12,
+      "tokenCount": 9050,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 8283 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 8283,
+      "text": null,
+      "status": {
+        "contextUsage": 0.14140625,
+        "tokenCount": 9050,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 13,
+      "tokenCount": 9803,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 9036 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 9036,
+      "text": null,
+      "status": {
+        "contextUsage": 0.153171875,
+        "tokenCount": 9803,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 14,
+      "tokenCount": 10556,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 9789 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 9789,
+      "text": null,
+      "status": {
+        "contextUsage": 0.1649375,
+        "tokenCount": 10556,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 15,
+      "tokenCount": 11309,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 10542 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 10542,
+      "text": null,
+      "status": {
+        "contextUsage": 0.176703125,
+        "tokenCount": 11309,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 16,
+      "tokenCount": 12062,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 11295 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 11295,
+      "text": null,
+      "status": {
+        "contextUsage": 0.18846875,
+        "tokenCount": 12062,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 17,
+      "tokenCount": 12815,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 12048 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 12048,
+      "text": null,
+      "status": {
+        "contextUsage": 0.200234375,
+        "tokenCount": 12815,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 18,
+      "tokenCount": 13568,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 12801 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 12801,
+      "text": null,
+      "status": {
+        "contextUsage": 0.212,
+        "tokenCount": 13568,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 19,
+      "tokenCount": 14321,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 13554 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 13554,
+      "text": null,
+      "status": {
+        "contextUsage": 0.223765625,
+        "tokenCount": 14321,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 20,
+      "tokenCount": 15074,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 14307 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 14307,
+      "text": null,
+      "status": {
+        "contextUsage": 0.23553125,
+        "tokenCount": 15074,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 21,
+      "tokenCount": 15827,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 15060 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 15060,
+      "text": null,
+      "status": {
+        "contextUsage": 0.247296875,
+        "tokenCount": 15827,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 22,
+      "tokenCount": 16580,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 15813 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 15813,
+      "text": null,
+      "status": {
+        "contextUsage": 0.2590625,
+        "tokenCount": 16580,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 23,
+      "tokenCount": 17333,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 16566 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 16566,
+      "text": null,
+      "status": {
+        "contextUsage": 0.270828125,
+        "tokenCount": 17333,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 24,
+      "tokenCount": 18086,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 17319 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 17319,
+      "text": null,
+      "status": {
+        "contextUsage": 0.28259375,
+        "tokenCount": 18086,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 25,
+      "tokenCount": 18839,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 18072 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 18072,
+      "text": null,
+      "status": {
+        "contextUsage": 0.294359375,
+        "tokenCount": 18839,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 26,
+      "tokenCount": 19592,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 18825 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 18825,
+      "text": null,
+      "status": {
+        "contextUsage": 0.306125,
+        "tokenCount": 19592,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 27,
+      "tokenCount": 20345,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 19578 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 19578,
+      "text": null,
+      "status": {
+        "contextUsage": 0.317890625,
+        "tokenCount": 20345,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 28,
+      "tokenCount": 21098,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 20331 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 20331,
+      "text": null,
+      "status": {
+        "contextUsage": 0.32965625,
+        "tokenCount": 21098,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 29,
+      "tokenCount": 21851,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 21084 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 21084,
+      "text": null,
+      "status": {
+        "contextUsage": 0.341421875,
+        "tokenCount": 21851,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 30,
+      "tokenCount": 22604,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000; growth 21837 < floor 22500",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 21837,
+      "text": null,
+      "status": {
+        "contextUsage": 0.3531875,
+        "tokenCount": 22604,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 31,
+      "tokenCount": 23357,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 22590,
+      "text": null,
+      "status": {
+        "contextUsage": 0.364953125,
+        "tokenCount": 23357,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 32,
+      "tokenCount": 24110,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 23343,
+      "text": null,
+      "status": {
+        "contextUsage": 0.37671875,
+        "tokenCount": 24110,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 33,
+      "tokenCount": 24863,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 24096,
+      "text": null,
+      "status": {
+        "contextUsage": 0.388484375,
+        "tokenCount": 24863,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 34,
+      "tokenCount": 25616,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 24849,
+      "text": null,
+      "status": {
+        "contextUsage": 0.40025,
+        "tokenCount": 25616,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 35,
+      "tokenCount": 26369,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 25602,
+      "text": null,
+      "status": {
+        "contextUsage": 0.412015625,
+        "tokenCount": 26369,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 36,
+      "tokenCount": 27122,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 26355,
+      "text": null,
+      "status": {
+        "contextUsage": 0.42378125,
+        "tokenCount": 27122,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 37,
+      "tokenCount": 27875,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 27108,
+      "text": null,
+      "status": {
+        "contextUsage": 0.435546875,
+        "tokenCount": 27875,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 38,
+      "tokenCount": 28628,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 27861,
+      "text": null,
+      "status": {
+        "contextUsage": 0.4473125,
+        "tokenCount": 28628,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 39,
+      "tokenCount": 29381,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 28614,
+      "text": null,
+      "status": {
+        "contextUsage": 0.459078125,
+        "tokenCount": 29381,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 40,
+      "tokenCount": 30134,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 29367,
+      "text": null,
+      "status": {
+        "contextUsage": 0.47084375,
+        "tokenCount": 30134,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 41,
+      "tokenCount": 30887,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 30120,
+      "text": null,
+      "status": {
+        "contextUsage": 0.482609375,
+        "tokenCount": 30887,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 42,
+      "tokenCount": 31640,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 30873,
+      "text": null,
+      "status": {
+        "contextUsage": 0.494375,
+        "tokenCount": 31640,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 43,
+      "tokenCount": 32393,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 31626,
+      "text": null,
+      "status": {
+        "contextUsage": 0.506140625,
+        "tokenCount": 32393,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 44,
+      "tokenCount": 33146,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 32379,
+      "text": null,
+      "status": {
+        "contextUsage": 0.51790625,
+        "tokenCount": 33146,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 45,
+      "tokenCount": 33899,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 33132,
+      "text": null,
+      "status": {
+        "contextUsage": 0.529671875,
+        "tokenCount": 33899,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 46,
+      "tokenCount": 34652,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 33885,
+      "text": null,
+      "status": {
+        "contextUsage": 0.5414375,
+        "tokenCount": 34652,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 47,
+      "tokenCount": 35405,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 34638,
+      "text": null,
+      "status": {
+        "contextUsage": 0.553203125,
+        "tokenCount": 35405,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 48,
+      "tokenCount": 36158,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 35391,
+      "text": null,
+      "status": {
+        "contextUsage": 0.56496875,
+        "tokenCount": 36158,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 49,
+      "tokenCount": 36911,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 36144,
+      "text": null,
+      "status": {
+        "contextUsage": 0.576734375,
+        "tokenCount": 36911,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 50,
+      "tokenCount": 37664,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 36897,
+      "text": null,
+      "status": {
+        "contextUsage": 0.5885,
+        "tokenCount": 37664,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 51,
+      "tokenCount": 38417,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 37650,
+      "text": null,
+      "status": {
+        "contextUsage": 0.600265625,
+        "tokenCount": 38417,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 52,
+      "tokenCount": 39170,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 38403,
+      "text": null,
+      "status": {
+        "contextUsage": 0.61203125,
+        "tokenCount": 39170,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 53,
+      "tokenCount": 39923,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 39156,
+      "text": null,
+      "status": {
+        "contextUsage": 0.623796875,
+        "tokenCount": 39923,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 54,
+      "tokenCount": 40676,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 39909,
+      "text": null,
+      "status": {
+        "contextUsage": 0.6355625,
+        "tokenCount": 40676,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 55,
+      "tokenCount": 41429,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 40662,
+      "text": null,
+      "status": {
+        "contextUsage": 0.647328125,
+        "tokenCount": 41429,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 56,
+      "tokenCount": 42182,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 41415,
+      "text": null,
+      "status": {
+        "contextUsage": 0.65909375,
+        "tokenCount": 42182,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 57,
+      "tokenCount": 42935,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 42168,
+      "text": null,
+      "status": {
+        "contextUsage": 0.670859375,
+        "tokenCount": 42935,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 58,
+      "tokenCount": 43688,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 42921,
+      "text": null,
+      "status": {
+        "contextUsage": 0.682625,
+        "tokenCount": 43688,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 59,
+      "tokenCount": 44441,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 43674,
+      "text": null,
+      "status": {
+        "contextUsage": 0.694390625,
+        "tokenCount": 44441,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 60,
+      "tokenCount": 45194,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 44427,
+      "text": null,
+      "status": {
+        "contextUsage": 0.70615625,
+        "tokenCount": 45194,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 61,
+      "tokenCount": 45947,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 45180,
+      "text": null,
+      "status": {
+        "contextUsage": 0.717921875,
+        "tokenCount": 45947,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 62,
+      "tokenCount": 46700,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 45933,
+      "text": null,
+      "status": {
+        "contextUsage": 0.7296875,
+        "tokenCount": 46700,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 63,
+      "tokenCount": 47453,
+      "shouldInject": false,
+      "reason": "max compressible 0 < threshold 50000",
+      "tier": null,
+      "overLimit": 0,
+      "emergencyOverride": 0,
+      "growth": 46686,
+      "text": null,
+      "status": {
+        "contextUsage": 0.741453125,
+        "tokenCount": 47453,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 64,
+      "tokenCount": 48206,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 75% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 47439,
+      "text": null,
+      "status": {
+        "contextUsage": 0.75321875,
+        "tokenCount": 48206,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 65,
+      "tokenCount": 48959,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 76% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 48192,
+      "text": null,
+      "status": {
+        "contextUsage": 0.764984375,
+        "tokenCount": 48959,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 66,
+      "tokenCount": 49712,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 78% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 48945,
+      "text": null,
+      "status": {
+        "contextUsage": 0.77675,
+        "tokenCount": 49712,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 67,
+      "tokenCount": 50465,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 79% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 49698,
+      "text": null,
+      "status": {
+        "contextUsage": 0.788515625,
+        "tokenCount": 50465,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 68,
+      "tokenCount": 51218,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 80% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 50451,
+      "text": null,
+      "status": {
+        "contextUsage": 0.80028125,
+        "tokenCount": 51218,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 69,
+      "tokenCount": 51971,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 81% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 51204,
+      "text": null,
+      "status": {
+        "contextUsage": 0.812046875,
+        "tokenCount": 51971,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 70,
+      "tokenCount": 52724,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 82% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 51957,
+      "text": null,
+      "status": {
+        "contextUsage": 0.8238125,
+        "tokenCount": 52724,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 71,
+      "tokenCount": 53477,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 84% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 52710,
+      "text": null,
+      "status": {
+        "contextUsage": 0.835578125,
+        "tokenCount": 53477,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 72,
+      "tokenCount": 54230,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 85% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 53463,
+      "text": null,
+      "status": {
+        "contextUsage": 0.84734375,
+        "tokenCount": 54230,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 73,
+      "tokenCount": 54983,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 86% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 54216,
+      "text": null,
+      "status": {
+        "contextUsage": 0.859109375,
+        "tokenCount": 54983,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 74,
+      "tokenCount": 55736,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 87% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 54969,
+      "text": null,
+      "status": {
+        "contextUsage": 0.870875,
+        "tokenCount": 55736,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 75,
+      "tokenCount": 56489,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 88% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 55722,
+      "text": null,
+      "status": {
+        "contextUsage": 0.882640625,
+        "tokenCount": 56489,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 76,
+      "tokenCount": 57242,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 89% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 56475,
+      "text": null,
+      "status": {
+        "contextUsage": 0.89440625,
+        "tokenCount": 57242,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 77,
+      "tokenCount": 57995,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 91% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 57228,
+      "text": null,
+      "status": {
+        "contextUsage": 0.906171875,
+        "tokenCount": 57995,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 78,
+      "tokenCount": 58748,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 92% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 57981,
+      "text": null,
+      "status": {
+        "contextUsage": 0.9179375,
+        "tokenCount": 58748,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 79,
+      "tokenCount": 59501,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 93% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 58734,
+      "text": null,
+      "status": {
+        "contextUsage": 0.929703125,
+        "tokenCount": 59501,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 80,
+      "tokenCount": 60254,
+      "shouldInject": false,
+      "reason": "OVER-LIMIT: usage 94% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 0,
+      "growth": 59487,
+      "text": null,
+      "status": {
+        "contextUsage": 0.94146875,
+        "tokenCount": 60254,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 81,
+      "tokenCount": 61007,
+      "shouldInject": false,
+      "reason": "EMERGENCY: usage 95% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 1,
+      "growth": 60240,
+      "text": null,
+      "status": {
+        "contextUsage": 0.953234375,
+        "tokenCount": 61007,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 82,
+      "tokenCount": 61760,
+      "shouldInject": false,
+      "reason": "EMERGENCY: usage 97% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 1,
+      "growth": 60993,
+      "text": null,
+      "status": {
+        "contextUsage": 0.965,
+        "tokenCount": 61760,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 83,
+      "tokenCount": 62513,
+      "shouldInject": false,
+      "reason": "EMERGENCY: usage 98% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 1,
+      "growth": 61746,
+      "text": null,
+      "status": {
+        "contextUsage": 0.976765625,
+        "tokenCount": 62513,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 84,
+      "tokenCount": 63266,
+      "shouldInject": false,
+      "reason": "EMERGENCY: usage 99% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 1,
+      "growth": 62499,
+      "text": null,
+      "status": {
+        "contextUsage": 0.98853125,
+        "tokenCount": 63266,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 85,
+      "tokenCount": 64019,
+      "shouldInject": false,
+      "reason": "EMERGENCY: usage 100% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 1,
+      "growth": 63252,
+      "text": null,
+      "status": {
+        "contextUsage": 1.000296875,
+        "tokenCount": 64019,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 86,
+      "tokenCount": 64772,
+      "shouldInject": false,
+      "reason": "EMERGENCY: usage 101% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 1,
+      "growth": 64005,
+      "text": null,
+      "status": {
+        "contextUsage": 1.0120625,
+        "tokenCount": 64772,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 87,
+      "tokenCount": 65525,
+      "shouldInject": false,
+      "reason": "EMERGENCY: usage 102% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 1,
+      "growth": 64758,
+      "text": null,
+      "status": {
+        "contextUsage": 1.023828125,
+        "tokenCount": 65525,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 88,
+      "tokenCount": 66278,
+      "shouldInject": false,
+      "reason": "EMERGENCY: usage 104% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 1,
+      "growth": 65511,
+      "text": null,
+      "status": {
+        "contextUsage": 1.03559375,
+        "tokenCount": 66278,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 89,
+      "tokenCount": 67031,
+      "shouldInject": false,
+      "reason": "EMERGENCY: usage 105% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 1,
+      "growth": 66264,
+      "text": null,
+      "status": {
+        "contextUsage": 1.047359375,
+        "tokenCount": 67031,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    },
+    {
+      "step": 90,
+      "tokenCount": 67784,
+      "shouldInject": false,
+      "reason": "EMERGENCY: usage 106% but no tier has effective compressible content (T1 effective 0, T2 0, T3 0) — nudge suppressed to avoid offering ranges below minCompressRange",
+      "tier": null,
+      "overLimit": 1,
+      "emergencyOverride": 1,
+      "growth": 67017,
+      "text": null,
+      "status": {
+        "contextUsage": 1.059125,
+        "tokenCount": 67784,
+        "modelContextLimit": 64000,
+        "activeBlocks": 0,
+        "totalBlocks": 0,
+        "tokensCompressed": 0,
+        "breakdown": {
+          "active": 0,
+          "total": 0,
+          "storedMessages": 0,
+          "retrievals": 0
+        }
+      }
+    }
+  ]
+}

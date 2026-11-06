@@ -19,10 +19,12 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 pub const PONYTAIL: &str = "ponytail";
+pub const CAVEMAN: &str = "caveman";
 pub const POLICY: &str = "policy";
 pub const COMPRESS: &str = "compress";
 pub const DECOMPRESS: &str = "decompress";
 pub const SEARCH_CONTEXT: &str = "search_context";
+pub const ACP_STATUS_DESCRIPTION: &str = "acp_status.description";
 pub const COMPRESS_PROMPT: &str = "compress.prompt";
 pub const TOOL_READ: &str = "tool.read.description";
 pub const TOOL_EDIT: &str = "tool.edit.description";
@@ -34,13 +36,22 @@ pub const TOOL_FIND: &str = "tool.find.description";
 pub const TOOL_WEBSEARCH: &str = "tool.websearch.description";
 pub const TOOL_EXECUTE: &str = "tool.execute.description";
 pub const TOOL_TODO: &str = "tool.todo.description";
+/// Billion-context nudges (ticket 20). Derived from the reference wording; the
+/// emergency id shares the pressure body. Raw templates: see `PinnedPrompts::pin`.
+pub const NUDGE_FIRST: &str = "nudge.first";
+pub const NUDGE_PRESSURE: &str = "nudge.pressure";
+pub const NUDGE_EMERGENCY: &str = "nudge.emergency";
+pub const NUDGE_TIER2: &str = "nudge.tier2";
+pub const NUDGE_TIER3: &str = "nudge.tier3";
 
 pub const PROMPT_IDS: &[&str] = &[
-    PONYTAIL,
     POLICY,
     COMPRESS,
+    PONYTAIL,
+    CAVEMAN,
     DECOMPRESS,
     SEARCH_CONTEXT,
+    ACP_STATUS_DESCRIPTION,
     COMPRESS_PROMPT,
     TOOL_READ,
     TOOL_EDIT,
@@ -52,6 +63,11 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_WEBSEARCH,
     TOOL_EXECUTE,
     TOOL_TODO,
+    NUDGE_FIRST,
+    NUDGE_PRESSURE,
+    NUDGE_EMERGENCY,
+    NUDGE_TIER2,
+    NUDGE_TIER3,
 ];
 
 pub const ALLOWED_PLACEHOLDERS: &[&str] = &[
@@ -60,15 +76,20 @@ pub const ALLOWED_PLACEHOLDERS: &[&str] = &[
     "level",
     "date",
     "session_id",
+    "context_breakdown",
+    "since_last_nudge",
+    "compressible_ranges",
 ];
 
 pub fn default_text(id: &str) -> &'static str {
     match id {
         PONYTAIL => defaults::PONYTAIL,
+        CAVEMAN => defaults::CAVEMAN,
         POLICY => defaults::POLICY,
         COMPRESS => defaults::COMPRESS,
         DECOMPRESS => defaults::DECOMPRESS,
         SEARCH_CONTEXT => defaults::SEARCH_CONTEXT,
+        ACP_STATUS_DESCRIPTION => defaults::ACP_STATUS_DESCRIPTION,
         COMPRESS_PROMPT => defaults::COMPRESS_PROMPT,
         TOOL_READ => defaults::TOOL_READ,
         TOOL_EDIT => defaults::TOOL_EDIT,
@@ -80,6 +101,10 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_WEBSEARCH => defaults::TOOL_WEBSEARCH,
         TOOL_EXECUTE => defaults::TOOL_EXECUTE,
         TOOL_TODO => defaults::TOOL_TODO,
+        NUDGE_FIRST => defaults::NUDGE_FIRST,
+        NUDGE_PRESSURE | NUDGE_EMERGENCY => defaults::NUDGE_PRESSURE,
+        NUDGE_TIER2 => defaults::NUDGE_TIER2,
+        NUDGE_TIER3 => defaults::NUDGE_TIER3,
         _ => "",
     }
 }
@@ -124,6 +149,12 @@ pub struct PromptVars {
     pub level: String,
     pub date: String,
     pub session_id: String,
+    /// Nudge-only: the `Context breakdown:` line, label included.
+    pub context_breakdown: String,
+    /// Nudge-only: the `+X since last nudge` line.
+    pub since_last_nudge: String,
+    /// Nudge-only: the compressible range block, header included.
+    pub compressible_ranges: String,
 }
 
 impl PromptVars {
@@ -134,6 +165,9 @@ impl PromptVars {
             "level" => Some(&self.level),
             "date" => Some(&self.date),
             "session_id" => Some(&self.session_id),
+            "context_breakdown" => Some(&self.context_breakdown),
+            "since_last_nudge" => Some(&self.since_last_nudge),
+            "compressible_ranges" => Some(&self.compressible_ranges),
             _ => None,
         }
     }
@@ -383,6 +417,11 @@ fn placeholders(id: &str, text: &str) -> Result<Vec<String>, PromptError> {
     Ok(names)
 }
 
+/// Renders a raw template (from `PinnedPrompts::text` of a nudge id) with per-request vars.
+pub fn render_text(id: &str, text: &str, vars: &PromptVars) -> Result<String, PromptError> {
+    substitute(id, text, vars)
+}
+
 fn substitute(id: &str, text: &str, vars: &PromptVars) -> Result<String, PromptError> {
     placeholders(id, text)?;
     let mut out = String::with_capacity(text.len());
@@ -427,13 +466,29 @@ pub fn ponytail_text(
         return Ok(String::new());
     }
     let text = store.render(PONYTAIL, vars)?;
-    Ok(filter_ponytail(&text, level))
+    Ok(filter_skill(&text, level))
 }
 
-fn filter_ponytail(skill: &str, level: &str) -> String {
+/// The always-ultra caveman register: the plugin's banner, its ultra ruleset and
+/// its one-line reminder. Copied from emberloop-go's `el/voice.go`.
+pub fn caveman_text(store: &PromptStore, vars: &PromptVars) -> Result<String, PromptError> {
+    let skill = filter_skill(&store.render(CAVEMAN, vars)?, "ultra");
+    Ok(format!("{CAVEMAN_BANNER}\n\n{skill}\n\n{CAVEMAN_REMINDER}"))
+}
+
+const CAVEMAN_BANNER: &str = "CAVEMAN MODE ACTIVE — level: ultra";
+
+const CAVEMAN_REMINDER: &str = "CAVEMAN MODE ACTIVE (ultra). Enforce this reply: \
+     Drop articles, filler, pleasantries, hedging, and excess conjunctions. Prefer \
+     fragments over full natural-prose sentences. State each fact once. No preamble or \
+     recap. Technical terms, code, commands, paths, and errors stay exact.";
+
+/// A skill body for one level: frontmatter stripped, only that level's row of the
+/// intensity table and its example lines kept.
+fn filter_skill(skill: &str, level: &str) -> String {
     strip_frontmatter(skill)
         .lines()
-        .filter(|line| keep_ponytail_line(line, level))
+        .filter(|line| keep_skill_line(line, level))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -448,7 +503,7 @@ fn strip_frontmatter(text: &str) -> &str {
     rest[end + 4..].trim_start_matches(['\n', '\r'])
 }
 
-fn keep_ponytail_line(line: &str, level: &str) -> bool {
+fn keep_skill_line(line: &str, level: &str) -> bool {
     let trimmed = line.trim_start();
     if trimmed.starts_with("| **") {
         return trimmed
@@ -456,10 +511,11 @@ fn keep_ponytail_line(line: &str, level: &str) -> bool {
             .nth(1)
             .is_some_and(|name| name.trim() == level);
     }
+    // A `- lite: ...` example names its level in one token; prose bullets that
+    // happen to hold a colon are not examples.
     if let Some(after) = trimmed.strip_prefix("- ") {
         if let Some((name, _)) = after.split_once(':') {
-            let name = name.trim();
-            if matches!(name, "lite" | "full" | "ultra") {
+            if !name.is_empty() && !name.contains(char::is_whitespace) {
                 return name == level;
             }
         }
@@ -478,10 +534,15 @@ impl PinnedPrompts {
     pub fn pin(store: &PromptStore, vars: &PromptVars) -> Result<Self, PromptError> {
         let mut pins = Self::default();
         for id in PROMPT_IDS {
-            let text = if *id == PONYTAIL {
-                ponytail_text(store, &vars.level, vars)?
-            } else {
-                store.render(id, vars)?
+            let text = match *id {
+                PONYTAIL => ponytail_text(store, &vars.level, vars)?,
+                CAVEMAN => caveman_text(store, vars)?,
+                NUDGE_FIRST | NUDGE_PRESSURE | NUDGE_EMERGENCY | NUDGE_TIER2 | NUDGE_TIER3 => {
+                    let raw = store.text(id).unwrap_or_default();
+                    validate(id, &raw)?;
+                    raw
+                }
+                _ => store.render(id, vars)?,
             };
             pins.hashes.insert((*id).to_string(), hash_text(&text));
             pins.texts.insert((*id).to_string(), text);

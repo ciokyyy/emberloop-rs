@@ -178,24 +178,48 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "todo",
-            "description": "Replace the plan for this turn: an ordered checklist of what is left, in progress and done. Rewrite the whole list each time.",
+            "description": "The plan for this turn: one ordered checklist with stable ids. read returns the full list with ids and counts; set replaces it whole and assigns t1…tN; add appends or inserts after an id; update patches items by id in one batch; remove deletes ids; clear empties. Statuses pending, in_progress, completed, cancelled; at most one in_progress.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "todos": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["read", "set", "add", "update", "remove", "clear"],
+                        "description": "read the list, set it whole, add items, update items by id, remove ids, or clear it."
+                    },
+                    "items": {
                         "type": "array",
-                        "description": "The whole list, in the order it should be read.",
+                        "description": "For set and add.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "content": {"type": "string"},
-                                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}
+                                "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}
                             },
                             "required": ["content"]
                         }
+                    },
+                    "after": {"type": "string", "description": "For add: insert after this id."},
+                    "updates": {
+                        "type": "array",
+                        "description": "For update.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "content": {"type": "string"},
+                                "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}
+                            },
+                            "required": ["id"]
+                        }
+                    },
+                    "ids": {
+                        "type": "array",
+                        "description": "For remove.",
+                        "items": {"type": "string"}
                     }
                 },
-                "required": ["todos"]
+                "required": ["action"]
             }
         },
         {
@@ -264,4 +288,24 @@ fn tool_specs() -> Vec<Value> {
         }
     ]);
     serde_json::from_value(specs).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn todo_schema_lists_every_action() {
+        let spec = tool_specs()
+            .into_iter()
+            .find(|spec| spec["name"] == "todo")
+            .expect("todo is advertised");
+        let actions = spec["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action is an enum");
+        for action in ["read", "set", "add", "update", "remove", "clear"] {
+            assert!(actions.iter().any(|value| value == action));
+            assert!(spec["description"].as_str().unwrap().contains(action));
+        }
+    }
 }

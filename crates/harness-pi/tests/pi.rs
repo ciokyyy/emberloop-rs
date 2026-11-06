@@ -116,6 +116,10 @@ async fn an_http_mcp_url_wins_over_the_stdio_command() {
     .unwrap();
     assert_eq!(mcp["mcpServers"]["el"]["url"], "http://127.0.0.1:9/mcp");
     assert!(mcp["mcpServers"]["el"]["command"].is_null());
+    assert_eq!(
+        mcp["mcpServers"]["el"]["timeout"], 600,
+        "same as pig's own el entry; pi's 60 s default would kill a long tool call"
+    );
 }
 
 #[tokio::test]
@@ -128,6 +132,36 @@ async fn a_missing_key_is_refused_before_pi_starts() {
         .unwrap();
     assert!(error.to_string().contains("keys.json"), "{error}");
     assert!(!dir.path().join("pi/s1").exists());
+}
+
+#[tokio::test]
+async fn an_auth_file_lets_a_codex_session_start_without_an_opencode_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = dir.path().join("auth.json");
+    std::fs::write(
+        &auth,
+        r#"{"openai-codex":{"type":"oauth","access":"at","refresh":"rt","expires":9999999999999}}"#,
+    )
+    .unwrap();
+    let harness = PiHarness::new(
+        env!("CARGO_BIN_EXE_fake-pi"),
+        dir.path().join("pi"),
+        dir.path().join("keys.json"),
+    )
+    .with_auth(&auth);
+    let mut wiring = wiring();
+    wiring.model = Some("openai-codex/gpt-6-luna".into());
+    let _session = harness.spawn("s1", wiring).await.unwrap();
+    let copied = dir.path().join("pi/s1/.pi/agent/auth.json");
+    assert!(!dir.path().join("pi/s1/.pi/agent/models.json").exists());
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(copied).unwrap()).unwrap();
+    assert_eq!(saved["openai-codex"]["access"], "at");
+    let mode = std::fs::metadata(dir.path().join("pi/s1/.pi/agent/auth.json"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
 }
 
 #[tokio::test]

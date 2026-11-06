@@ -90,7 +90,7 @@ impl ToolTracker {
     }
 }
 
-fn short_tool_name(name: &str) -> &str {
+pub(crate) fn short_tool_name(name: &str) -> &str {
     let base = name.rsplit(['/', ':']).next().unwrap_or(name);
     let stripped = base
         .strip_prefix("mcp_el_")

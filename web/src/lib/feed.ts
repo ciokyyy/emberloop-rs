@@ -5,6 +5,8 @@ export type ToolStatus = 'running' | 'completed' | 'failed';
 export interface FeedItem {
   id: string;
   kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'compression' | 'steer' | 'notice' | 'error';
+  /** Proxy compression action: `compress`, `decompress`, `nudge` or `preflight`. */
+  action?: string;
   text?: string;
   live?: boolean;
   imagesCount?: number;
@@ -26,14 +28,23 @@ export interface FeedItem {
   route?: SteerRoute;
 }
 
+export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
+
+export interface TodoItem {
+  id: string;
+  content: string;
+  status: TodoStatus;
+}
+
 export interface FeedState {
   items: FeedItem[];
   status: SessionStatus;
   usage: { used: number; window: number } | null;
+  todos: TodoItem[];
 }
 
 export function emptyFeedState(): FeedState {
-  return { items: [], status: 'idle', usage: null };
+  return { items: [], status: 'idle', usage: null, todos: [] };
 }
 
 let counter = 0;
@@ -42,7 +53,9 @@ const nextId = (prefix: string) => `${prefix}-${++counter}`;
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 const number = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 const route = (value: unknown): SteerRoute | undefined =>
-  value === 'pending' || value === 'injected' || value === 'idle' ? value : undefined;
+  value === 'pending' || value === 'injected' || value === 'idle' || value === 'cap'
+    ? value
+    : undefined;
 const isLive = (item?: FeedItem) => !!item && (item.kind === 'assistant' || item.kind === 'thinking') && !!item.live;
 
 function closeLive(items: FeedItem[]): FeedItem[] {
@@ -143,11 +156,15 @@ function startTool(items: FeedItem[], event: SessionEvent): FeedItem[] {
 
 function finishTool(items: FeedItem[], event: SessionEvent): FeedItem[] {
   const id = toolId(event.data);
-  const tool = toolName(event.data);
+  const named = toolName(event.data);
   const index = items.findLastIndex(
-    (item) => item.kind === 'tool' && !item.finished && (id ? item.id === id : item.tool === tool)
+    (item) => item.kind === 'tool' && !item.finished && (id ? item.id === id : item.tool === named)
   );
-  const output = outputText(event.data.output ?? event.data.body ?? event.data.diff);
+  // A harness may omit the name on the finish event; the started row still knows it.
+  const tool = named || (index === -1 ? '' : (items[index].tool ?? ''));
+  // The todo tool returns the whole list for `set` and `read`; its row stays one line.
+  const raw = outputText(event.data.output ?? event.data.body ?? event.data.diff);
+  const output = tool === 'todo' ? (raw.split('\n')[0] ?? '') : raw;
   const meta = text(event.data.meta);
   const status = statusFromFinish(event.data);
   const display = displayOf(event.data.display);
@@ -226,6 +243,47 @@ function appendChunk(state: FeedState, kind: 'assistant' | 'thinking', chunk: st
   };
 }
 
+/** The server's view of a Session at open: its latest status and usage. A first load shows only a
+ *  tail window, and a long Session's last status or usage event can sit far behind it, so without
+ *  this a working Session opens as idle with a stale context ring. It touches no feed row. */
+export interface Snapshot {
+  status?: Record<string, unknown> | null;
+  usage?: Record<string, unknown> | null;
+  todos?: { items?: unknown } | null;
+}
+
+export function applySnapshot(state: FeedState, snapshot: Snapshot): FeedState {
+  let next = state;
+  if (snapshot.status) next = { ...next, status: statusOf(snapshot.status.state ?? snapshot.status.status) };
+  if (snapshot.usage) {
+    next = {
+      ...next,
+      usage: {
+        used: number(snapshot.usage.inputTokens ?? snapshot.usage.used ?? snapshot.usage.tokens),
+        window: number(snapshot.usage.contextWindow ?? snapshot.usage.window) || next.usage?.window || 0
+      }
+    };
+  }
+  if (snapshot.todos) next = { ...next, todos: todosOf(snapshot.todos) };
+  return next;
+}
+
+const statuses: TodoStatus[] = ['pending', 'in_progress', 'completed', 'cancelled'];
+
+/** A `todos` event and the snapshot both carry the whole list as `{ items: [...] }`. */
+function todosOf(value: unknown): TodoItem[] {
+  const items = (value as { items?: unknown } | null)?.items;
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => item as Record<string, unknown>)
+    .filter((item) => typeof item?.id === 'string' && typeof item?.content === 'string')
+    .map((item) => ({
+      id: text(item.id),
+      content: text(item.content),
+      status: statuses.includes(item.status as TodoStatus) ? (item.status as TodoStatus) : 'pending'
+    }));
+}
+
 export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
   const data = event.data ?? {};
   switch (event.kind) {
@@ -233,6 +291,9 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
       const status = statusOf(data.state ?? data.status);
       return { ...state, status, items: status === 'working' ? state.items : closeLive(state.items) };
     }
+
+    case 'todos':
+      return { ...state, todos: todosOf(data) };
 
     case 'prompt':
       return {
@@ -284,18 +345,33 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
       }
       return { ...state, items: deliver(state.items, event, 'notice') };
 
-    case 'compression':
+    case 'compression': {
+      const action = text(data.action);
+      const args = displayOf(data.args);
+      const ranges = Array.isArray(args?.ranges) ? (args.ranges as Record<string, unknown>[]) : [];
+      const first = ranges[0];
+      const target =
+        action === 'compress'
+          ? ranges.length > 1
+            ? `${ranges.length} ranges`
+            : first
+              ? `turns ${number(first.start)}–${number(first.end) - 1}`
+              : text(data.text)
+          : action === 'decompress'
+            ? text(args?.blockId)
+            : action === 'nudge'
+              ? text(data.kind) || text(data.text).replace(/^nudge:\s*/, '')
+              : text(data.text);
+      const meta = action === 'nudge' && number(data.tokens) ? `${number(data.tokens)} tokens` : '';
+      const body = text(data.result) || (args ? JSON.stringify(args, null, 2) : text(data.text));
       return {
         ...state,
         items: [
           ...state.items,
-          {
-            id: nextId('compression'),
-            kind: 'compression',
-            text: text(data.text ?? data.summary)
-          }
+          { id: nextId('compression'), kind: 'compression', action, text: target, meta, body }
         ]
       };
+    }
 
     case 'usage':
       return {

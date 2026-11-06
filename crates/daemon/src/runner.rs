@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::todo_reminder::{self, Cycle};
 use crate::tooldisplay::ToolTracker;
 use api::driver::SessionDriver;
 use api::routes::PromptImageDto;
+use api::state::Settings;
 use emberloop_core::events::{EventBus, EventKind, SessionEvent};
 use emberloop_core::steer::{deliver_idle, SteerKind, SteerQueue, SteerQueues, SteerWaker};
 use futures::StreamExt;
@@ -26,6 +28,8 @@ pub struct SessionRunner {
     logs: Arc<RwLock<HashMap<String, EventLog>>>,
     account_home: Option<std::path::PathBuf>,
     handles: Arc<Mutex<HashMap<String, Arc<Handle>>>>,
+    settings: Arc<RwLock<Settings>>,
+    reminders: Arc<Mutex<HashMap<String, Cycle>>>,
 }
 
 fn log_failure(error: Option<impl std::fmt::Display>, what: &str) {
@@ -52,6 +56,7 @@ impl SessionRunner {
         proxy_base: String,
         logs: Arc<RwLock<HashMap<String, EventLog>>>,
         account_home: Option<std::path::PathBuf>,
+        settings: Arc<RwLock<Settings>>,
     ) -> Self {
         Self {
             harness,
@@ -65,6 +70,8 @@ impl SessionRunner {
             logs,
             account_home,
             handles: Arc::new(Mutex::new(HashMap::new())),
+            settings,
+            reminders: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -175,6 +182,8 @@ impl SessionRunner {
             self.steers.clone(),
             project.root.clone(),
             Arc::clone(&self.handles),
+            Arc::clone(&self.settings),
+            Arc::clone(&self.reminders),
         ));
         Ok(handle)
     }
@@ -219,6 +228,7 @@ impl SessionDriver for SessionRunner {
             }
         }
         self.drain_notices(session_id).await;
+        self.reminders.lock().await.remove(session_id);
         let handle = self.ensure(session_id).await?;
         let images: Vec<PromptImage> = images
             .into_iter()
@@ -294,6 +304,8 @@ async fn pump(
     steers: SteerQueues,
     project_root: std::path::PathBuf,
     handles: Arc<Mutex<HashMap<String, Arc<Handle>>>>,
+    settings: Arc<RwLock<Settings>>,
+    reminders: Arc<Mutex<HashMap<String, Cycle>>>,
 ) {
     let mut stream = handle.session.events();
     let mut tracker = ToolTracker::default();
@@ -303,25 +315,22 @@ async fn pump(
             handle.queue.set_turn_active(false);
         }
         if let Some(mapped) = map_event(&session_id, event, &mut tracker, &project_root) {
-            let stored = match append(&logs, &events_dir, &mapped).await {
-                Ok(stored) => stored,
-                Err(error) => {
-                    let failure = SessionEvent::new(
-                        &session_id,
-                        0,
-                        EventKind::Error,
-                        serde_json::json!({ "message": format!("event log error: {error}") }),
-                    );
-                    append(&logs, &events_dir, &failure)
-                        .await
-                        .unwrap_or(failure)
-                }
-            };
-            events.publish(stored);
+            publish_mapped(&events, &logs, &events_dir, &session_id, &data_root, mapped).await;
         }
         if turn_over {
             drain_notices(&data_root, &steers, &session_id).await;
             apply_pending_update(&data_root, &handles, &events, &session_id).await;
+            turn_end_todos(
+                &handle,
+                &session_id,
+                &data_root,
+                &events,
+                &logs,
+                &events_dir,
+                &settings,
+                &reminders,
+            )
+            .await;
             let waker = SessionWaker {
                 handle: Arc::clone(&handle),
                 session_id: session_id.clone(),
@@ -330,6 +339,122 @@ async fn pump(
                 events_dir: events_dir.clone(),
             };
             let _ = deliver_idle(&handle.queue, &waker, &events, &session_id).await;
+        }
+    }
+}
+
+/// Append one mapped event and publish it, then republish the plan when a `todo`
+/// call finished, so the plan card follows the model inside a turn.
+async fn publish_mapped(
+    events: &EventBus,
+    logs: &Arc<RwLock<HashMap<String, EventLog>>>,
+    events_dir: &std::path::Path,
+    session_id: &str,
+    data_root: &DataRoot,
+    mapped: SessionEvent,
+) {
+    // The harness sends the full MCP name (`mcp__el__todo`, `el_todo`); the plan
+    // follows the short one.
+    let todo_changed = mapped.kind == EventKind::ToolFinished
+        && mapped
+            .data
+            .get("name")
+            .and_then(|name| name.as_str())
+            .is_some_and(|name| crate::tooldisplay::short_tool_name(name) == "todo");
+    let stored = match append(logs, events_dir, &mapped).await {
+        Ok(stored) => stored,
+        Err(error) => {
+            let failure = SessionEvent::new(
+                session_id,
+                0,
+                EventKind::Error,
+                serde_json::json!({ "message": format!("event log error: {error}") }),
+            );
+            append(logs, events_dir, &failure).await.unwrap_or(failure)
+        }
+    };
+    events.publish(stored);
+    if todo_changed {
+        publish_todos(events, logs, events_dir, session_id, data_root).await;
+    }
+}
+
+/// Read the stored plan and publish it as one `todos` event. The daemon never
+/// writes the list; the tool process owns `todos.json`.
+async fn publish_todos(
+    events: &EventBus,
+    logs: &Arc<RwLock<HashMap<String, EventLog>>>,
+    events_dir: &std::path::Path,
+    session_id: &str,
+    data_root: &DataRoot,
+) {
+    let path = data_root.session_dir(session_id).join("todos.json");
+    let items = tools::todo::load_from(&path);
+    let event = SessionEvent::new(
+        session_id,
+        0,
+        EventKind::Todos,
+        serde_json::json!({ "items": items }),
+    );
+    if let Ok(stored) = append(logs, events_dir, &event).await {
+        events.publish(stored);
+    }
+}
+
+/// Turn-end reminder: publish the plan, then enqueue one `Notice` before the idle
+/// wake, so a queued steer and the reminder go out as one prompt.
+///
+/// A question pending for the user is not visible to the daemon: the harness
+/// exposes no such signal, so a queued steer or a running background job is the
+/// whole settled check. See `crates/daemon/AGENTS.md`.
+#[allow(clippy::too_many_arguments)]
+async fn turn_end_todos(
+    handle: &Handle,
+    session_id: &str,
+    data_root: &DataRoot,
+    events: &EventBus,
+    logs: &Arc<RwLock<HashMap<String, EventLog>>>,
+    events_dir: &std::path::Path,
+    settings: &Arc<RwLock<Settings>>,
+    reminders: &Arc<Mutex<HashMap<String, Cycle>>>,
+) {
+    publish_todos(events, logs, events_dir, session_id, data_root).await;
+    let settings = settings.read().await.clone();
+    let path = data_root.session_dir(session_id).join("todos.json");
+    let items = tools::todo::load_from(&path);
+    let spill = data_root.session_spill_dir(session_id);
+    if handle.queue.pending_len().await > 0 || tools::background::any_running(&spill) {
+        return;
+    }
+    let mut cycles = reminders.lock().await;
+    let cycle = cycles.entry(session_id.to_string()).or_default();
+    if todo_reminder::should_send(&settings, cycle, &items) {
+        cycle.sent += 1;
+        cycle.last_open = todo_reminder::open_set(&items);
+        let text = todo_reminder::text(&items, cycle.sent, settings.todo_reminders_max);
+        handle.queue.enqueue(SteerKind::Notice, text).await;
+        return;
+    }
+    let open = todo_reminder::open_set(&items).len();
+    if !cycle.capped
+        && settings.todo_reminders
+        && settings.todo_reminders_max > 0
+        && cycle.sent >= settings.todo_reminders_max
+        && open > 0
+    {
+        cycle.capped = true;
+        drop(cycles);
+        let event = SessionEvent::new(
+            session_id,
+            0,
+            EventKind::Notice,
+            serde_json::json!({
+                "text": todo_reminder::cap_note(open, settings.todo_reminders_max),
+                "route": "cap"
+            }),
+        );
+        if let Ok(stored) = append(logs, events_dir, &event).await {
+            events.publish(stored);
         }
     }
 }

@@ -110,6 +110,20 @@ async fn refresh_persists_an_atomic_snapshot() {
 }
 
 #[tokio::test]
+async fn window_answers_only_for_a_known_model() {
+    let dir = tempdir().unwrap();
+    let source = Arc::new(FakeSource::new(
+        "agy",
+        Ok(vec![entry("gemini-3.8-flash", "Flash", "agy")]),
+    ));
+    let catalogue = ModelCatalogue::new(catalogue_path(&dir), vec![source]);
+    catalogue.refresh().await.unwrap();
+
+    assert_eq!(catalogue.window("gemini-3.8-flash").await, Some(1_048_576));
+    assert_eq!(catalogue.window("nope").await, None);
+}
+
+#[tokio::test]
 async fn a_failing_source_keeps_last_good_entries_stale() {
     let dir = tempdir().unwrap();
     let source = Arc::new(FakeSource::new(

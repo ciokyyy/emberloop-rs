@@ -1,0 +1,6 @@
+# The reference every golden file is generated from. Change only after a review (ticket 21 shows when upstream moved).
+repo=https://github.com/ranxianglei/billion-context.git
+commit=daa082ead8a8ead60311e29ad4627bff0f569fc1
+package=billion-context 0.1.212
+kernel=acp-kernel 0.0.178 (kernel/ at that commit)
+recorded=2026-11-06

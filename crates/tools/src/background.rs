@@ -448,6 +448,41 @@ fn identity_matches(pid: u32, start_time: &str, boot_id_stored: &str) -> bool {
         && proc_start_time(pid).as_deref() == Some(start_time)
 }
 
+/// True while any job recorded in this spill dir is still alive. The daemon asks
+/// before a turn-end reminder, so it never wakes a Session that still waits on a
+/// background command.
+pub fn any_running(dir: &Path) -> bool {
+    let Ok(items) = fs::read_dir(dir) else {
+        return false;
+    };
+    for item in items.flatten() {
+        let path = item.path();
+        let Some(id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        if !id.starts_with("bg_") || valid_id(id).is_err() {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<Meta>(&text) else {
+            continue;
+        };
+        if meta.pid == 0 || !dir.join(format!("{id}.log")).exists() {
+            continue;
+        }
+        if identity_matches(meta.pid, &meta.start_time, &meta.boot_id) && process_alive(meta.pid) {
+            return true;
+        }
+    }
+    false
+}
+
 fn boot_id() -> String {
     fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .map(|text| text.trim().to_string())
@@ -482,4 +517,36 @@ fn process_alive(pid: u32) -> bool {
 #[cfg(not(unix))]
 fn process_alive(_pid: u32) -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(dir: &Path, pid: u32) {
+        let meta = Meta {
+            pid,
+            start_time: proc_start_time(pid).unwrap_or_default(),
+            boot_id: boot_id(),
+            notice_emitted: true,
+        };
+        fs::write(
+            dir.join("bg_test.json"),
+            serde_json::to_string(&meta).unwrap(),
+        )
+        .unwrap();
+        fs::write(dir.join("bg_test.log"), "").unwrap();
+    }
+
+    #[test]
+    fn any_running_sees_only_a_live_job() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!any_running(dir.path()));
+        record(dir.path(), 0);
+        assert!(!any_running(dir.path()));
+        record(dir.path(), u32::MAX - 1);
+        assert!(!any_running(dir.path()));
+        record(dir.path(), std::process::id());
+        assert!(any_running(dir.path()));
+    }
 }

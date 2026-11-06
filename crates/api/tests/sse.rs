@@ -176,3 +176,92 @@ async fn a_history_page_walks_backwards_from_a_seq() {
         vec![2, 3]
     );
 }
+
+/// Reads the whole of the first frames until `count` blank-line separators arrived.
+async fn frames(body: Body, count: usize) -> Vec<String> {
+    let mut stream = body.into_data_stream();
+    let mut text = String::new();
+    while text.matches("\n\n").count() < count {
+        let chunk = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("stream stalled")
+            .expect("stream ended")
+            .unwrap();
+        text.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    text.split("\n\n")
+        .filter(|frame| !frame.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[tokio::test]
+async fn first_load_ends_with_a_snapshot_of_the_current_status_and_usage() {
+    let dir = tempdir().unwrap();
+    let state = state(&dir).await;
+    let log = state.get_event_log("s1").await.unwrap();
+    log.append(SessionEvent::new(
+        "s1",
+        0,
+        EventKind::Usage,
+        serde_json::json!({"inputTokens": 270000, "contextWindow": 1000000}),
+    ))
+    .await
+    .unwrap();
+    log.append(SessionEvent::new(
+        "s1",
+        0,
+        EventKind::Status,
+        serde_json::json!({"state": "working"}),
+    ))
+    .await
+    .unwrap();
+    // Far more blocks than the window, so neither event is inside it.
+    for _ in 0..10 {
+        log.append(block_event()).await.unwrap();
+    }
+    let response = session_events_handler(
+        state.clone(),
+        "s1".into(),
+        Query(EventsQuery {
+            after: None,
+            limit: Some(2),
+        }),
+    )
+    .await
+    .into_response();
+
+    // Two window events, then the snapshot.
+    let got = frames(response.into_body(), 3).await;
+    let snapshot = got.last().unwrap();
+    assert!(snapshot.contains("event: snapshot"), "{snapshot}");
+    let data = snapshot
+        .lines()
+        .find_map(|line| line.strip_prefix("data:"))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(data.trim()).unwrap();
+    assert_eq!(value["status"]["state"], "working");
+    assert_eq!(value["usage"]["inputTokens"], 270000);
+}
+
+#[tokio::test]
+async fn a_cursor_reconnect_sends_no_snapshot() {
+    let dir = tempdir().unwrap();
+    let state = state(&dir).await;
+    let log = state.get_event_log("s1").await.unwrap();
+    for _ in 0..3 {
+        log.append(event(0)).await.unwrap();
+    }
+    let response = session_events_handler(
+        state.clone(),
+        "s1".into(),
+        Query(EventsQuery {
+            after: Some(1),
+            limit: None,
+        }),
+    )
+    .await
+    .into_response();
+    let got = frames(response.into_body(), 2).await;
+    assert!(got.iter().all(|frame| !frame.contains("snapshot")));
+}

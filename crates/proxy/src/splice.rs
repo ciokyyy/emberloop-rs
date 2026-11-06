@@ -60,6 +60,15 @@ pub struct SpliceStore {
 }
 
 impl SpliceStore {
+    /// Every turn the store would put back into a request, in store order. The compressor skips
+    /// them when it looks for a fold, because the harness never sends them.
+    pub fn turns(&self) -> Vec<Value> {
+        self.splices
+            .iter()
+            .flat_map(|splice| splice.turns.iter().cloned())
+            .collect()
+    }
+
     /// Load every splice already recorded for a Session. A malformed line is
     /// skipped, so one bad append cannot lose the rest of the history.
     pub fn open(path: impl Into<PathBuf>) -> Self {

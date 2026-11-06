@@ -14,6 +14,7 @@ pub enum EventKind {
     SteerQueued,
     SteerDelivered,
     Notice,
+    Todos,
     Compression,
     Usage,
     Error,

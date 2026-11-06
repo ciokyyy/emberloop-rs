@@ -123,6 +123,19 @@ fn sse_event(parts: Value) -> String {
     )
 }
 
+struct FakeModels(Vec<api::models::ModelEntry>);
+
+#[async_trait::async_trait]
+impl api::models::Source for FakeModels {
+    fn name(&self) -> &'static str {
+        "agy"
+    }
+
+    async fn fetch(&self) -> Result<Vec<api::models::ModelEntry>, api::models::CatalogueError> {
+        Ok(self.0.clone())
+    }
+}
+
 struct HangStream {
     first: bool,
     dropped: Arc<AtomicBool>,
@@ -156,7 +169,13 @@ struct Fixture {
     state: ProxyState,
     steers: emberloop_core::steer::SteerQueues,
     sessions: SessionsStore,
+    projects: ProjectsStore,
+    models: Arc<api::models::ModelCatalogue>,
+    prompts: Arc<PromptStore>,
+    data_root: DataRoot,
+    config: ProxyConfig,
     events: Arc<EventBus>,
+    settings: Arc<tokio::sync::RwLock<api::state::Settings>>,
     token: String,
     fake: FakeUpstream,
     _dir: tempfile::TempDir,
@@ -218,15 +237,44 @@ async fn fixture_config(
 
     let events = Arc::new(EventBus::new(16));
     let prompts = Arc::new(PromptStore::new(dir.path().join("prompts")));
+    let models = Arc::new(api::models::ModelCatalogue::new(
+        data_root.model_catalogue_file(),
+        vec![Arc::new(FakeModels(vec![api::models::ModelEntry {
+            id: "gemini-3.8-flash".into(),
+            provider: "agy".into(),
+            label: "Gemini 3.8 Flash".into(),
+            kind: "chat".into(),
+            efforts: Vec::new(),
+            image_input: false,
+            context_window: 1_000_000,
+            source: "agy".into(),
+            stale: false,
+            updated_at: 0,
+        }]))],
+    ));
+    models.refresh().await.unwrap();
     let steers = emberloop_core::steer::SteerQueues::default();
+    let config =
+        configure(ProxyConfig::new(b"test-secret").with_upstream(format!("http://{addr}")));
+    let data_root_for_projects = data_root.clone();
+    let data_root_for_fixture = data_root.clone();
+    let models_for_fixture = models.clone();
+    let prompts_for_fixture = prompts.clone();
+    let config_for_fixture = config.clone();
+    let settings = Arc::new(tokio::sync::RwLock::new(api::state::Settings {
+        preserve_recent_messages: 0,
+        ..api::state::Settings::default()
+    }));
     let state = ProxyState::new(
-        configure(ProxyConfig::new(b"test-secret").with_upstream(format!("http://{addr}"))),
+        config,
         sessions.clone(),
         projects,
         data_root,
         prompts,
+        models,
         events.clone(),
         steers.clone(),
+        settings.clone(),
     );
     let token = state.token_for("ses_1");
 
@@ -234,7 +282,15 @@ async fn fixture_config(
         state,
         steers,
         sessions,
+        projects: ProjectsStore::load(data_root_for_projects.projects_file())
+            .await
+            .unwrap(),
+        models: models_for_fixture,
+        prompts: prompts_for_fixture,
+        data_root: data_root_for_fixture,
+        config: config_for_fixture,
         events,
+        settings,
         token,
         fake,
         _dir: dir,
@@ -317,6 +373,7 @@ async fn injects_tools_prompts_and_meters_usage() {
         .as_str()
         .unwrap();
     assert!(system.contains("Ponytail"));
+    assert!(system.contains("CAVEMAN MODE ACTIVE — level: ultra"));
     assert!(system.contains("demo"));
 
     let comp_event = events.try_recv().expect("compression event");
@@ -325,11 +382,14 @@ async fn injects_tools_prompts_and_meters_usage() {
     assert_eq!(event.kind, EventKind::Usage);
     assert_eq!(event.data["inputTokens"], 11);
     assert_eq!(event.data["outputTokens"], 7);
+    // The meter carries the window the catalogue knows for the Session's model.
+    assert_eq!(event.data["contextWindow"], 1_000_000);
 
     let meta = fixture.sessions.get("ses_1").await.unwrap();
     assert!(!meta.prompt_hashes.is_empty());
     assert!(meta.prompt_hashes.contains_key(prompts::POLICY));
     assert!(meta.prompt_hashes.contains_key(prompts::PONYTAIL));
+    assert!(meta.prompt_hashes.contains_key(prompts::CAVEMAN));
 }
 
 #[tokio::test]
@@ -357,6 +417,12 @@ async fn swallows_compress_and_resplices_the_turn_byte_exact() {
         .contains("Compressed"));
     assert_eq!(contents[2]["role"], "model");
     assert_eq!(contents[3]["parts"][0]["functionResponse"]["id"], "call_1");
+    assert!(
+        contents[3]["parts"][0]["functionResponse"]["response"]["result"]
+            .as_str()
+            .unwrap()
+            .starts_with("📦 [acp] compress")
+    );
 
     let expected_call = json!({
         "functionCall": {
@@ -919,6 +985,74 @@ async fn pi_chat_requests_inject_prompts_tools_and_steers_and_are_metered() {
 }
 
 #[tokio::test]
+async fn a_large_tool_result_goes_upstream_as_a_ctx_handle_with_stable_bytes() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = pi_upstream(seen.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+    let big = "ignored target file line\n".repeat(1200);
+    let req_body = json!({
+        "model": "glm-5",
+        "stream": true,
+        "messages": [
+            {"role": "user", "content": "read it"},
+            {"role": "assistant", "tool_calls": [{"id": "call_pi_big", "type": "function", "function": {"name": "read", "arguments": "{\"path\":\"target.txt\"}"}}]},
+            {"role": "tool", "tool_call_id": "call_pi_big", "content": big}
+        ]
+    });
+    for _ in 0..2 {
+        let response = router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/proxy/{}/v1/chat/completions", fixture.token))
+                    .header(header::AUTHORIZATION, "Bearer sk-pi")
+                    .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+    }
+
+    let seen = seen.lock().unwrap();
+    let messages: Vec<Value> = seen
+        .iter()
+        .map(|(_, _, body)| {
+            let sent: Value = serde_json::from_str(body).unwrap();
+            sent["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|msg| msg["role"] == "tool")
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    let text = messages[0]["content"].as_str().unwrap();
+    assert!(text.starts_with("[ctx:"), "{text}");
+    assert!(text.contains("target.txt"), "{text}");
+    // Replace-once: the second request sends the very same bytes.
+    assert_eq!(messages[0]["content"], messages[1]["content"]);
+
+    let handle = text
+        .split("[ctx:")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap();
+    let spill = fixture.data_root.session_spill_dir("ses_1").join(handle);
+    assert_eq!(std::fs::read_to_string(spill).unwrap(), big);
+}
+
+#[tokio::test]
 async fn pi_anthropic_and_responses_wires_inject_prompts_tools_steers_and_compress() {
     type SeenJson = Arc<Mutex<Vec<(String, Value)>>>;
     let seen: SeenJson = Arc::new(Mutex::new(Vec::new()));
@@ -1158,6 +1292,82 @@ async fn openai_chat_streaming_proxy_tool_is_swallowed_and_followed_up() {
 }
 
 #[tokio::test]
+async fn openai_streaming_publishes_usage_even_when_the_client_stops_reading() {
+    type SeenJson = Arc<Mutex<Vec<Value>>>;
+    let seen: SeenJson = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = seen.clone();
+    async fn chat(AxumState(seen): AxumState<SeenJson>, Json(body): Json<Value>) -> Response {
+        let round = {
+            let mut seen = seen.lock().unwrap();
+            let round = seen.len();
+            seen.push(body);
+            round
+        };
+        let body = if round == 0 {
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_u1\",\"type\":\"function\",\"function\":{\"name\":\"compress\",\"arguments\":\"{\\\"start\\\":0,\\\"end\\\":1,\\\"summary\\\":\\\"folded intro\\\"}\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":55,\"completion_tokens\":2}}\n\n\
+             data: [DONE]\n\n"
+                .to_string()
+        } else {
+            "data: {\"choices\":[{\"delta\":{\"content\":\"done after compress\"}}]}\n\n\
+             data: {\"choices\":[],\"usage\":{\"prompt_tokens\":77,\"completion_tokens\":3}}\n\n\
+             data: [DONE]\n\n"
+                .to_string()
+        };
+        Response::builder()
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(body))
+            .unwrap()
+    }
+    let app = AxumRouter::new()
+        .route("/inference/go/openai/v1/chat/completions", post(chat))
+        .with_state(seen_clone);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+    let mut events = fixture.events.subscribe();
+
+    let req_body = json!({
+        "model": "glm-5",
+        "stream": true,
+        "messages": [{"role": "system", "content": "Base"}, {"role": "user", "content": "hello"}]
+    });
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/proxy/{}/v1/chat/completions", fixture.token))
+                .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // A real harness stops reading once it has the answer, so the usage event that
+    // trails the text may never be turned into an event by the reader.
+    let mut stream = response.into_body().into_data_stream();
+    let mut text = String::new();
+    while let Some(Ok(chunk)) = futures::StreamExt::next(&mut stream).await {
+        text.push_str(&String::from_utf8_lossy(&chunk));
+        if text.contains("done after compress") {
+            break;
+        }
+    }
+    drop(stream);
+    let mut tokens = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if event.kind == EventKind::Usage {
+            tokens.push(event.data["inputTokens"].as_u64().unwrap());
+        }
+    }
+    assert_eq!(tokens.last(), Some(&77), "usage events: {tokens:?}");
+}
+
+#[tokio::test]
 async fn anthropic_streaming_proxy_tool_is_swallowed_and_followed_up() {
     type SeenJson = Arc<Mutex<Vec<Value>>>;
     let seen: SeenJson = Arc::new(Mutex::new(Vec::new()));
@@ -1237,5 +1447,697 @@ async fn anthropic_streaming_proxy_tool_is_swallowed_and_followed_up() {
     assert!(
         second.contains("Compressed turns 0–0 into block b1"),
         "{second}"
+    );
+}
+
+/// A fold chosen while a steer sat inside the history must still apply to the history the harness
+/// resends, which does not carry the steer turn: the steer is put back first, so the fold's stored
+/// turns match again.
+#[tokio::test]
+async fn a_fold_over_a_spliced_steer_still_applies_to_the_resent_history() {
+    let final_event = format!(
+        "data: {}\n\n",
+        json!({
+            "response": {
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "done"}]}}]
+            },
+            "usageMetadata": {"promptTokenCount": 21, "candidatesTokenCount": 5}
+        })
+    );
+    let fixture = fixture_sse(vec![
+        sse_event(json!([{
+            "functionCall": {
+                "id": "call_fold",
+                "name": "compress",
+                "args": {"start": 0, "end": 4, "summary": "folded", "topic": "all"}
+            },
+            "thoughtSignature": "SIG-FOLD"
+        }])),
+        final_event,
+    ])
+    .await;
+    fixture
+        .steers
+        .queue("ses_1")
+        .enqueue(
+            emberloop_core::steer::SteerKind::Steer,
+            "steer: check the tests",
+        )
+        .await;
+
+    // Turn one: the steer is injected after the tool result, so the model folds four turns,
+    // the steer among them.
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(tool_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Turn two: the harness resends its own history, without the steer or the proxy's pair.
+    let mut next = tool_conversation().as_array().unwrap().clone();
+    next.push(json!({ "role": "user", "parts": [{ "text": "next" }] }));
+    let before = fixture.fake.calls();
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(Value::Array(next)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let sent = fixture.fake.body(before);
+    let wire = sent["contents"].to_string();
+    assert!(
+        !wire.contains("run it"),
+        "the folded turns are still on the wire: {wire}"
+    );
+    assert!(wire.contains("Compressed"), "{wire}");
+    assert!(wire.contains("next"), "{wire}");
+}
+
+/// A six-turn conversation whose tool result is large enough (about 80000 tokens at
+/// chars / 4) to pass the 75000-token first-nudge gate of a 1M window. Turns 1 and 2
+/// are the compressible range (the last three turns are kept).
+fn heavy_conversation() -> Value {
+    json!([
+        { "role": "user", "parts": [{ "text": "run it" }] },
+        {
+            "role": "model",
+            "parts": [{ "functionCall": { "name": "bash", "id": "call_9", "args": {} } }]
+        },
+        {
+            "role": "model",
+            "parts": [{
+                "functionResponse": { "name": "bash", "id": "call_9", "response": { "output": "x".repeat(320_000) } }
+            }]
+        },
+        { "role": "user", "parts": [{ "text": "next" }] },
+        { "role": "model", "parts": [{ "text": "ok" }] },
+        { "role": "user", "parts": [{ "text": "continue" }] }
+    ])
+}
+
+fn nudge_parts(body: &Value) -> Vec<Value> {
+    body["contents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|turn| turn["parts"].as_array().cloned().unwrap_or_default())
+        .filter(|part| {
+            part["text"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("This is an efficiency nudge"))
+        })
+        .collect()
+}
+
+fn nudge_turn_follows_tool_result(body: &Value) -> bool {
+    let contents = body["contents"].as_array().expect("contents");
+    let result = contents
+        .iter()
+        .position(|turn| {
+            turn["parts"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(|p| p.get("functionResponse").is_some()))
+        })
+        .expect("tool result turn");
+    contents[result + 1]["parts"]
+        .as_array()
+        .is_some_and(|parts| {
+            parts.iter().any(|p| {
+                p["text"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("This is an efficiency nudge"))
+            })
+        })
+}
+
+/// A fake whose every call answers plain text, so no proxy tool round runs and each client request is one upstream call.
+fn text_only_fake() -> FakeUpstream {
+    let fake = FakeUpstream::new();
+    fake.calls.store(1, Ordering::SeqCst);
+    fake
+}
+
+fn nudge_text(body: &Value) -> Option<String> {
+    nudge_parts(body)
+        .first()
+        .and_then(|part| part["text"].as_str().map(str::to_string))
+}
+
+fn splices_file_text(fixture: &Fixture) -> String {
+    std::fs::read_to_string(fixture.data_root.session_splices_file("ses_1")).unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_first_nudge_is_transient_and_rides_the_tool_result_turn() {
+    let fixture = fixture_with(text_only_fake()).await;
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(heavy_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let first = fixture.fake.body(0);
+    assert_eq!(
+        nudge_parts(&first).len(),
+        1,
+        "one nudge on the request where the gate fires"
+    );
+    assert!(
+        nudge_turn_follows_tool_result(&first),
+        "the nudge is a user turn right after the tool result"
+    );
+    assert!(
+        !splices_file_text(&fixture).contains("nudge"),
+        "no splice stores a nudge"
+    );
+
+    // The gate does not fire again on the next request, so the nudge is not resent.
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(heavy_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        nudge_parts(&fixture.fake.body(1)).is_empty(),
+        "a transient nudge is absent from the next request"
+    );
+    assert!(!splices_file_text(&fixture).contains("nudge"));
+}
+
+#[tokio::test]
+async fn a_compress_drops_the_stale_usage_so_the_next_request_does_not_renudge() {
+    let fixture = fixture().await;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
+    let mut contents = conversation().as_array().unwrap().clone();
+    let call = ProxyCall {
+        name: "compress".into(),
+        id: "call_c".into(),
+        part: json!({}),
+        args: json!({"start": 0, "end": 2, "summary": "folded"}),
+    };
+
+    execute_tool(
+        &runtime,
+        &mut contents,
+        &call,
+        &api::state::Settings {
+            preserve_recent_messages: 0,
+            ..api::state::Settings::default()
+        },
+        64_000,
+    )
+    .unwrap();
+
+    assert_eq!(
+        runtime.last_input_tokens.load(Ordering::Relaxed),
+        0,
+        "tokens from before the fold must not reopen the nudge gate"
+    );
+}
+
+#[tokio::test]
+async fn nudge_turn_numbers_match_the_final_contents_after_a_stored_steer() {
+    let fixture = fixture().await;
+    fixture.settings.write().await.preserve_recent_messages = 3;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    lock(&runtime.splices)
+        .unwrap()
+        .insert(Splice {
+            id: "steer-drift".into(),
+            tool_result_id: "call_9".into(),
+            marker: String::new(),
+            turns: vec![json!({ "role": "user", "parts": [{ "text": "steer: keep the tests" }] })],
+            append_parts: Vec::new(),
+        })
+        .unwrap();
+
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(heavy_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let sent = fixture.fake.body(0);
+    let text = nudge_text(&sent).expect("nudge text");
+
+    // Final contents without the nudge: the six harness turns plus the stored steer.
+    // compress takes start inclusive and end exclusive; the kept tail is the last 3 turns.
+    let final_turns = sent["contents"].as_array().unwrap().len() - 1;
+    let end = final_turns - 3;
+    assert!(text.contains(&format!("turns 1–{}", end - 1)), "{text}");
+}
+
+#[tokio::test]
+async fn nothing_is_injected_below_the_first_threshold() {
+    let fixture = fixture().await;
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(tool_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(nudge_parts(&fixture.fake.body(0)).is_empty());
+}
+
+#[tokio::test]
+async fn the_nudge_gate_survives_a_runtime_rebuild() {
+    let fixture = fixture_with(text_only_fake()).await;
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(heavy_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(nudge_parts(&fixture.fake.body(0)).len(), 1);
+
+    // A fresh ProxyState on the same data root has no runtime cache: the gate must come from nudge.json.
+    let rebuilt = ProxyState::new(
+        fixture.config.clone(),
+        fixture.sessions.clone(),
+        fixture.projects.clone(),
+        fixture.data_root.clone(),
+        fixture.prompts.clone(),
+        fixture.models.clone(),
+        fixture.events.clone(),
+        fixture.steers.clone(),
+        fixture.settings.clone(),
+    );
+    let (status, _) = send(
+        &rebuilt,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(heavy_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        nudge_parts(&fixture.fake.body(1)).is_empty(),
+        "the rebuilt runtime does not fire another nudge"
+    );
+    let saved = std::fs::read_to_string(
+        fixture
+            .data_root
+            .session_splices_file("ses_1")
+            .with_file_name("nudge.json"),
+    )
+    .expect("nudge.json written next to splices.jsonl");
+    assert!(saved.contains("\"first_fired\":true"), "{saved}");
+}
+
+#[test]
+fn compress_args_accept_a_ranges_array_or_the_single_form() {
+    let batch = parse_compress_calls(&json!({
+        "ranges": [
+            {"start": 1, "end": 3, "summary": "a", "topic": "first"},
+            {"start": 4, "end": 6, "summary": "b"}
+        ]
+    }))
+    .unwrap();
+    assert_eq!(batch.len(), 2);
+    assert_eq!((batch[0].start, batch[0].end), (1, 3));
+    assert_eq!(batch[0].topic.as_deref(), Some("first"));
+    assert_eq!(batch[1].topic, None);
+
+    let single =
+        parse_compress_calls(&json!({"start": 2, "end": 5, "summary": "s", "topic": "t"})).unwrap();
+    assert_eq!(single.len(), 1);
+    assert_eq!((single[0].start, single[0].end), (2, 5));
+}
+
+#[test]
+fn compress_args_name_the_range_that_is_malformed() {
+    let error = parse_compress_calls(&json!({
+        "ranges": [
+            {"start": 1, "end": 3, "summary": "a"},
+            {"start": 4, "summary": "b"}
+        ]
+    }))
+    .unwrap_err();
+    assert!(error.contains("range 2"), "{error}");
+    assert!(error.contains("end"), "{error}");
+
+    assert!(parse_compress_calls(&json!({"ranges": []})).is_err());
+    assert!(parse_compress_calls(&json!({"ranges": "nope"})).is_err());
+    assert!(parse_compress_calls(&json!({})).is_err());
+}
+
+#[tokio::test]
+async fn one_compress_call_with_two_ranges_folds_both_on_the_wire() {
+    let final_event = format!(
+        "data: {}\n\n",
+        json!({
+            "response": {
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "done"}]}}]
+            },
+            "usageMetadata": {"promptTokenCount": 21, "candidatesTokenCount": 5}
+        })
+    );
+    let fixture = fixture_sse(vec![
+        sse_event(json!([{
+            "functionCall": {
+                "id": "call_batch",
+                "name": "compress",
+                "args": {"ranges": [
+                    {"start": 0, "end": 2, "summary": "first fold", "topic": "a"},
+                    {"start": 2, "end": 4, "summary": "second fold", "topic": "b"}
+                ]}
+            },
+            "thoughtSignature": "SIG-B"
+        }])),
+        final_event,
+    ])
+    .await;
+    let turns: Vec<Value> = (0..6)
+        .map(|n| {
+            json!({"role": if n % 2 == 0 { "user" } else { "model" },
+                   "parts": [{"text": format!("turn {n}")}]})
+        })
+        .collect();
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(Value::Array(turns)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let followup = fixture.fake.body(1)["contents"].to_string();
+    assert!(
+        followup.contains("block b1") && followup.contains("block b2"),
+        "{followup}"
+    );
+    assert!(
+        !followup.contains("turn 0") && !followup.contains("turn 3"),
+        "{followup}"
+    );
+    assert!(
+        followup.contains("turn 4") && followup.contains("turn 5"),
+        "{followup}"
+    );
+}
+
+#[test]
+fn acp_status_reports_usage_blocks_and_ranges() {
+    let contents = json!([
+        {"role": "user", "parts": [{"text": "one"}]},
+        {"role": "model", "parts": [{"text": "two"}]},
+        {"role": "model", "parts": [{"text": "three"}]},
+        {"role": "user", "parts": [{"text": "four"}]},
+        {"role": "model", "parts": [{"text": "five"}]},
+        {"role": "user", "parts": [{"text": "six"}]}
+    ]);
+    let status = crate::compressor::CompressorStatus {
+        blocks: 2,
+        active_blocks: 1,
+        restored_blocks: 1,
+        spilled_turns: 3,
+        tokens_compressed: 4_000,
+        spill_dir: "/tmp/spill".into(),
+    };
+    let text = acp_status_text(
+        contents.as_array().unwrap(),
+        10_000,
+        &status,
+        &api::state::Settings::default(),
+    );
+    assert!(text.contains("ACP STATUS"), "{text}");
+    assert!(text.contains("1 active, 2 total"), "{text}");
+    assert!(text.contains("3 stored messages"), "{text}");
+    assert!(text.contains("4.0K tokens compressed"), "{text}");
+}
+
+#[test]
+fn acp_status_numbers_follow_the_reference_golden() {
+    let path = format!(
+        "{}/parity/golden/window-64k-pressure.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let golden: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let status = golden["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|frame| frame.get("status"))
+        .expect("a golden frame with status");
+    let text = format_acp_status(
+        status["tokenCount"].as_u64().unwrap(),
+        status["modelContextLimit"].as_u64().unwrap() as usize,
+        status["activeBlocks"].as_u64().unwrap() as usize,
+        status["totalBlocks"].as_u64().unwrap() as usize,
+        status["breakdown"]["storedMessages"].as_u64().unwrap() as usize,
+        status["tokensCompressed"].as_u64().unwrap(),
+        status["breakdown"]["retrievals"].as_u64().unwrap() as usize,
+        "ranges",
+    );
+    assert!(text.contains("0 active, 0 total"), "{text}");
+    assert!(text.contains("(1%)"), "{text}");
+}
+
+#[test]
+fn forged_markers_are_stripped_from_model_text() {
+    let mut contents = vec![
+        json!({"role": "model", "parts": [{"text": "📦 [acp] compress\nanswer"}]}),
+        json!({"role": "user", "parts": [{"text": "📦 [acp] keep me"}]}),
+    ];
+    strip_forged_markers(&mut contents);
+    assert_eq!(contents[0]["parts"][0]["text"], "answer");
+    assert_eq!(
+        contents[1]["parts"][0]["text"], "📦 [acp] keep me",
+        "only model text is cleaned"
+    );
+}
+
+#[test]
+fn emergency_truncation_shortens_tool_output_but_not_a_summary() {
+    let big = "x".repeat(10_000);
+    let mut contents = vec![
+        json!({"role": "user", "parts": [{"text": "📦 [acp] Compressed turns 1–2"}]}),
+        json!({"role": "model", "parts": [{"functionResponse": {"id": "c1", "name": "bash", "response": {"result": big}}}]}),
+    ];
+    truncate_emergency(&mut contents);
+    assert_eq!(
+        contents[0]["parts"][0]["text"],
+        "📦 [acp] Compressed turns 1–2"
+    );
+    let result = contents[1]["parts"][0]["functionResponse"]["response"]["result"]
+        .as_str()
+        .unwrap();
+    assert!(result.contains("emergency truncation"), "{}", result.len());
+    assert!(result.len() < 4_000);
+}
+
+#[tokio::test]
+async fn preflight_folds_until_the_request_fits_the_window() {
+    let fixture = fixture().await;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    let mut contents = (0..12)
+        .map(|index| json!({"role": "user", "parts": [{"text": format!("turn {index} with some text")}]}))
+        .collect::<Vec<_>>();
+    let before = estimate_tokens(&contents);
+    let settings = api::state::Settings::default();
+    let folded = preflight_fold(&runtime, &mut contents, 20, &settings).unwrap();
+    assert!(folded.is_some());
+    assert!(estimate_tokens(&contents) < before);
+    assert!(contents[1]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Preflight fold"));
+}
+
+#[tokio::test]
+async fn switches_skip_nudge_and_tool_injection() {
+    let fixture = fixture_with(text_only_fake()).await;
+    {
+        let mut settings = fixture.settings.write().await;
+        settings.inject_nudge = false;
+        settings.inject_tool = false;
+    }
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(heavy_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let sent = fixture.fake.body(0);
+    assert!(nudge_parts(&sent).is_empty());
+    let tools = sent["tools"].to_string();
+    assert!(!tools.contains("compress"), "{tools}");
+}
+
+/// The opencode chat wire is what the phone Session runs on, so the nudge and the proxy tools
+/// must reach it too: a user message after the tool result, carrying no marker key.
+#[tokio::test]
+async fn a_chat_wire_nudge_arrives_as_a_user_message_and_the_tools_are_offered() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = pi_upstream(seen.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+    let state = fixture.state.clone();
+    let runtime = state.runtime("ses_1").await.unwrap();
+    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
+
+    let filler = "x".repeat(4_000);
+    let mut messages = vec![json!({"role": "system", "content": "Base system"})];
+    for i in 0..4 {
+        messages.push(json!({"role": "user", "content": format!("read file {i}")}));
+        messages.push(json!({"role": "assistant", "tool_calls": [{"id": format!("call_pi_{i}"), "type": "function", "function": {"name": "read", "arguments": "{\"path\":\"a\"}"}}]}));
+        messages.push(
+            json!({"role": "tool", "tool_call_id": format!("call_pi_{i}"), "content": filler}),
+        );
+    }
+    let req_body = json!({
+        "model": "glm-5",
+        "stream": true,
+        "messages": messages,
+    });
+    let response = router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/proxy/{}/v1/chat/completions", fixture.token))
+                .header(header::AUTHORIZATION, "Bearer sk-pi")
+                .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let seen = seen.lock().unwrap();
+    let sent: Value = serde_json::from_str(&seen[0].2).unwrap();
+    let messages = sent["messages"].as_array().expect("messages");
+    let nudge = messages
+        .iter()
+        .position(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("This is an efficiency nudge"))
+        })
+        .expect("the nudge reached the chat wire");
+    assert_eq!(messages[nudge]["role"], "user");
+    assert_eq!(
+        messages[nudge - 1]["role"],
+        "tool",
+        "the nudge rides right after the tool result"
+    );
+    assert!(
+        !seen[0].2.contains("_nudge"),
+        "no marker key may reach the upstream: {}",
+        seen[0].2
+    );
+    let tools = sent["tools"].to_string();
+    assert!(tools.contains("\"compress\""), "{tools}");
+}
+
+/// A fold's stored turns carry the `ctx` handle, because the fold is taken after arrival
+/// replacement. A later request arrives with the raw result again, so the handle must be put
+/// back before the fold is looked for, or the fold applies once and is lost.
+#[tokio::test]
+async fn a_fold_survives_the_next_request_that_carries_the_raw_result_again() {
+    type SeenJson = Arc<Mutex<Vec<Value>>>;
+    let seen: SeenJson = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = seen.clone();
+    async fn chat(AxumState(seen): AxumState<SeenJson>, Json(body): Json<Value>) -> Response {
+        let round = {
+            let mut seen = seen.lock().unwrap();
+            let round = seen.len();
+            seen.push(body);
+            round
+        };
+        let body = if round == 0 {
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_fold\",\"type\":\"function\",\"function\":{\"name\":\"compress\",\"arguments\":\"{\\\"ranges\\\":[{\\\"start\\\":0,\\\"end\\\":3,\\\"summary\\\":\\\"folded wide\\\"}]}\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n\
+             data: [DONE]\n\n"
+                .to_string()
+        } else {
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n\
+             data: [DONE]\n\n"
+                .to_string()
+        };
+        Response::builder()
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(body))
+            .unwrap()
+    }
+    let app = AxumRouter::new()
+        .route("/inference/go/openai/v1/chat/completions", post(chat))
+        .with_state(seen_clone);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+    fixture.settings.write().await.preserve_recent_messages = 0;
+
+    let big = "ignored target file line\n".repeat(1200);
+    let req_body = json!({
+        "model": "glm-5",
+        "stream": true,
+        "messages": [
+            {"role": "system", "content": "Base"},
+            {"role": "user", "content": "read it"},
+            {"role": "assistant", "tool_calls": [{"id": "call_big", "type": "function", "function": {"name": "read", "arguments": "{\"path\":\"target.txt\"}"}}]},
+            {"role": "tool", "tool_call_id": "call_big", "content": big}
+        ]
+    });
+    for _ in 0..2 {
+        let response = router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/proxy/{}/v1/chat/completions", fixture.token))
+                    .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+    }
+
+    let seen = seen.lock().unwrap();
+    // Round 0 is the first client request, 1 the proxy round after the fold, 2 the second client
+    // request rebuilt from the harness' own history.
+    assert_eq!(seen.len(), 3, "one proxy round and two client requests");
+    let again = serde_json::to_string(&seen[2]).unwrap();
+    assert!(
+        again.contains("folded wide"),
+        "the fold did not come back: {}",
+        &again[..again.len().min(800)]
+    );
+    assert!(
+        !again.contains("call_big"),
+        "the folded turns are still in the request: {}",
+        &again[..again.len().min(800)]
     );
 }

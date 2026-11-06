@@ -7,7 +7,7 @@
       "name": "MIT OR Apache-2.0",
       "identifier": "MIT OR Apache-2.0"
     },
-    "version": "0.0.1"
+    "version": "0.0.7"
   },
   "paths": {
     "/api/models": {
@@ -492,6 +492,99 @@
         }
       }
     },
+    "/api/providers/openai-codex/login": {
+      "post": {
+        "tags": [
+          "crate::providers"
+        ],
+        "operationId": "start_codex_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "a login already runs"
+          },
+          "503": {
+            "description": "no ChatGPT login seam"
+          }
+        }
+      }
+    },
+    "/api/providers/openai-codex/login/{id}": {
+      "get": {
+        "tags": [
+          "crate::providers"
+        ],
+        "operationId": "get_codex_login",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "login id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "unknown login"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "crate::providers"
+        ],
+        "operationId": "cancel_codex_login",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "login id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "canceled"
+          },
+          "404": {
+            "description": "unknown login"
+          }
+        }
+      }
+    },
     "/api/providers/opencode-go/key": {
       "put": {
         "tags": [
@@ -891,6 +984,14 @@
           "error": {
             "type": "string"
           },
+          "expiresAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
           "id": {
             "type": "string"
           },
@@ -904,6 +1005,12 @@
             "type": "string"
           },
           "url": {
+            "type": "string"
+          },
+          "userCode": {
+            "type": "string"
+          },
+          "verificationUri": {
             "type": "string"
           }
         }
@@ -1146,16 +1253,92 @@
       },
       "Settings": {
         "type": "object",
-        "required": [
-          "proxy_compression",
-          "ponytail_default_level"
-        ],
         "properties": {
+          "emergency_threshold_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reference `compress.emergencyThresholdPercent`.",
+            "default": 95,
+            "minimum": 0
+          },
+          "inject_nudge": {
+            "type": "boolean",
+            "description": "Reference `compress.injectNudge`.",
+            "default": true
+          },
+          "inject_tool": {
+            "type": "boolean",
+            "description": "Reference `compress.injectTool`.",
+            "default": true
+          },
+          "max_context_limit": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reference `compress.maxContextLimit`, a percent of the window.",
+            "default": 75,
+            "minimum": 0
+          },
+          "min_pressure_benefit_tokens": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reference `compress.minPressureBenefitTokens`; 0 means `max(5000, window / 100)`.",
+            "default": 0,
+            "minimum": 0
+          },
           "ponytail_default_level": {
-            "type": "string"
+            "type": "string",
+            "default": "full"
+          },
+          "preserve_recent_messages": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reference `compress.preserveRecentMessages`.",
+            "default": 3,
+            "minimum": 0
+          },
+          "protected_tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Reference `compress.protectedTools`; results of these tools never fold.",
+            "default": []
           },
           "proxy_compression": {
-            "type": "boolean"
+            "type": "boolean",
+            "default": true
+          },
+          "tier2_trigger": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reference `compress.tiers.tier2Trigger`.",
+            "default": 1000,
+            "minimum": 0
+          },
+          "tier3_trigger": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Reference `compress.tiers.tier3Trigger`.",
+            "default": 2000,
+            "minimum": 0
+          },
+          "todo_auto_expand": {
+            "type": "boolean",
+            "default": true
+          },
+          "todo_hide_when_done": {
+            "type": "boolean",
+            "default": true
+          },
+          "todo_reminders": {
+            "type": "boolean",
+            "default": true
+          },
+          "todo_reminders_max": {
+            "type": "integer",
+            "format": "int32",
+            "default": 3,
+            "minimum": 0
           }
         }
       },

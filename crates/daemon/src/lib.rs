@@ -25,13 +25,17 @@ use rust_embed::RustEmbed;
 use store::{DataRoot, ProjectsStore, SessionsStore};
 use tools::{McpServer, ToolConfig, Toolbox};
 
+pub mod codex;
 pub mod login;
 pub mod runner;
+pub mod todo_reminder;
 pub mod tooldisplay;
 pub mod update;
 
 pub fn is_pi_model(model: Option<&str>) -> bool {
-    model.is_some_and(|model| model.starts_with("opencode-go/"))
+    model.is_some_and(|model| {
+        model.starts_with("opencode-go/") || model.starts_with("openai-codex/")
+    })
 }
 
 struct MultiHarness {
@@ -93,20 +97,24 @@ impl api::models::Source for PiSource {
             .map_err(|error| api::models::CatalogueError::new(error.to_string()))?;
         Ok(models
             .into_iter()
-            .map(|(id, label)| api::models::ModelEntry {
-                id,
-                provider: "opencode-go".to_string(),
-                label: label
-                    .strip_prefix("opencode-go: ")
-                    .unwrap_or(&label)
-                    .to_string(),
-                kind: "chat".to_string(),
-                efforts: vec!["low".into(), "medium".into(), "high".into()],
-                image_input: true,
-                context_window: 1_000_000,
-                source: "pi".to_string(),
-                stale: false,
-                updated_at: 0,
+            .map(|(id, label)| {
+                let provider = id
+                    .split_once('/')
+                    .map_or("pi", |(provider, _)| provider)
+                    .to_string();
+                let prefix = format!("{provider}: ");
+                api::models::ModelEntry {
+                    id,
+                    provider,
+                    label: label.strip_prefix(&prefix).unwrap_or(&label).to_string(),
+                    kind: "chat".to_string(),
+                    efforts: vec!["low".into(), "medium".into(), "high".into()],
+                    image_input: true,
+                    context_window: 1_000_000,
+                    source: "pi".to_string(),
+                    stale: false,
+                    updated_at: 0,
+                }
             })
             .collect())
     }
@@ -171,14 +179,14 @@ impl Config {
 }
 
 pub fn default_data_root() -> PathBuf {
-    home().join(".local/share/emberloop")
+    home().join(".local/share/emberloop-rs")
 }
 
 pub fn default_config_root() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".config"))
-        .join("emberloop")
+        .join("emberloop-rs")
 }
 
 fn home() -> PathBuf {
@@ -295,11 +303,11 @@ impl Daemon {
             "pi",
         );
         let keys_file = config.config_root.join("keys.json");
-        let pi_harness = Arc::new(PiHarness::new(
-            pi_bin,
-            data_root.root().join("pi-homes"),
-            keys_file.clone(),
-        ));
+        let pi_auth = config.config_root.join("pi/agent/auth.json");
+        let pi_harness = Arc::new(
+            PiHarness::new(pi_bin, data_root.root().join("pi-homes"), keys_file.clone())
+                .with_auth(pi_auth.clone()),
+        );
         let models = Arc::new(api::models::ModelCatalogue::new(
             data_root.model_catalogue_file(),
             vec![
@@ -330,8 +338,10 @@ impl Daemon {
             projects.clone(),
             data_root.clone(),
             Arc::clone(&prompts),
+            Arc::clone(&app_state.models),
             Arc::clone(&events),
             app_state.steers.clone(),
+            Arc::clone(&app_state.settings),
         );
 
         let accounts_dir = config.config_root.join("accounts/agy");
@@ -345,7 +355,11 @@ impl Daemon {
             ctx.require::<Arc<dyn harness::Harness>>()
                 .map_err(|error| anyhow::anyhow!(error))?,
         );
-        let login = Arc::new(login::AgyLogin::new(accounts_dir, agy_bin).with_keys(keys_file));
+        let login = Arc::new(
+            login::AgyLogin::new(accounts_dir, agy_bin)
+                .with_keys(keys_file)
+                .with_pi_auth(pi_auth),
+        );
         let proxy_base = format!("http://{}:{}", config.host, config.port);
         let runner = Arc::new(runner::SessionRunner::new(
             harness.clone(),
@@ -358,6 +372,7 @@ impl Daemon {
             proxy_base,
             Arc::clone(&app_state.event_logs),
             Some(config.config_root.join("accounts/agy/default")),
+            Arc::clone(&app_state.settings),
         ));
         let resume = updated.and_then(|pending| {
             let session = pending.session.clone()?;

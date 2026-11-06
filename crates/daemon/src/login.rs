@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::codex::CodexLogin;
 use api::providers::{AccountView, LoginError, LoginView, ProviderLogin, ProviderView};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -120,6 +121,7 @@ pub struct AgyLogin {
     keys_file: Option<PathBuf>,
     active: Mutex<Option<Arc<ActiveLogin>>>,
     http: reqwest::Client,
+    codex: CodexLogin,
 }
 
 impl AgyLogin {
@@ -135,11 +137,17 @@ impl AgyLogin {
             keys_file: None,
             active: Mutex::new(None),
             http,
+            codex: CodexLogin::new(PathBuf::new()),
         }
     }
 
     pub fn with_keys(mut self, keys_file: impl Into<PathBuf>) -> Self {
         self.keys_file = Some(keys_file.into());
+        self
+    }
+
+    pub fn with_pi_auth(mut self, auth_file: impl Into<PathBuf>) -> Self {
+        self.codex = CodexLogin::new(auth_file);
         self
     }
 
@@ -213,6 +221,7 @@ impl AgyLogin {
             keys_file: self.keys_file.clone(),
             active: Mutex::new(None),
             http: self.http.clone(),
+            codex: CodexLogin::new(self.codex.auth_path()),
         }
     }
 
@@ -327,6 +336,7 @@ impl ProviderLogin for AgyLogin {
             signed_in: accounts.iter().any(|account| account.signed_in),
             accounts,
         }];
+        list.push(self.codex.provider().await);
         if let Some(keys) = &self.keys_file {
             list.push(opencode_provider(keys));
         }
@@ -459,6 +469,9 @@ impl ProviderLogin for AgyLogin {
     }
 
     async fn sign_out(&self, id: &str) -> Result<(), LoginError> {
+        if id == "openai-codex" {
+            return self.codex.sign_out().await;
+        }
         if id == "opencode-go" {
             let keys = self
                 .keys_file
@@ -480,6 +493,18 @@ impl ProviderLogin for AgyLogin {
             .as_deref()
             .ok_or_else(|| LoginError::unavailable("the daemon has no keys store"))?;
         write_key(keys, provider, key)
+    }
+
+    async fn start_codex(&self, label: &str) -> Result<LoginView, LoginError> {
+        self.codex.start(label).await
+    }
+
+    async fn codex_status(&self, id: &str) -> Option<LoginView> {
+        self.codex.status(id).await
+    }
+
+    async fn cancel_codex(&self, id: &str) -> Result<(), LoginError> {
+        self.codex.cancel(id).await
     }
 }
 

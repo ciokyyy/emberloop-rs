@@ -6,6 +6,7 @@
   import { renderMarkdown } from '$lib/markdown';
   import { fadeAt, rise, slideUp } from '$lib/motion';
   import { segments } from '$lib/toolRuns';
+  import Icon from './Icon.svelte';
   import ToolFeed from './ToolFeed.svelte';
 
   let {
@@ -23,7 +24,16 @@
   let stick = $state(true);
 
   const routeLabel = (route?: string) =>
-    route === 'injected' ? 'injected' : route === 'idle' ? 'sent at idle' : 'queued';
+    route === 'injected'
+      ? 'injected'
+      : route === 'idle'
+        ? 'sent at idle'
+        : route === 'cap'
+          ? 'reminder cap'
+          : 'queued';
+  // A todo reminder is a dashed note; the cap note keeps the same shape.
+  const isReminder = (item: FeedItem) =>
+    item.route === 'cap' || (item.text ?? '').startsWith('Reminder ');
 
   // Only an arrival animates. A row the virtual window remounts on the way back up has been on
   // screen before, so `arrived` holds just the items this update added; plain sets, because the
@@ -45,6 +55,11 @@
   const pendingSteer = (item: FeedItem) => item.kind === 'steer' && item.route === 'pending';
   const pinned = $derived(feed.items.filter(pendingSteer));
   const segs = $derived(segments(feed.items.filter((item) => !pendingSteer(item))));
+
+  // Fold, Restore, Nudge and Context rows open in place, like the tool rows around them.
+  let opened = $state<Set<string>>(new Set());
+  const toggle = (id: string) =>
+    (opened = new Set(opened.has(id) ? [...opened].filter((key) => key !== id) : [...opened, id]));
 
   // Rows are absolutely placed by the virtualizer, so only the visible window is in the DOM and a
   // Session with thousands of blocks scrolls like a short one.
@@ -127,20 +142,26 @@
   >
     <div class="relative mx-auto max-w-[760px]" style="height:{$virtualizer.getTotalSize()}px">
       {#each $virtualizer.getVirtualItems() as row (row.key)}
-        <div
-          class="flex flex-col pb-0.5"
-          data-index={row.index}
-          use:measureRow
-          style="position:absolute;top:0;left:0;width:100%;transform:translateY({row.start}px)"
-        >
-          {@render segRow(segs[row.index])}
-        </div>
+        {@const seg = segs[row.index]}
+        {#if seg}
+          <div
+            class="flex flex-col pb-0.5"
+            data-index={row.index}
+            use:measureRow
+            style="position:absolute;top:0;left:0;width:100%;transform:translateY({row.start}px)"
+          >
+            {@render segRow(seg)}
+          </div>
+        {/if}
       {/each}
     </div>
 
-    {#each pinned as item (item.id)}
-      {@render steerBubble(item)}
-    {/each}
+    <!-- A queued steer keeps the log's column, so it never grows past the rows it joins. -->
+    <div class="mx-auto flex max-w-[760px] flex-col">
+      {#each pinned as item (item.id)}
+        {@render steerBubble(item)}
+      {/each}
+    </div>
     {#if feed.items.length === 0}
       <p class="py-10 text-center text-[13px] text-fg-3">
         No messages yet. Send a prompt to start the Session.
@@ -187,18 +208,51 @@
         {#if item.live}<span class="pulse text-fg-3">▍</span>{/if}
       </div>
     {:else if item.kind === 'compression'}
-      <div
-        class="my-2 flex items-center gap-2.5 rounded-xl border border-border bg-surface-1 px-3 py-2 text-[13px] text-fg-2"
-        in:rise|global={{ skip: !arrived.has(item.id) }}
-      >
-        <span class="glyph text-tool-compress">⇲</span>
-        <span>{item.text}</span>
+      {@const label =
+        item.action === 'compress'
+          ? 'Fold'
+          : item.action === 'decompress'
+            ? 'Restore'
+            : item.action === 'nudge'
+              ? 'Nudge'
+              : 'Context'}
+      <div class="my-0.5" in:rise|global={{ skip: !arrived.has(item.id) }}>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded px-2 py-1 text-left select-none hover:bg-[var(--surface-2)] focus-visible:ring-1 focus-visible:ring-[var(--border)] focus-visible:outline-none min-h-[28px] sm:min-h-[28px] min-h-[44px]"
+          aria-expanded={opened.has(item.id)}
+          onclick={() => toggle(item.id)}
+        >
+          {#if item.action === 'decompress'}
+            <span class="text-[var(--tool-read)] shrink-0"><Icon name="file-text" size={13} /></span>
+          {:else}
+            <span
+              class="h-[7px] w-[7px] rounded-full bg-[var(--tool-compress)] shrink-0"
+              aria-hidden="true"
+            ></span>
+          {/if}
+          <span class="font-medium text-[var(--fg-3)] shrink-0">{label}</span>
+          <span class="font-mono text-[12.5px] text-[var(--fg-2)] truncate flex-1">{item.text}</span>
+          {#if item.meta}
+            <span class="text-xs text-[var(--fg-4)] tabular-nums shrink-0">{item.meta}</span>
+          {/if}
+        </button>
+        {#if opened.has(item.id)}
+          <div
+            class="expanded-box min-w-0 max-w-full overflow-x-auto [overflow-wrap:anywhere] bg-[#1c1c1e] border border-[#2c2c2e] rounded-lg p-2.5 my-1 font-mono text-[11.5px] text-[var(--fg-1)] whitespace-pre-wrap"
+          >{item.body || item.text || '(no details)'}</div>
+        {/if}
       </div>
     {:else if item.kind === 'steer'}
       {@render steerBubble(item)}
     {:else if item.kind === 'notice'}
       <div
-        class="my-1.5 flex items-center gap-2 rounded-xl border border-border bg-surface-1 px-3 py-2 text-[13px]"
+        class="my-1.5 flex items-center gap-2 rounded-xl border bg-surface-1 px-3 py-2 text-[13px] {isReminder(
+          item
+        )
+          ? 'border-dashed border-fg-3'
+          : 'border-border'}"
+        data-reminder={isReminder(item) ? 'true' : undefined}
         in:fadeAt|global={{ skip: !arrived.has(item.id) }}
       >
         <span class="min-w-0 flex-1">{item.text}</span>

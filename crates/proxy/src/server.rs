@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
+use api::state::Settings;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, Method, Response, StatusCode, Uri};
@@ -11,13 +12,20 @@ use axum::Router;
 use emberloop_core::events::{EventBus, EventKind, SessionEvent};
 use emberloop_core::steer::{delivered_event, SteerEntry, SteerQueue, SteerQueues};
 use futures::{Stream, StreamExt};
-use prompts::{PinnedPrompts, PromptError, PromptStore, PromptVars};
+use prompts::{
+    render_text, PinnedPrompts, PromptError, PromptStore, PromptVars, NUDGE_EMERGENCY, NUDGE_FIRST,
+    NUDGE_PRESSURE, NUDGE_TIER2, NUDGE_TIER3,
+};
 use serde_json::{json, Value};
 use store::{DataRoot, ProjectsStore, SessionsStore};
 use tokio::time::timeout;
 
-use crate::compressor::{CompressCall, Compressor, DecompressCall, NativeCompressor, SearchHit};
+use crate::compressor::{
+    CompressCall, CompressPolicy, Compressor, DecompressCall, NativeCompressor, SearchHit,
+};
+use crate::ctx::CtxStore;
 use crate::meter;
+use crate::nudge::{self, NudgeConfig, NudgeKind, NudgeState};
 use crate::splice::{Splice, SpliceStore};
 use crate::token::{TokenError, TokenSigner};
 use crate::wire::{
@@ -33,7 +41,7 @@ const ROUND_TIMEOUT: Duration = Duration::from_secs(120);
 const ROUND_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_TOOL_ROUNDS: usize = 8;
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
-pub(crate) const PROXY_TOOLS: &[&str] = &["compress", "decompress", "search_context"];
+pub(crate) const PROXY_TOOLS: &[&str] = &["compress", "decompress", "search_context", "acp_status"];
 
 type ByteStream = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
 
@@ -107,17 +115,22 @@ struct ProxyInner {
     projects: ProjectsStore,
     data_root: DataRoot,
     prompts: Arc<PromptStore>,
+    models: Arc<api::models::ModelCatalogue>,
     events: Arc<EventBus>,
     steers: SteerQueues,
     client: reqwest::Client,
+    settings: Arc<tokio::sync::RwLock<Settings>>,
     runtimes: RwLock<HashMap<String, Arc<SessionRuntime>>>,
 }
 
 struct SessionRuntime {
     pins: PinnedPrompts,
     splices: Mutex<SpliceStore>,
+    ctx: Mutex<CtxStore>,
     compressor: Mutex<Box<dyn Compressor>>,
     last_input_tokens: AtomicU64,
+    nudge: Mutex<NudgeState>,
+    nudge_file: std::path::PathBuf,
 }
 
 impl SessionRuntime {
@@ -126,24 +139,41 @@ impl SessionRuntime {
         spill_dir: std::path::PathBuf,
         splices_file: std::path::PathBuf,
     ) -> Self {
+        let nudge_file = splices_file.with_file_name("nudge.json");
+        let ctx_file = splices_file.with_file_name("ctx.jsonl");
+        let ctx = CtxStore::open(&spill_dir, ctx_file);
         Self {
             pins,
+            nudge: Mutex::new(nudge::load(&nudge_file)),
+            nudge_file,
             splices: Mutex::new(SpliceStore::open(splices_file)),
+            ctx: Mutex::new(ctx),
             compressor: Mutex::new(Box::new(NativeCompressor::new(spill_dir))),
             last_input_tokens: AtomicU64::new(0),
         }
     }
+
+    /// A compress or a conversation restart closes the first-nudge gate (ticket 20).
+    fn close_nudge_gate(&self) -> Result<(), ProxyError> {
+        let mut gate = lock(&self.nudge)?;
+        gate.reset_after_compress();
+        nudge::save(&self.nudge_file, &gate)?;
+        Ok(())
+    }
 }
 
 impl ProxyState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: ProxyConfig,
         sessions: SessionsStore,
         projects: ProjectsStore,
         data_root: DataRoot,
         prompts: Arc<PromptStore>,
+        models: Arc<api::models::ModelCatalogue>,
         events: Arc<EventBus>,
         steers: SteerQueues,
+        settings: Arc<tokio::sync::RwLock<Settings>>,
     ) -> Self {
         let signer = TokenSigner::new(config.token_secret.clone());
         Self {
@@ -154,9 +184,11 @@ impl ProxyState {
                 projects,
                 data_root,
                 prompts,
+                models,
                 events,
                 steers,
                 client: reqwest::Client::new(),
+                settings,
                 runtimes: RwLock::new(HashMap::new()),
             }),
         }
@@ -173,6 +205,7 @@ impl ProxyState {
         lock(&runtime.splices)?.reset()?;
         let spill = self.inner.data_root.session_spill_dir(session_id);
         *lock(&runtime.compressor)? = Box::new(NativeCompressor::new(spill));
+        runtime.close_nudge_gate()?;
         Ok(())
     }
 
@@ -197,6 +230,7 @@ impl ProxyState {
             level: meta.ponytail_level.clone(),
             date: String::new(),
             session_id: session_id.to_string(),
+            ..Default::default()
         };
         let pins = PinnedPrompts::pin(&self.inner.prompts, &vars)?;
         let hashes = pins.hashes();
@@ -342,9 +376,11 @@ async fn handle_generation(
     queue.begin_request().await;
     dump_request(session_id, "in", &request);
     let injected = inject_steer(&runtime, wire, &mut request, &queue).await;
-    prepare_request(&runtime, wire, &mut request)?;
+    let window = context_window(state, session_id).await;
+    let settings = state.inner.settings.read().await.clone();
+    let outcome = prepare_request(&runtime, wire, &mut request, window, &settings)?;
+    publish_prepare_events(&state.inner.events, session_id, outcome);
     dump_request(session_id, "out", &request);
-
     let url = match pi_path {
         Some(path) => upstream_url(&state.inner.config.opencode_upstream, path, query),
         None => upstream_url(&state.inner.config.upstream_base, rest, query),
@@ -383,6 +419,8 @@ async fn handle_generation(
             headers.clone(),
             request,
             response,
+            settings,
+            window,
         )));
     }
     let first_bytes = response.bytes().await?;
@@ -395,8 +433,43 @@ async fn handle_generation(
         headers,
         request,
         (status, content_type, first_bytes),
+        settings,
+        window,
     )
     .await
+}
+
+fn publish_prepare_events(events: &EventBus, session_id: &str, outcome: PrepareOutcome) {
+    if let Some(report) = outcome.nudge {
+        events.publish(SessionEvent::new(
+            session_id,
+            0,
+            EventKind::Compression,
+            json!({
+                "action": "nudge",
+                "text": format!("nudge: {}", report.kind),
+                "kind": report.kind,
+                "tokens": report.tokens,
+                "sinceLast": report.since_last,
+            }),
+        ));
+    }
+    if let Some(text) = outcome.preflight {
+        events.publish(SessionEvent::new(
+            session_id,
+            0,
+            EventKind::Compression,
+            json!({ "action": "preflight", "text": text }),
+        ));
+    }
+    if let Some(text) = outcome.unmatched {
+        events.publish(SessionEvent::new(
+            session_id,
+            0,
+            EventKind::Compression,
+            json!({ "action": "fold-miss", "text": text }),
+        ));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -409,6 +482,8 @@ async fn buffered_generation(
     headers: &HeaderMap,
     mut request: Value,
     first: (StatusCode, Option<String>, Bytes),
+    settings: Settings,
+    window: usize,
 ) -> Result<Response<Body>, ProxyError> {
     let mut final_response = None;
     let mut current = Some(first);
@@ -424,36 +499,435 @@ async fn buffered_generation(
             final_response = Some((status, content_type, bytes));
             break;
         };
-        let turns = run_proxy_tool(state, session_id, &runtime, wire, &mut request, call)?;
+        let turns = run_proxy_tool(
+            state,
+            session_id,
+            &runtime,
+            wire,
+            &mut request,
+            call,
+            &settings,
+            window,
+        )?;
         store_proxy_splice(&runtime, &turns)?;
     }
 
     let Some((status, content_type, bytes)) = final_response else {
         return Err(ProxyError::ToolRoundLimit);
     };
-    publish_usage(&state.inner.events, session_id, &runtime, &bytes);
+    publish_usage(state, session_id, &runtime, &bytes).await;
     Ok(response_with(status, content_type.as_deref(), bytes))
+}
+
+struct PrepareOutcome {
+    nudge: Option<NudgeReport>,
+    preflight: Option<String>,
+    /// Why no stored fold matched, when one was expected: the session log's only trace.
+    unmatched: Option<String>,
 }
 
 fn prepare_request(
     runtime: &SessionRuntime,
     wire: WireKind,
     request: &mut Value,
-) -> Result<(), ProxyError> {
+    window: usize,
+    settings: &Settings,
+) -> Result<PrepareOutcome, ProxyError> {
     let request = request_body_mut(request);
 
-    inject_tools_for_wire(wire, request, &runtime.pins);
+    if settings.proxy_compression && settings.inject_tool {
+        inject_tools_for_wire(wire, request, &runtime.pins);
+    }
     inject_prompts_for_wire(wire, request, &runtime.pins);
     let Some(mut contents) = extract_core_contents(wire, request) else {
-        return Ok(());
+        return Ok(PrepareOutcome {
+            nudge: None,
+            preflight: None,
+            unmatched: None,
+        });
     };
-    lock(&runtime.compressor)?.apply(&mut contents);
+    // Arrival replacement runs first: a fold stores the `ctx` handle, so a later request must
+    // carry the handle again before the fold's stored turns can be matched.
+    lock(&runtime.ctx)?.apply(&mut contents);
+    // A fold was chosen over the history as the model saw it, steers and proxy pairs included, so
+    // its stored turns include them. The harness resends its own history without them: the block
+    // is looked for ignoring the turns the splice store would put back.
+    let spliced = lock(&runtime.splices)?.turns();
+    let folded = lock(&runtime.compressor)?.apply_skipping(&mut contents, &spliced);
+    let unmatched = if folded == 0 {
+        lock(&runtime.compressor)?.fold_report(&contents, &spliced)
+    } else {
+        None
+    };
     lock(&runtime.splices)?.apply(&mut contents);
     if wire == WireKind::Google {
         crate::splice::sign_unsigned_calls(&mut contents);
     }
+    strip_forged_markers(&mut contents);
+    let preflight = if settings.proxy_compression {
+        preflight_fold(runtime, &mut contents, window, settings)?
+    } else {
+        None
+    };
+    // The nudge goes last, on the final contents, so its turn numbers match what compress sees.
+    let nudge = if settings.proxy_compression && settings.inject_nudge {
+        inject_nudge(runtime, &mut contents, window, settings)?
+    } else {
+        None
+    };
+    if nudge
+        .as_ref()
+        .is_some_and(|report| report.kind == NudgeKind::Emergency.name())
+    {
+        truncate_emergency(&mut contents);
+    }
     write_core_contents(wire, request, contents);
-    Ok(())
+    Ok(PrepareOutcome {
+        nudge,
+        preflight,
+        unmatched,
+    })
+}
+
+fn compress_policy(settings: &Settings) -> CompressPolicy {
+    CompressPolicy {
+        preserve_recent_messages: settings.preserve_recent_messages as usize,
+        protected_tools: settings.protected_tools.clone(),
+    }
+}
+
+/// The reference's preflight backstop: input alone over the window is folded before
+/// forwarding. The model still chose nothing here; the proxy writes the summary and the
+/// originals stay in the spill dir for `decompress`.
+fn preflight_fold(
+    runtime: &SessionRuntime,
+    contents: &mut Vec<Value>,
+    window: usize,
+    settings: &Settings,
+) -> Result<Option<String>, ProxyError> {
+    if window == 0 {
+        return Ok(None);
+    }
+    let policy = compress_policy(settings);
+    let mut folded = None;
+    for _ in 0..4 {
+        if estimate_tokens(contents) <= u64::try_from(window).unwrap_or(u64::MAX) {
+            break;
+        }
+        let keep = policy.preserve_recent_messages.min(contents.len());
+        let end = contents.len().saturating_sub(keep);
+        if end <= 1 {
+            break;
+        }
+        let call = CompressCall {
+            start: 1,
+            end,
+            summary: format!(
+                "Preflight fold: the request exceeded the context window, so the proxy folded turns 1–{} automatically. The originals are in the session spill dir and `decompress` restores them.",
+                end - 1
+            ),
+            topic: Some("preflight".to_string()),
+        };
+        let mut compressor = lock(&runtime.compressor)?;
+        compressor.set_policy(policy.clone());
+        match compressor.compress_batch(contents, vec![call]) {
+            Ok(text) => folded = Some(text),
+            Err(_) => break,
+        }
+    }
+    Ok(folded)
+}
+
+fn strip_forged_markers(contents: &mut [Value]) {
+    for turn in contents.iter_mut() {
+        let role = turn.get("role").and_then(Value::as_str).unwrap_or_default();
+        if role != "model" && role != "assistant" {
+            continue;
+        }
+        let mut cleaned = false;
+        let Some(parts) = turn.get_mut("parts").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for part in parts {
+            let Some(text) = part.get("text").and_then(Value::as_str) else {
+                continue;
+            };
+            if !text.starts_with("📦 [acp]") && !text.starts_with("❌ [acp]") {
+                continue;
+            }
+            let kept = text
+                .lines()
+                .filter(|line| !line.starts_with("📦 [acp]") && !line.starts_with("❌ [acp]"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            part["text"] = json!(kept.trim());
+            cleaned = true;
+        }
+        if cleaned {
+            if let Some(raw) = turn.get_mut("_raw") {
+                strip_raw_markers(raw);
+            }
+        }
+    }
+}
+
+fn strip_raw_markers(raw: &mut Value) {
+    if let Some(content) = raw.get("content").and_then(Value::as_str) {
+        let kept = content
+            .lines()
+            .filter(|line| !line.starts_with("📦 [acp]") && !line.starts_with("❌ [acp]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        raw["content"] = json!(kept.trim());
+    }
+    if let Some(blocks) = raw.get_mut("content").and_then(Value::as_array_mut) {
+        for block in blocks {
+            let Some(text) = block.get("text").and_then(Value::as_str) else {
+                continue;
+            };
+            if !text.starts_with("📦 [acp]") && !text.starts_with("❌ [acp]") {
+                continue;
+            }
+            block["text"] = json!(text
+                .lines()
+                .filter(|line| {
+                    !line.starts_with("📦 [acp]") && !line.starts_with("❌ [acp]")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim());
+        }
+    }
+}
+
+fn truncate_emergency(contents: &mut [Value]) {
+    for turn in contents.iter_mut() {
+        let is_summary = turn
+            .get("parts")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    part.get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| text.starts_with("📦 [acp]"))
+                })
+            });
+        if is_summary {
+            continue;
+        }
+        let mut truncated_raw = None;
+        let Some(parts) = turn.get_mut("parts").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for part in parts {
+            let Some(response) = part.get("functionResponse") else {
+                continue;
+            };
+            let Some(result) = response
+                .get("response")
+                .and_then(|response| response.get("result"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if result.len() <= 4_000 {
+                continue;
+            }
+            let head: String = result.chars().take(2_000).collect();
+            let tail: String = result
+                .chars()
+                .rev()
+                .take(1_000)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            let truncated = format!(
+                "{head}\n\n[... emergency truncation: {} chars omitted from the visible tool output; the stored history and spill copy are unchanged ...]\n\n{tail}",
+                result.len() - head.len() - tail.len()
+            );
+            let id = response
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if let Some(slot) = part
+                .get_mut("functionResponse")
+                .and_then(|response| response.get_mut("response"))
+                .and_then(|response| response.get_mut("result"))
+            {
+                *slot = json!(&truncated);
+            }
+            truncated_raw = Some((id, truncated));
+        }
+        if let Some((id, text)) = truncated_raw {
+            if let Some(raw) = turn.get_mut("_raw") {
+                set_raw_tool_result(raw, &id, &text);
+            }
+        }
+    }
+}
+
+fn set_raw_tool_result(raw: &mut Value, id: &str, text: &str) {
+    if raw.get("tool_call_id").and_then(Value::as_str) == Some(id) {
+        raw["content"] = json!(text);
+        return;
+    }
+    let Some(blocks) = raw.get_mut("content").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for block in blocks {
+        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        if block.get("tool_use_id").and_then(Value::as_str) == Some(id) {
+            block["content"] = json!(text);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct NudgeReport {
+    pub kind: &'static str,
+    pub tokens: u64,
+    pub since_last: u64,
+}
+
+async fn context_window(state: &ProxyState, session_id: &str) -> usize {
+    match state.inner.sessions.get(session_id).await {
+        Some(meta) => state.inner.models.window(&meta.model).await.unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Tokens by the chars / 4 rule the reference uses, over the serialised turns.
+fn estimate_tokens(turns: &[Value]) -> u64 {
+    turns
+        .iter()
+        .map(|turn| u64::try_from(turn.to_string().len() / 4).unwrap_or(u64::MAX))
+        .sum()
+}
+
+fn kilo(tokens: u64) -> String {
+    format!("{:.1}K", tokens as f64 / 1000.0)
+}
+
+struct CompressibleView {
+    tokens: u64,
+    breakdown: String,
+    ranges: String,
+}
+
+fn compressible_view(turns: &[Value], preserve_recent_messages: usize) -> CompressibleView {
+    let end = turns.len().saturating_sub(preserve_recent_messages);
+    let (tokens, count) = if end > 1 {
+        (estimate_tokens(&turns[1..end]), end - 1)
+    } else {
+        (0, 0)
+    };
+    let ranges = if count == 0 {
+        "Compressible ranges (1, oldest first): none".to_string()
+    } else {
+        format!(
+            "Compressible ranges (1, oldest first):\n  turns 1–{}  {count} turns  {} tokens",
+            end - 1,
+            kilo(tokens)
+        )
+    };
+    CompressibleView {
+        tokens,
+        breakdown: format!(
+            "Context breakdown: {} tool | {} text",
+            kilo(tokens),
+            turns.len() - end
+        ),
+        ranges,
+    }
+}
+
+/// Decides on the first or next nudge and, when one fires, puts it into the outgoing contents
+/// right after the newest tool result. It is transient: no splice stores it, so a later request
+/// carries it only when the gate fires again. Runs on the final contents, after the compressor
+/// and the splices, so its turn numbers are the ones `compress` will use. A turn without a tool
+/// result gets no nudge.
+fn inject_nudge(
+    runtime: &SessionRuntime,
+    contents: &mut Vec<Value>,
+    window: usize,
+    settings: &Settings,
+) -> Result<Option<NudgeReport>, ProxyError> {
+    let Some(result_index) = last_tool_result_index(contents) else {
+        return Ok(None);
+    };
+    let preserve = settings.preserve_recent_messages as usize;
+    let view = compressible_view(contents, preserve);
+    let tokens = match runtime.last_input_tokens.load(Ordering::Relaxed) {
+        0 => estimate_tokens(contents),
+        used => used,
+    };
+    let active_blocks = lock(&runtime.compressor)?.status().active_blocks as u64;
+    let config = NudgeConfig {
+        max_context_limit_pct: u64::from(settings.max_context_limit),
+        emergency_threshold_pct: u64::from(settings.emergency_threshold_percent),
+        min_pressure_benefit_tokens: u64::from(settings.min_pressure_benefit_tokens),
+        tier2_trigger: u64::from(settings.tier2_trigger),
+        tier3_trigger: u64::from(settings.tier3_trigger),
+    };
+    let fired = {
+        let mut gate = lock(&runtime.nudge)?;
+        let fired = gate.observe_with(
+            tokens,
+            u64::try_from(window).unwrap_or(0),
+            view.tokens,
+            active_blocks,
+            &config,
+        );
+        if fired.is_some() {
+            nudge::save(&runtime.nudge_file, &gate)?;
+        }
+        fired
+    };
+    let Some(fired) = fired else {
+        return Ok(None);
+    };
+    let id = match fired.kind {
+        NudgeKind::First => NUDGE_FIRST,
+        NudgeKind::Pressure => NUDGE_PRESSURE,
+        NudgeKind::Emergency => NUDGE_EMERGENCY,
+        NudgeKind::Tier2 => NUDGE_TIER2,
+        NudgeKind::Tier3 => NUDGE_TIER3,
+    };
+    let vars = PromptVars {
+        context_breakdown: view.breakdown,
+        since_last_nudge: format!("+{} since last nudge", kilo(fired.since_last)),
+        compressible_ranges: view.ranges,
+        ..PromptVars::default()
+    };
+    let raw = runtime.pins.text(id).unwrap_or_default();
+    let text = render_text(id, raw, &vars)?;
+    // `_nudge` marks the turn as proxy-only: a fold must not store it, and no wire may see it.
+    contents.insert(
+        result_index + 1,
+        json!({ "role": "user", "parts": [{ "text": text }], "_nudge": true }),
+    );
+    Ok(Some(NudgeReport {
+        kind: fired.kind.name(),
+        tokens,
+        since_last: fired.since_last,
+    }))
+}
+
+/// Index of the newest turn that carries a tool result: the anchor a nudge rides after.
+fn last_tool_result_index(contents: &[Value]) -> Option<usize> {
+    contents.iter().rposition(|turn| {
+        turn.get("parts")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                parts
+                    .iter()
+                    .any(|part| part.get("functionResponse").is_some())
+            })
+    })
 }
 
 /// Route 1: put every pending steer into the user turn that carries the tool
@@ -613,8 +1087,10 @@ fn call_arguments(call: &Value) -> Value {
     }
     json!({})
 }
+
 /// Run the tool and append its model+user pair to the request. Returns the
 /// stored pair so the caller can persist it.
+#[allow(clippy::too_many_arguments)]
 fn run_proxy_tool(
     state: &ProxyState,
     session_id: &str,
@@ -622,10 +1098,20 @@ fn run_proxy_tool(
     wire: WireKind,
     request: &mut Value,
     call: ProxyCall,
+    settings: &Settings,
+    window: usize,
 ) -> Result<Vec<Value>, ProxyError> {
     let request = request_body_mut(request);
     let mut contents = extract_core_contents(wire, request).ok_or(ProxyError::NoContents)?;
-    let text = execute_by_name(state, session_id, runtime, &mut contents, &call);
+    let text = execute_by_name(
+        state,
+        session_id,
+        runtime,
+        &mut contents,
+        &call,
+        settings,
+        window,
+    );
     let turns = proxy_pair(&call, &text, &format!("emberloop-splice:{}", call.id));
     contents.extend(turns.clone());
     write_core_contents(wire, request, contents);
@@ -638,15 +1124,17 @@ fn execute_by_name(
     runtime: &SessionRuntime,
     contents: &mut Vec<Value>,
     call: &ProxyCall,
+    settings: &Settings,
+    window: usize,
 ) -> String {
-    match execute_tool(runtime, contents, call) {
+    match execute_tool(runtime, contents, call, settings, window) {
         Ok(text) => {
             if matches!(call.name.as_str(), "compress" | "decompress") {
                 publish_compression_event(&state.inner.events, session_id, runtime, call, &text);
             }
-            text
+            format!("📦 [acp] {}\n{text}", call.name)
         }
-        Err(error) => format!("error: {error}"),
+        Err(error) => format!("❌ [acp] {}\nerror: {error}", call.name),
     }
 }
 
@@ -716,13 +1204,23 @@ fn execute_tool(
     runtime: &SessionRuntime,
     contents: &mut Vec<Value>,
     call: &ProxyCall,
+    settings: &Settings,
+    window: usize,
 ) -> Result<String, String> {
     match call.name.as_str() {
         "compress" => {
-            let call = parse_compress_call(&call.args)?;
-            lock(&runtime.compressor)
-                .map_err(|error| error.to_string())?
-                .compress(contents, call)
+            let calls = parse_compress_calls(&call.args)?;
+            let mut compressor = lock(&runtime.compressor).map_err(|error| error.to_string())?;
+            compressor.set_policy(compress_policy(settings));
+            let folded = compressor.compress_batch(contents, calls)?;
+            // The next nudge must judge the folded history, not the usage from before the fold.
+            runtime
+                .last_input_tokens
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            runtime
+                .close_nudge_gate()
+                .map_err(|error| error.to_string())?;
+            Ok(folded)
         }
         "decompress" => {
             let call = parse_decompress_call(&call.args)?;
@@ -738,11 +1236,87 @@ fn execute_tool(
                 .search_context(&query, limit)?;
             serde_json::to_string_pretty(&hits).map_err(|error| error.to_string())
         }
+        "acp_status" => {
+            let status = lock(&runtime.compressor)
+                .map_err(|error| error.to_string())?
+                .status();
+            Ok(acp_status_text(contents, window, &status, settings))
+        }
         other => Err(format!("not a proxy tool: {other}")),
     }
 }
 
-fn parse_compress_call(args: &Value) -> Result<CompressCall, String> {
+fn acp_status_text(
+    contents: &[Value],
+    window: usize,
+    status: &crate::compressor::CompressorStatus,
+    settings: &Settings,
+) -> String {
+    let view = compressible_view(contents, settings.preserve_recent_messages as usize);
+    format_acp_status(
+        estimate_tokens(contents),
+        window,
+        status.active_blocks,
+        status.blocks,
+        status.spilled_turns,
+        status.tokens_compressed,
+        status.restored_blocks,
+        &view.ranges,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn format_acp_status(
+    tokens: u64,
+    window: usize,
+    active_blocks: usize,
+    total_blocks: usize,
+    stored_messages: usize,
+    tokens_compressed: u64,
+    restored: usize,
+    ranges: &str,
+) -> String {
+    let percent = if window == 0 {
+        0
+    } else {
+        tokens.saturating_mul(100) / u64::try_from(window).unwrap_or(u64::MAX)
+    };
+    format!(
+        "ACP STATUS\nContext: {} / {} tokens ({}%)\nBlocks: {} active, {} total; {} stored messages; {} tokens compressed; {} restored\n{}",
+        kilo(tokens),
+        kilo(u64::try_from(window).unwrap_or(u64::MAX)),
+        percent,
+        active_blocks,
+        total_blocks,
+        stored_messages,
+        kilo(tokens_compressed),
+        restored,
+        ranges
+    )
+}
+
+/// `compress` takes `ranges: [{start, end, summary, topic?}, ...]`; the single-range form
+/// (`start`, `end`, `summary`, `topic` at the top level) is still accepted.
+fn parse_compress_calls(args: &Value) -> Result<Vec<CompressCall>, String> {
+    let Some(ranges) = args.get("ranges") else {
+        return parse_compress_range(args).map(|call| vec![call]);
+    };
+    let ranges = ranges
+        .as_array()
+        .ok_or_else(|| "ranges must be an array".to_string())?;
+    if ranges.is_empty() {
+        return Err("ranges must not be empty".into());
+    }
+    ranges
+        .iter()
+        .enumerate()
+        .map(|(index, range)| {
+            parse_compress_range(range).map_err(|error| format!("range {}: {error}", index + 1))
+        })
+        .collect()
+}
+
+fn parse_compress_range(args: &Value) -> Result<CompressCall, String> {
     Ok(CompressCall {
         start: number_arg(args, "start")?,
         end: number_arg(args, "end")?,
@@ -822,26 +1396,40 @@ fn with_headers(
     request
 }
 
-fn publish_usage(events: &EventBus, session_id: &str, runtime: &SessionRuntime, bytes: &Bytes) {
-    if let Some(usage) = publish_usage_event(events, session_id, bytes) {
-        runtime
-            .last_input_tokens
-            .store(usage.input_tokens, Ordering::Relaxed);
-    }
+async fn publish_usage(
+    state: &ProxyState,
+    session_id: &str,
+    runtime: &SessionRuntime,
+    bytes: &Bytes,
+) {
+    let Some(usage) = meter::extract_usage(bytes) else {
+        return;
+    };
+    runtime
+        .last_input_tokens
+        .store(usage.input_tokens, Ordering::Relaxed);
+    publish_usage_event(state, session_id, usage).await;
 }
 
-fn publish_usage_event(events: &EventBus, session_id: &str, bytes: &Bytes) -> Option<meter::Usage> {
-    let usage = meter::extract_usage(bytes)?;
-    events.publish(SessionEvent::new(
-        session_id,
-        0,
-        EventKind::Usage,
-        json!({
-            "inputTokens": usage.input_tokens,
-            "outputTokens": usage.output_tokens
-        }),
-    ));
-    Some(usage)
+/// The meter reads the window from the live catalogue, so a refreshed window
+/// reaches the UI with the next response instead of a stale model snapshot.
+async fn publish_usage_event(state: &ProxyState, session_id: &str, usage: meter::Usage) {
+    let window = match state.inner.sessions.get(session_id).await {
+        Some(meta) => state.inner.models.window(&meta.model).await,
+        None => None,
+    };
+    let mut data = json!({
+        "inputTokens": usage.input_tokens,
+        "outputTokens": usage.output_tokens,
+        "cachedTokens": usage.cached_tokens
+    });
+    if let Some(window) = window {
+        data["contextWindow"] = json!(window);
+    }
+    state
+        .inner
+        .events
+        .publish(SessionEvent::new(session_id, 0, EventKind::Usage, data));
 }
 
 fn publish_error(events: &EventBus, session_id: &str, message: String) {
@@ -934,7 +1522,8 @@ struct SseState {
     done: bool,
     harness_call_id: Option<String>,
     completed: Vec<CompletedCall>,
-    usage: Option<meter::Usage>,
+    /// The usage last published for this stream, so a chunk and its events do not publish twice.
+    published: Option<meter::Usage>,
     /// The signature of the step being streamed: the model signs its first call.
     step_signature: Option<Value>,
     /// Tool calls a pi wire streams in fragments; the wire decides run or hide.
@@ -942,6 +1531,8 @@ struct SseState {
     stream_events: Vec<Bytes>,
     stream_finish: Vec<Bytes>,
     proxy_round: bool,
+    settings: Settings,
+    window: usize,
 }
 
 #[derive(Debug, Default)]
@@ -963,6 +1554,8 @@ impl SseState {
         headers: HeaderMap,
         request: Value,
         response: reqwest::Response,
+        settings: Settings,
+        window: usize,
     ) -> Self {
         Self {
             proxy,
@@ -979,13 +1572,31 @@ impl SseState {
             done: false,
             harness_call_id: None,
             completed: Vec::new(),
-            usage: None,
+            published: None,
             step_signature: None,
             stream_calls: Vec::new(),
             stream_events: Vec::new(),
             stream_finish: Vec::new(),
             proxy_round: false,
+            settings,
+            window,
         }
+    }
+
+    /// Publish usage as soon as its bytes arrive: a harness may stop reading the stream
+    /// right after the answer, and then a publish deferred to the stream end never runs.
+    async fn capture_usage(&mut self, bytes: &[u8]) {
+        let Some(usage) = meter::extract_usage(bytes) else {
+            return;
+        };
+        if self.published == Some(usage) {
+            return;
+        }
+        self.published = Some(usage);
+        self.runtime
+            .last_input_tokens
+            .store(usage.input_tokens, Ordering::Relaxed);
+        publish_usage_event(&self.proxy, &self.session_id, usage).await;
     }
 
     async fn follow_up(&mut self) -> Result<(), ProxyError> {
@@ -1043,7 +1654,7 @@ impl SseState {
         Ok(())
     }
 
-    fn process_event(&mut self, event: &[u8]) -> Result<Option<Bytes>, ProxyError> {
+    async fn process_event(&mut self, event: &[u8]) -> Result<Option<Bytes>, ProxyError> {
         let raw = delimited(event);
         let text = String::from_utf8_lossy(event);
         let Some(data) = sse_data(&text) else {
@@ -1052,9 +1663,7 @@ impl SseState {
         let Ok(mut payload) = serde_json::from_str::<Value>(&data) else {
             return Ok((!self.proxy_round || data.trim() != "[DONE]").then_some(raw));
         };
-        if let Some(usage) = meter::extract_usage(event) {
-            self.usage = Some(usage);
-        }
+        self.capture_usage(event).await;
         if !self.proxy_round && self.wire != WireKind::Google {
             if let Some(text) = meter::thinking_delta(&payload) {
                 self.proxy.inner.events.publish(SessionEvent::new(
@@ -1256,6 +1865,8 @@ impl SseState {
             &self.runtime,
             &mut contents,
             &call,
+            &self.settings,
+            self.window,
         );
         write_core_contents(self.wire, req_body, contents);
         self.completed.push(CompletedCall { call, text });
@@ -1560,10 +2171,9 @@ async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error
             return Some((Ok(bytes), state));
         }
         if state.done {
-            finish_stream(&mut state);
             return None;
         }
-        if let Some(result) = next_buffered(&mut state) {
+        if let Some(result) = next_buffered(&mut state).await {
             match result {
                 Ok(Some(bytes)) => return Some((Ok(bytes), state)),
                 Ok(None) => continue,
@@ -1578,7 +2188,10 @@ async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error
             None => Ok(None),
         };
         match polled {
-            Ok(Some(Ok(chunk))) => state.pending.extend_from_slice(&chunk),
+            Ok(Some(Ok(chunk))) => {
+                state.capture_usage(&chunk).await;
+                state.pending.extend_from_slice(&chunk);
+            }
             Ok(Some(Err(error))) => {
                 state.done = true;
                 return Some((Ok(error_event(&ProxyError::Upstream(error))), state));
@@ -1626,24 +2239,6 @@ async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error
     }
 }
 
-fn finish_stream(state: &mut SseState) {
-    if let Some(usage) = state.usage.take() {
-        state
-            .runtime
-            .last_input_tokens
-            .store(usage.input_tokens, Ordering::Relaxed);
-        state.proxy.inner.events.publish(SessionEvent::new(
-            &state.session_id,
-            0,
-            EventKind::Usage,
-            json!({
-                "inputTokens": usage.input_tokens,
-                "outputTokens": usage.output_tokens
-            }),
-        ));
-    }
-}
-
 /// One SSE event with the blank-line delimiter `take_event` removed.
 fn delimited(event: &[u8]) -> Bytes {
     let mut bytes = Vec::with_capacity(event.len() + 2);
@@ -1654,9 +2249,9 @@ fn delimited(event: &[u8]) -> Bytes {
 
 /// The next buffered event, processed; `Ok(None)` swallows it, `None` means
 /// nothing complete is buffered.
-fn next_buffered(state: &mut SseState) -> Option<Result<Option<Bytes>, ProxyError>> {
+async fn next_buffered(state: &mut SseState) -> Option<Result<Option<Bytes>, ProxyError>> {
     let event = take_event(&mut state.pending)?;
-    Some(state.process_event(&event))
+    Some(state.process_event(&event).await)
 }
 
 fn take_event(pending: &mut Vec<u8>) -> Option<Vec<u8>> {
@@ -1680,29 +2275,59 @@ fn find_delimiter(pending: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
+fn sse_error(message: &str) -> String {
+    format!("data: {}\n\n", json!({ "error": { "message": message } }))
+}
+
 fn error_event(error: &ProxyError) -> Bytes {
     Bytes::from(sse_error(&error.to_string()))
 }
 
-fn sse_error(message: &str) -> String {
-    format!("data: {}\n\n", json!({ "error": { "message": message } }))
+fn dump_request(session_id: &str, stage: &str, request: &Value) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let Some(dir) = std::env::var_os("EMBERLOOP_PROXY_DUMP") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let body = request.to_string();
+    let _ = std::fs::write(dir.join(format!("{session_id}.{stage}.json")), &body);
+    // A rotating copy per request: a fold that matched once and then stopped needs both bodies.
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let _ = std::fs::write(
+        dir.join(format!("{session_id}.{stage}.{seq:03}.json")),
+        &body,
+    );
+    if seq % 20 == 19 && stage == "in" {
+        prune_dumps(&dir, session_id, seq);
+    }
+}
+
+fn prune_dumps(dir: &std::path::Path, session_id: &str, seq: u64) {
+    let cutoff = seq.saturating_sub(60);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(rest) = name.strip_prefix(&format!("{session_id}.")) else {
+            continue;
+        };
+        let Some(number) = rest.trim_end_matches(".json").rsplit('.').next() else {
+            continue;
+        };
+        let Ok(number) = number.parse::<u64>() else {
+            continue;
+        };
+        if number < cutoff {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-
-/// Debug aid: with `EMBERLOOP_PROXY_DUMP=<dir>` the last request of each Session
-/// is written before (`in`) and after (`out`) the proxy rewrote it.
-fn dump_request(session_id: &str, stage: &str, request: &Value) {
-    let Some(dir) = std::env::var_os("EMBERLOOP_PROXY_DUMP") else {
-        return;
-    };
-    let dir = std::path::PathBuf::from(dir);
-    if std::fs::create_dir_all(&dir).is_ok() {
-        let _ = std::fs::write(
-            dir.join(format!("{session_id}.{stage}.json")),
-            request.to_string(),
-        );
-    }
-}

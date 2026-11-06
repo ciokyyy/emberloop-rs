@@ -12,9 +12,32 @@ use tokio::sync::RwLock;
 use utoipa::ToSchema;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct Settings {
     pub proxy_compression: bool,
     pub ponytail_default_level: String,
+    pub todo_reminders: bool,
+    pub todo_reminders_max: u32,
+    pub todo_auto_expand: bool,
+    pub todo_hide_when_done: bool,
+    /// Reference `compress.maxContextLimit`, a percent of the window.
+    pub max_context_limit: u32,
+    /// Reference `compress.minPressureBenefitTokens`; 0 means `max(5000, window / 100)`.
+    pub min_pressure_benefit_tokens: u32,
+    /// Reference `compress.emergencyThresholdPercent`.
+    pub emergency_threshold_percent: u32,
+    /// Reference `compress.preserveRecentMessages`.
+    pub preserve_recent_messages: u32,
+    /// Reference `compress.protectedTools`; results of these tools never fold.
+    pub protected_tools: Vec<String>,
+    /// Reference `compress.injectTool`.
+    pub inject_tool: bool,
+    /// Reference `compress.injectNudge`.
+    pub inject_nudge: bool,
+    /// Reference `compress.tiers.tier2Trigger`.
+    pub tier2_trigger: u32,
+    /// Reference `compress.tiers.tier3Trigger`.
+    pub tier3_trigger: u32,
 }
 
 impl Default for Settings {
@@ -22,6 +45,19 @@ impl Default for Settings {
         Self {
             proxy_compression: true,
             ponytail_default_level: "full".to_string(),
+            todo_reminders: true,
+            todo_reminders_max: 3,
+            todo_auto_expand: true,
+            todo_hide_when_done: true,
+            max_context_limit: 75,
+            min_pressure_benefit_tokens: 0,
+            emergency_threshold_percent: 95,
+            preserve_recent_messages: 3,
+            protected_tools: Vec::new(),
+            inject_tool: true,
+            inject_nudge: true,
+            tier2_trigger: 1000,
+            tier3_trigger: 2000,
         }
     }
 }

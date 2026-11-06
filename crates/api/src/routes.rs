@@ -45,6 +45,9 @@ use crate::state::{AppState, Settings};
         crate::providers::complete_agy_login,
         crate::providers::sign_out_agy_account,
         crate::providers::set_opencode_key,
+        crate::providers::start_codex_login,
+        crate::providers::get_codex_login,
+        crate::providers::cancel_codex_login,
     ),
     components(
         schemas(
@@ -415,6 +418,12 @@ pub async fn prompt_session(
 ) -> Result<StatusCode, (StatusCode, String)> {
     if state.sessions.get(&id).await.is_none() {
         return Err((StatusCode::NOT_FOUND, "Session not found".into()));
+    }
+    // A turn already running takes the message as a steer. The UI's own idea of
+    // `working` is stale after a page reload; the queue's is not.
+    if state.steers.queue(&id).is_turn_active() {
+        let steer = Json(SteerRequest { text: payload.text });
+        return steer_session(State(state), Path(id), steer).await;
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1000,6 +1009,57 @@ mod prompt_routes_tests {
             }
         }
         assert!(delivered, "steer_delivered event published");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_during_a_turn_is_queued_as_a_steer() {
+        let dir = tempdir().unwrap();
+        let data_root = DataRoot::new(dir.path());
+        let projects = ProjectsStore::load(data_root.projects_file())
+            .await
+            .unwrap();
+        let sessions = SessionsStore::load(data_root.clone()).await.unwrap();
+        sessions
+            .insert(SessionMeta {
+                id: "ses_1".into(),
+                project_id: "proj_1".into(),
+                title: "Busy".into(),
+                ..SessionMeta::default()
+            })
+            .await
+            .unwrap();
+        let driver = Arc::new(RecordingDriver {
+            woken: std::sync::Mutex::new(Vec::new()),
+        });
+        let bus = Arc::new(EventBus::default());
+        let mut published = bus.subscribe();
+        let state =
+            AppState::new(data_root, projects, sessions, Arc::clone(&bus)).with_driver(driver);
+        state.steers.queue("ses_1").set_turn_active(true);
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/ses_1/prompt")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"text":"hold on","images":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let mut queued = 0;
+        while let Ok(event) = published.try_recv() {
+            assert_ne!(event.kind, emberloop_core::events::EventKind::Prompt);
+            if event.kind == emberloop_core::events::EventKind::SteerQueued {
+                assert_eq!(event.data["text"], "hold on");
+                queued += 1;
+            }
+        }
+        assert_eq!(queued, 1, "the message waits in the steer queue");
     }
 
     #[tokio::test]

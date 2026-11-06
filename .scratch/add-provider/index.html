@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Emberloop · Add provider prototype</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  // Tokens from emberloop-web/web/src/app.css (dark only). Do not invent colors.
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          background: '#212121', foreground: '#ececec', card: '#2a2a2a', popover: '#2f2f2f', sidebar: '#171717',
+          muted: '#303030', 'muted-foreground': '#9b9ba1', accent: '#383838', primary: '#ececec',
+          'primary-foreground': '#171717', destructive: '#f87171', border: '#3a3a3c', input: '#48484a', ring: '#0a84ff',
+        },
+        borderColor: { DEFAULT: '#3a3a3c' }, divideColor: { DEFAULT: '#3a3a3c' },
+        fontFamily: {
+          sans: ['-apple-system', 'BlinkMacSystemFont', 'SF Pro Text', 'Inter', 'Segoe UI', 'system-ui', 'sans-serif'],
+          mono: ['ui-monospace', 'SF Mono', 'JetBrains Mono', 'Menlo', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+  :root { color-scheme: dark; --ease: cubic-bezier(.22,1,.36,1); }
+  * { border-color: #3a3a3c; }
+  body { background: #171717; color: #ececec; -webkit-font-smoothing: antialiased; }
+  button, input, [data-row] { transition: color .16s var(--ease), background-color .16s var(--ease), border-color .16s var(--ease), box-shadow .16s var(--ease), opacity .16s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px) scale(.99); } to { opacity: 1; transform: none; } }
+  @keyframes in { from { opacity: 0; } to { opacity: 1; } }
+  .rise { animation: rise .28s var(--ease) both; }
+  .fade-in { animation: in .18s linear both; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  ::-webkit-scrollbar { width: 12px; height: 12px; background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(155,155,161,.25); border-radius: 9999px; border: 4px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(155,155,161,.5); background-clip: content-box; }
+  .seg button[aria-pressed="true"] { background: #ececec; color: #171717; }
+  .bar { height: 6px; border-radius: 999px; background: #303030; overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 999px; }
+  .frame { transition: width .28s var(--ease); }
+  [data-row].sel { background: #383838; }
+</style>
+</head>
+<body class="min-h-dvh font-sans antialiased">
+
+<!-- ===== Prototype toolbar (not part of the product) ===== -->
+<header class="sticky top-0 z-40 border-b border-border bg-[#171717]/95 px-4 py-3 backdrop-blur">
+  <div class="mx-auto flex max-w-[1200px] flex-wrap items-center gap-3">
+    <div class="mr-auto min-w-0">
+      <div class="text-[13px] font-semibold tracking-[-0.01em]">Add provider · prototype</div>
+      <div class="text-[11px] text-muted-foreground">Pick a layout together, then port the winner to SvelteKit.</div>
+    </div>
+    <div class="seg inline-flex rounded-full bg-muted p-1 text-[12px]" data-seg="variant">
+      <button class="rounded-full px-3 py-1.5" data-v="dialog" aria-pressed="true">Dialog</button>
+      <button class="rounded-full px-3 py-1.5" data-v="inline" aria-pressed="false">Inline</button>
+      <button class="rounded-full px-3 py-1.5" data-v="sheet" aria-pressed="false">Sheet</button>
+    </div>
+    <div class="seg inline-flex rounded-full bg-muted p-1 text-[12px]" data-seg="group">
+      <button class="rounded-full px-3 py-1.5" data-g="type" aria-pressed="true">By type</button>
+      <button class="rounded-full px-3 py-1.5" data-g="harness" aria-pressed="false">By harness</button>
+    </div>
+    <div class="seg inline-flex rounded-full bg-muted p-1 text-[12px]" data-seg="width">
+      <button class="rounded-full px-3 py-1.5" data-w="640" aria-pressed="true">Desktop 640</button>
+      <button class="rounded-full px-3 py-1.5" data-w="390" aria-pressed="false">Phone 390</button>
+    </div>
+    <button id="open" class="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-primary px-3 text-[12px] font-medium text-primary-foreground">
+      <i data-lucide="plus" class="size-3.5"></i> Add provider
+    </button>
+  </div>
+</header>
+
+<!-- ===== App frame ===== -->
+<main class="mx-auto px-3 py-6">
+  <div id="frame" class="frame mx-auto w-[640px] overflow-hidden rounded-2xl border border-border bg-background shadow-2xl">
+    <div class="border-b border-border px-5 py-4">
+      <h1 class="text-[1.25rem] font-semibold tracking-[-0.01em]">Providers</h1>
+      <p class="mt-0.5 text-[12px] text-muted-foreground">
+        Connect the accounts and keys every Session and Run uses. Usage shows on the subscription rows.
+      </p>
+    </div>
+
+    <div id="page" class="flex max-h-[70dvh] flex-col gap-5 overflow-y-auto p-5"></div>
+
+    <div class="flex items-center justify-between gap-3 border-t border-border bg-sidebar/40 px-5 py-3">
+      <span class="text-[11px] text-muted-foreground" id="hint">Those rows come from the daemon; one catalogue, one registry.</span>
+      <button id="open2" class="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-[12px] font-medium hover:bg-accent md:min-h-9">
+        <i data-lucide="plus" class="size-3.5"></i> Add provider
+      </button>
+    </div>
+  </div>
+
+  <p class="mx-auto mt-4 max-w-[640px] text-[11px] leading-relaxed text-muted-foreground">
+    Same data, three shells. Search matches name, harness or kind. Grouping answers "what am I looking at",
+    search answers "where is mine". Connect panels are dummies: key paste, device code, redirect paste, host command.
+  </p>
+</main>
+
+<!-- ===== Overlay host ===== -->
+<div id="overlay" class="fixed inset-0 z-50 hidden"></div>
+
+<script>
+  // ---------- catalogue ----------
+  const CATALOGUE = [
+    { id: 'claude', name: 'Claude', harness: 'claude', kind: 'subscription', how: 'command',
+      line: 'Host login · ~/.claude · Max', connected: true, usage: [{ label: '5-hour', pct: 36, reset: '2h 10m' }, { label: 'Weekly', pct: 8, reset: '4d' }] },
+    { id: 'chatgpt', name: 'ChatGPT Plus', harness: 'pi', kind: 'subscription', how: 'device',
+      line: 'pig login · openai-codex', connected: true, usage: [{ label: '5-hour', pct: 4, reset: '4h 40m' }, { label: 'Weekly', pct: 4, reset: '6d' }] },
+    { id: 'antigravity', name: 'Gemini via Antigravity', harness: 'agy', kind: 'subscription', how: 'paste',
+      line: 'Google sign-in, paste the redirect', connected: false },
+    { id: 'github-copilot', name: 'GitHub Copilot', harness: 'pi', kind: 'subscription', how: 'device',
+      line: 'Device code · pig github-copilot', connected: false },
+
+    { id: 'opencode-go', name: 'OpenCode-Go', harness: 'pi', kind: 'key', how: 'key',
+      line: 'ocg-…c41a', connected: true },
+    { id: 'openrouter', name: 'OpenRouter', harness: 'pi', kind: 'key', how: 'key',
+      line: 'sk-or-v1-887…155', connected: true },
+    { id: 'deepseek', name: 'DeepSeek', harness: 'pi', kind: 'key', how: 'key',
+      line: 'sk-…9d02', connected: true },
+    { id: 'gemini-api', name: 'Gemini API (direct)', harness: 'pi', kind: 'key', how: 'key',
+      line: 'Google AI Studio key', connected: false },
+    { id: 'openai', name: 'OpenAI', harness: 'pi', kind: 'key', how: 'key',
+      line: 'platform.openai.com key', connected: false },
+
+    { id: 'xai', name: 'xAI', harness: 'terminal', kind: 'cli', how: 'command',
+      line: 'pig auth login xai', connected: false },
+    { id: 'groq', name: 'Groq', harness: 'terminal', kind: 'cli', how: 'command',
+      line: 'pig auth login groq', connected: false },
+    { id: 'mistral', name: 'Mistral', harness: 'terminal', kind: 'cli', how: 'command',
+      line: 'pig auth login mistral', connected: false },
+    { id: 'cerebras', name: 'Cerebras', harness: 'terminal', kind: 'cli', how: 'command',
+      line: 'pig auth login cerebras', connected: false },
+  ];
+
+  const GROUPS = {
+    type: [
+      { key: 'subscription', title: 'Subscription logins', hint: 'Sign in with an account plan. Usage shows here.' },
+      { key: 'key', title: 'API keys', hint: 'Paste a key. Saved on the host, masked after.' },
+      { key: 'cli', title: 'CLI only', hint: 'Connect from a terminal on the host.' },
+    ],
+    harness: [
+      { key: 'claude', title: 'Claude Code', hint: 'Reads the host ~/.claude login. Never refreshes it.' },
+      { key: 'pi', title: 'pi harness', hint: 'Accounts and keys from pig auth.json.' },
+      { key: 'agy', title: 'Antigravity (agy)', hint: 'The daemon spawns the server for the Account home.' },
+      { key: 'terminal', title: 'Terminal only', hint: 'Run the login command on the host, then refresh.' },
+    ],
+  };
+
+  const ICONS = {
+    claude: 'sparkles', chatgpt: 'message-circle', antigravity: 'gem', 'github-copilot': 'github',
+    'opencode-go': 'terminal', openrouter: 'route', deepseek: 'waves', 'gemini-api': 'cpu', openai: 'bot',
+    xai: 'zap', groq: 'gauge', mistral: 'wind', cerebras: 'box', terminal: 'terminal',
+  };
+
+  const state = {
+    variant: 'dialog',
+    group: 'type',
+    width: 640,
+    query: '',
+    selected: null,
+    screen: 'list', // phone pane
+    panelOpen: false,
+    connected: new Set(CATALOGUE.filter((p) => p.connected).map((p) => p.id)),
+    keyDraft: '',
+    pasteDraft: '',
+    copied: false,
+  };
+
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const icons = () => window.lucide && lucide.createIcons();
+
+  function tone(pct) {
+    if (pct >= 80) return 'bg-red-500';
+    if (pct >= 60) return 'bg-amber-500';
+    return 'bg-green-500';
+  }
+
+  function groups() {
+    const q = state.query.trim().toLowerCase();
+    return GROUPS[state.group]
+      .map((g) => ({
+        ...g,
+        items: CATALOGUE.filter((p) => {
+          if (g.key === 'type' ? p.kind !== g.key : p.harness !== g.key) return false;
+          if (!q) return true;
+          return `${p.name} ${p.harness} ${p.kind} ${p.line}`.toLowerCase().includes(q);
+        }),
+      }))
+      .filter((g) => g.items.length);
+  }
+
+  function rowHTML(p, compact) {
+    const on = state.connected.has(p.id);
+    const sel = state.selected === p.id ? ' sel' : '';
+    const badge = on
+      ? `<span class="inline-flex items-center gap-1 rounded-full bg-green-500/10 px-1.5 py-0.5 text-[10px] font-medium text-green-300"><i data-lucide="check" class="size-2.5"></i>Connected</span>`
+      : `<span class="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">Not connected</span>`;
+    return `<button data-row data-id="${p.id}" class="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-accent${sel}">
+      <span class="grid size-8 shrink-0 place-items-center rounded-lg border border-border bg-muted">
+        <i data-lucide="${ICONS[p.id] || 'plug'}" class="size-4 text-muted-foreground"></i>
+      </span>
+      <span class="min-w-0 flex-1">
+        <span class="flex flex-wrap items-center gap-1.5">
+          <span class="truncate text-[13px] font-medium">${esc(p.name)}</span>${badge}
+        </span>
+        <span class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span class="font-mono">${esc(p.harness)}</span><span class="opacity-40">·</span><span class="truncate">${esc(compact ? p.line : p.line)}</span>
+        </span>
+      </span>
+      ${on && p.usage ? `<span class="hidden w-24 shrink-0 flex-col gap-1 sm:flex">
+        ${p.usage.map((u) => `<span class="flex items-center gap-1.5"><span class="bar flex-1"><i class="${tone(u.pct)}" style="width:${u.pct}%"></i></span><span class="w-7 text-right font-mono text-[10px] text-muted-foreground">${u.pct}%</span></span>`).join('')}
+      </span>` : ''}
+      <i data-lucide="chevron-right" class="size-3.5 shrink-0 text-muted-foreground"></i>
+    </button>`;
+  }
+
+  function pageHTML() {
+    return groups()
+      .map((g) => `<section class="flex flex-col gap-2">
+        <div class="px-1">
+          <h2 class="text-[12px] font-semibold">${esc(g.title)}</h2>
+          <p class="text-[11px] text-muted-foreground">${esc(g.hint)}</p>
+        </div>
+        <div class="rounded-2xl border border-border bg-card p-1">
+          ${g.items.map((p) => rowHTML(p, false)).join('')}
+        </div>
+      </section>`)
+      .join('');
+  }
+
+  function detailHTML(p) {
+    const on = state.connected.has(p.id);
+    const meta = `<div class="flex flex-wrap items-center gap-1.5 text-[10px]">
+      <span class="rounded-full border border-border px-1.5 py-0.5 font-mono text-muted-foreground">${esc(p.harness)}</span>
+      <span class="rounded-full border border-border px-1.5 py-0.5 text-muted-foreground">${esc(p.kind === 'cli' ? 'CLI only' : p.kind === 'key' ? 'API key' : 'Subscription')}</span>
+      ${on ? `<span class="rounded-full bg-green-500/10 px-1.5 py-0.5 text-green-300">Connected</span>` : ''}
+    </div>`;
+
+    let body = '';
+    if (p.how === 'key') {
+      body = `<label class="text-[11px] font-medium text-muted-foreground">API key</label>
+        <input id="key" type="password" autocomplete="off" placeholder="Paste key" class="min-h-11 w-full rounded-xl border border-input bg-background px-3 text-[13px] outline-none focus:border-ring md:min-h-9" />
+        <p class="text-[11px] leading-relaxed text-muted-foreground">Saved on the host, masked after saving. Shown once, never again.</p>
+        <div class="flex flex-wrap gap-2">
+          <button data-act="connect" class="min-h-11 rounded-full bg-primary px-3 text-[12px] font-medium text-primary-foreground md:min-h-9">Save key</button>
+          <button data-act="close" class="min-h-11 rounded-full px-3 text-[12px] text-muted-foreground hover:bg-accent md:min-h-9">Cancel</button>
+        </div>`;
+    } else if (p.how === 'device') {
+      body = `<p class="text-[12px] leading-relaxed">1. Open <span class="font-mono text-[11px]">auth.openai.com/codex/device</span><br/>2. Enter this code:</p>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="rounded-xl border border-border bg-background px-3 py-2 font-mono text-lg tracking-[0.2em]">KQ4M-7ZXD</span>
+          <button data-act="copy" class="min-h-11 rounded-full border border-border px-3 text-[12px] hover:bg-accent md:min-h-9">${state.copied ? 'Copied' : 'Copy'}</button>
+          <a href="https://auth.openai.com/codex/device" target="_blank" rel="noreferrer" class="inline-flex min-h-11 items-center gap-1 rounded-full border border-border px-3 text-[12px] hover:bg-accent md:min-h-9">Open page<i data-lucide="arrow-up-right" class="size-3.5"></i></a>
+        </div>
+        <p class="flex items-center gap-2 text-[11px] text-muted-foreground"><span class="size-1.5 animate-pulse rounded-full bg-amber-500"></span>Waiting for approval…</p>
+        <div class="flex gap-2">
+          <button data-act="connect" class="min-h-11 rounded-full bg-primary px-3 text-[12px] font-medium text-primary-foreground md:min-h-9">I approved it</button>
+          <button data-act="close" class="min-h-11 rounded-full px-3 text-[12px] text-muted-foreground hover:bg-accent md:min-h-9">Cancel</button>
+        </div>`;
+    } else if (p.how === 'paste') {
+      body = `<p class="text-[12px] leading-relaxed">1. Sign in with Google.<br/>2. The last page fails to load. Copy its full address and paste it here.</p>
+        <button data-act="connect" class="inline-flex min-h-11 w-fit items-center gap-1 rounded-full border border-border px-3 text-[12px] hover:bg-accent md:min-h-9">Open Google sign-in<i data-lucide="arrow-up-right" class="size-3.5"></i></button>
+        <input id="paste" placeholder="http://localhost:51121/oauth-callback?code=…" class="min-h-11 w-full rounded-xl border border-input bg-background px-3 font-mono text-[12px] outline-none focus:border-ring md:min-h-9" />
+        <div class="flex flex-wrap gap-2">
+          <button data-act="connect" class="min-h-11 rounded-full bg-primary px-3 text-[12px] font-medium text-primary-foreground md:min-h-9">Finish</button>
+          <button data-act="close" class="min-h-11 rounded-full px-3 text-[12px] text-muted-foreground hover:bg-accent md:min-h-9">Cancel</button>
+        </div>`;
+    } else {
+      body = `<div class="rounded-xl border border-border bg-sidebar p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+        <span class="text-foreground">$ ${esc(p.id === 'claude' ? 'claude auth login' : p.line)}</span><br/>
+        Open this URL to sign in:<br/><span class="break-all text-[#79c0ff]">https://claude.ai/oauth/authorize?code=true&amp;client_id=…</span><br/>
+        Paste the code shown after sign-in:
+      </div>
+      <input id="paste" placeholder="Paste code" class="min-h-11 w-full rounded-xl border border-input bg-background px-3 font-mono text-[12px] outline-none focus:border-ring md:min-h-9" />
+      <div class="flex flex-wrap gap-2">
+        <button data-act="connect" class="min-h-11 rounded-full bg-primary px-3 text-[12px] font-medium text-primary-foreground md:min-h-9">Submit code</button>
+        <button data-act="close" class="min-h-11 rounded-full px-3 text-[12px] text-muted-foreground hover:bg-accent md:min-h-9">Cancel</button>
+      </div>`;
+    }
+
+    return `<div class="flex h-full flex-col gap-3 rise">
+      <div class="flex items-start gap-3">
+        <span class="grid size-10 shrink-0 place-items-center rounded-xl border border-border bg-muted"><i data-lucide="${ICONS[p.id] || 'plug'}" class="size-5 text-muted-foreground"></i></span>
+        <div class="min-w-0 flex-1">
+          <div class="text-[14px] font-semibold">${esc(p.name)}</div>
+          ${meta}
+        </div>
+        <button data-act="close" aria-label="Close" class="grid size-9 place-items-center rounded-lg text-muted-foreground hover:bg-accent"><i data-lucide="x" class="size-4"></i></button>
+      </div>
+      <div class="space-y-3">${body}</div>
+      <p class="mt-auto border-t border-border pt-3 text-[11px] leading-relaxed text-muted-foreground">No token passes through Emberloop. The daemon owns the login, the page only reads status.</p>
+    </div>`;
+  }
+
+  function listHTML(showClose) {
+    const gs = groups();
+    return `<div class="flex h-full flex-col">
+      <div class="border-b border-border p-3">
+        <div class="flex items-center gap-2">
+          <div class="flex min-h-11 flex-1 items-center gap-2 rounded-xl border border-input bg-background px-3 focus-within:border-ring md:min-h-9">
+            <i data-lucide="search" class="size-4 shrink-0 text-muted-foreground"></i>
+            <input id="q" value="${esc(state.query)}" placeholder="Search providers or harnesses" autocomplete="off" class="w-full bg-transparent text-[13px] outline-none" />
+          </div>
+          ${showClose ? `<button data-act="close" class="grid size-11 shrink-0 place-items-center rounded-xl text-muted-foreground hover:bg-accent md:size-9"><i data-lucide="x" class="size-4"></i></button>` : ''}
+        </div>
+        <div class="mt-2 flex items-center justify-between px-1 text-[10px] text-muted-foreground">
+          <span>${gs.length} group${gs.length === 1 ? '' : 's'}</span>
+          <span>↑↓ pick · ⏎ open · esc close</span>
+        </div>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto p-2">
+        ${gs.length ? gs.map((g) => `<div class="mb-2">
+          <div class="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">${esc(g.title)}</div>
+          <div class="flex flex-col gap-0.5">${g.items.map((p) => rowHTML(p, true)).join('')}</div>
+        </div>`).join('') : `<div class="grid place-items-center gap-2 px-6 py-16 text-center">
+          <i data-lucide="search-x" class="size-6 text-muted-foreground"></i>
+          <p class="text-[12px] text-muted-foreground">Nothing matches “${esc(state.query)}”.</p>
+          <button data-act="clear" class="text-[12px] underline">Clear search</button>
+        </div>`}
+      </div>
+    </div>`;
+  }
+
+  function closeOverlay() {
+    state.panelOpen = false;
+    state.selected = null;
+    state.screen = 'list';
+    state.query = '';
+    state.copied = false;
+    $('#overlay').classList.add('hidden');
+    $('#overlay').innerHTML = '';
+    $('#open').setAttribute('aria-expanded', 'false');
+    icons();
+  }
+
+  function pick(id) {
+    state.selected = id;
+    state.screen = 'detail';
+    render();
+  }
+
+  function finish() {
+    if (state.selected) state.connected.add(state.selected);
+    closeOverlay();
+    render();
+  }
+
+  function goList() {
+    state.screen = 'list';
+    state.selected = null;
+    render();
+  }
+
+  function listPane() {
+    const phone = state.width === 390;
+    if (phone && state.screen === 'detail' && state.selected) {
+      const p = CATALOGUE.find((x) => x.id === state.selected);
+      return `<div class="flex h-full flex-col">
+        <button data-act="back" class="flex min-h-11 items-center gap-1 border-b border-border px-3 text-left text-[12px] text-muted-foreground"><i data-lucide="arrow-left" class="size-3.5"></i>All providers</button>
+        <div class="min-h-0 flex-1 overflow-y-auto p-3">${detailHTML(p)}</div>
+      </div>`;
+    }
+    return listHTML(!phone);
+  }
+
+  function detailPane() {
+    if (!state.selected) {
+      return `<div class="grid h-full place-items-center p-8 text-center">
+        <div class="max-w-[220px]">
+          <i data-lucide="mouse-pointer-2" class="mx-auto size-6 text-muted-foreground"></i>
+          <p class="mt-2 text-[12px] text-muted-foreground">Pick a provider. Its connect steps show here, next to the list.</p>
+        </div>
+      </div>`;
+    }
+    return detailHTML(CATALOGUE.find((x) => x.id === state.selected));
+  }
+
+  function overlayHTML() {
+    if (state.variant === 'dialog') {
+      const phone = state.width === 390;
+      return `<div class="absolute inset-0 grid place-items-center bg-black/60 p-3 fade-in" data-act="scrim">
+        <div data-modal class="rise flex max-h-[calc(100dvh-1.5rem)] w-full max-w-[720px] flex-col overflow-hidden rounded-2xl border border-border bg-popover shadow-2xl">
+          <div class="flex items-center gap-2 border-b border-border px-4 py-3">
+            <i data-lucide="plus" class="size-4 text-muted-foreground"></i>
+            <div class="min-w-0 flex-1">
+              <div class="text-[13px] font-semibold">Add provider</div>
+              <div class="text-[11px] text-muted-foreground">Search, pick, connect. One flow for accounts and keys.</div>
+            </div>
+            <button data-act="close" class="grid size-9 place-items-center rounded-lg text-muted-foreground hover:bg-accent"><i data-lucide="x" class="size-4"></i></button>
+          </div>
+          <div class="grid min-h-0 flex-1 ${phone ? '' : 'grid-cols-[300px_1fr] divide-x divide-border'}">
+            <div class="min-h-0 ${phone && state.screen === 'detail' ? 'hidden' : ''}">${listHTML(false)}</div>
+            <div class="min-h-0 ${phone && state.screen !== 'detail' ? 'hidden' : ''} overflow-y-auto p-4">${detailPane()}</div>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    if (state.variant === 'inline') {
+      const phone = state.width === 390;
+      return `<div class="absolute inset-0 overflow-y-auto bg-black/40 p-3 fade-in" data-act="scrim">
+        <div class="mx-auto mt-6 w-full max-w-[720px]">
+          <div data-modal class="rise overflow-hidden rounded-2xl border border-ring/40 bg-popover shadow-2xl">
+            <div class="flex items-center gap-2 border-b border-border px-4 py-3">
+              <i data-lucide="plus" class="size-4 text-muted-foreground"></i>
+              <div class="min-w-0 flex-1">
+                <div class="text-[13px] font-semibold">Add provider</div>
+                <div class="text-[11px] text-muted-foreground">Inline: the page stays visible behind it.</div>
+              </div>
+              <button data-act="close" class="grid size-9 place-items-center rounded-lg text-muted-foreground hover:bg-accent"><i data-lucide="x" class="size-4"></i></button>
+            </div>
+            <div class="${phone ? '' : 'grid grid-cols-[1fr_300px] divide-x divide-border'}">
+              <div class="min-h-0 ${phone && state.screen === 'detail' ? 'hidden' : ''}">${listHTML(false)}</div>
+              <div class="${phone ? 'p-4' : 'overflow-y-auto p-4'} ${phone && state.screen !== 'detail' ? 'hidden' : ''}">${detailPane()}</div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    // sheet
+    const phone = state.width === 390;
+    return `<div class="absolute inset-0 bg-black/60 fade-in" data-act="scrim">
+      <div data-modal class="absolute inset-y-0 right-0 flex w-full ${phone ? '' : 'max-w-[460px]'} flex-col border-l border-border bg-popover shadow-2xl">
+        <div class="flex items-center gap-2 border-b border-border px-4 py-3">
+          <i data-lucide="plug" class="size-4 text-muted-foreground"></i>
+          <div class="min-w-0 flex-1">
+            <div class="text-[13px] font-semibold">Add provider</div>
+            <div class="text-[11px] text-muted-foreground">Sheet from the right; phone gets the same full-height panel.</div>
+          </div>
+          <button data-act="close" class="grid size-9 place-items-center rounded-lg text-muted-foreground hover:bg-accent"><i data-lucide="x" class="size-4"></i></button>
+        </div>
+        <div class="min-h-0 flex-1">
+          ${state.screen === 'detail' && state.selected
+            ? `<div class="flex h-full flex-col"><button data-act="back" class="flex min-h-11 items-center gap-1 border-b border-border px-3 text-[12px] text-muted-foreground"><i data-lucide="arrow-left" class="size-3.5"></i>All providers</button><div class="min-h-0 flex-1 overflow-y-auto p-4">${detailPane()}</div></div>`
+            : listHTML(true)}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function render() {
+    $('#page').innerHTML = pageHTML();
+    $('#hint').textContent =
+      state.variant === 'dialog' ? 'Dialog: focused, two-pane on desktop, one step per phone screen.'
+      : state.variant === 'inline' ? 'Inline: same picker, in page flow instead of over it.'
+      : 'Sheet: right rail, full height, same list and detail.';
+    $('#frame').style.width = state.width + 'px';
+
+    const ov = $('#overlay');
+    if (state.panelOpen) {
+      ov.classList.remove('hidden');
+      ov.innerHTML = overlayHTML();
+    } else {
+      ov.classList.add('hidden');
+      ov.innerHTML = '';
+    }
+
+    document.querySelectorAll('[data-seg="variant"] button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === state.variant)));
+    document.querySelectorAll('[data-seg="group"] button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.g === state.group)));
+    document.querySelectorAll('[data-seg="width"] button').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.w) === state.width)));
+    $('#open').setAttribute('aria-expanded', String(state.panelOpen));
+    icons();
+
+    const q = $('#q');
+    if (q) {
+      q.addEventListener('input', (e) => { state.query = e.target.value; render(); const n = $('#q'); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } });
+    }
+    const key = $('#key');
+    if (key) key.addEventListener('input', (e) => { state.keyDraft = e.target.value; });
+  }
+
+  function openPanel() {
+    state.panelOpen = true;
+    state.selected = null;
+    state.screen = 'list';
+    state.query = '';
+    render();
+  }
+
+  // ---------- events ----------
+  document.addEventListener('click', (e) => {
+    const seg = e.target.closest('[data-seg] button');
+    if (seg) {
+      if (seg.dataset.v) state.variant = seg.dataset.v;
+      if (seg.dataset.g) state.group = seg.dataset.g;
+      if (seg.dataset.w) state.width = Number(seg.dataset.w);
+      state.selected = null; state.screen = 'list';
+      render();
+      return;
+    }
+    if (e.target.closest('#open') || e.target.closest('#open2')) { openPanel(); return; }
+    const row = e.target.closest('[data-row]');
+    if (row) { pick(row.dataset.id); return; }
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'close') { closeOverlay(); return; }
+    if (act === 'back') { goList(); return; }
+    if (act === 'clear') { state.query = ''; render(); return; }
+    if (act === 'copy') { state.copied = true; render(); setTimeout(() => { state.copied = false; }, 1500); return; }
+    if (act === 'connect') { finish(); return; }
+    if (act === 'scrim' && e.target.dataset.act === 'scrim') { closeOverlay(); return; }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { if (state.panelOpen) closeOverlay(); return; }
+    if (!state.panelOpen) return;
+    if (e.key === 'Enter' && state.screen === 'list') {
+      const first = groups()[0]?.items[0];
+      if (first) pick(first.id);
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const items = groups().flatMap((g) => g.items);
+      if (!items.length) return;
+      e.preventDefault();
+      const at = items.findIndex((p) => p.id === state.selected);
+      const next = e.key === 'ArrowDown' ? Math.min(items.length - 1, at + 1) : Math.max(0, at - 1);
+      state.selected = items[next].id;
+      state.screen = 'detail';
+      render();
+    }
+  });
+
+  render();
+</script>
+</body>
+</html>

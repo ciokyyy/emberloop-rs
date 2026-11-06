@@ -139,14 +139,20 @@ async fn runner_resuming(events_stream: Vec<HarnessEvent>, resumes: bool) -> Har
     let events = Arc::new(EventBus::default());
     let steers = SteerQueues::default();
     let prompts = Arc::new(PromptStore::new(dir.path().join("prompts")));
+    let models = Arc::new(api::models::ModelCatalogue::new(
+        data_root.model_catalogue_file(),
+        Vec::new(),
+    ));
     let proxy = ProxyState::new(
         ProxyConfig::new(b"test-secret"),
         sessions.clone(),
         projects.clone(),
         data_root.clone(),
         prompts,
+        models,
         Arc::clone(&events),
         steers.clone(),
+        Arc::new(tokio::sync::RwLock::new(api::state::Settings::default())),
     );
     let fake = Arc::new(FakeHarness {
         resumes,
@@ -165,6 +171,7 @@ async fn runner_resuming(events_stream: Vec<HarnessEvent>, resumes: bool) -> Har
         "http://127.0.0.1:1".to_string(),
         logs,
         None,
+        Arc::new(tokio::sync::RwLock::new(api::state::Settings::default())),
     ));
     HarnessFixture {
         sessions,
@@ -327,6 +334,78 @@ async fn a_turn_end_wakes_pending_steers_and_notices_as_one_prompt() {
         .await
         .iter()
         .all(|entry| entry.route.is_some()));
+}
+
+#[tokio::test]
+async fn a_turn_end_with_an_open_todo_reminds_the_model_once() {
+    let fixture = runner_with(vec![HarnessEvent::TurnFinished {
+        stop_reason: Some("end".into()),
+        usage: None,
+    }])
+    .await;
+    let dir = fixture.data_root.session_dir("ses_1");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("todos.json"),
+        r#"{"next":3,"items":[
+            {"id":"t1","content":"read the spec","status":"completed"},
+            {"id":"t2","content":"write the parser","status":"pending"}
+        ]}"#,
+    )
+    .unwrap();
+    fixture
+        .runner
+        .prompt("ses_1", "start", Vec::<PromptImageDto>::new())
+        .await
+        .unwrap();
+
+    until(|| !fixture.fake.woken.lock().unwrap().is_empty()).await;
+    let woken = fixture.fake.woken.lock().unwrap().clone();
+    assert_eq!(woken.len(), 1);
+    assert!(woken[0].contains("Reminder 1 of 3"));
+    assert!(woken[0].contains("t2 pending"));
+    assert!(!woken[0].contains("read the spec"));
+}
+
+#[tokio::test]
+async fn a_finished_todo_call_republishes_the_plan_before_the_turn_ends() {
+    let fixture = runner_with(vec![
+        HarnessEvent::ToolStarted {
+            id: "call-1".into(),
+            name: "mcp__el__todo".into(),
+            input: serde_json::json!({ "action": "set" }),
+        },
+        HarnessEvent::ToolFinished {
+            id: "call-1".into(),
+            output: serde_json::json!(
+                "1 pending · 0 in progress · 0 completed · 0 cancelled\nt1 [ ] one\n"
+            ),
+            status: None,
+        },
+    ])
+    .await;
+    let dir = fixture.data_root.session_dir("ses_1");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("todos.json"),
+        r#"{"next":2,"items":[{"id":"t1","content":"one","status":"pending"}]}"#,
+    )
+    .unwrap();
+    let mut events = fixture.events.subscribe();
+    fixture
+        .runner
+        .prompt("ses_1", "start", Vec::<PromptImageDto>::new())
+        .await
+        .unwrap();
+
+    // No TurnFinished here: the only todos event can be the one after the call.
+    loop {
+        let event = events.recv().await.unwrap();
+        if event.kind == EventKind::Todos {
+            assert_eq!(event.data["items"][0]["id"], "t1");
+            break;
+        }
+    }
 }
 
 #[tokio::test]

@@ -92,16 +92,24 @@ async fn the_sign_in_url_reaches_the_panel_and_the_pasted_address_finishes_the_l
     assert_eq!(finished.tier, "Free");
 
     let providers = login.providers().await;
-    assert_eq!(providers.len(), 1);
-    assert_eq!(providers[0].id, "agy");
-    assert_eq!(providers[0].accounts[0].label, "Work");
-    assert_eq!(providers[0].accounts[0].tier, "Free");
-    assert!(providers[0].signed_in);
-    assert!(providers[0].accounts[0].signed_in);
+    let agy = providers
+        .iter()
+        .find(|provider| provider.id == "agy")
+        .unwrap();
+    assert_eq!(agy.accounts[0].label, "Work");
+    assert_eq!(agy.accounts[0].tier, "Free");
+    assert!(agy.signed_in);
+    assert!(agy.accounts[0].signed_in);
 
     login.sign_out("default").await.unwrap();
     assert!(!dir.path().join("accounts/agy/default").exists());
-    assert!(!login.providers().await[0].signed_in);
+    let agy = login
+        .providers()
+        .await
+        .into_iter()
+        .find(|provider| provider.id == "agy")
+        .unwrap();
+    assert!(!agy.signed_in);
 }
 
 #[tokio::test]
@@ -136,17 +144,27 @@ async fn a_missing_server_answers_503() {
 }
 
 #[tokio::test]
-async fn opencode_key_is_stored_privately_and_listed_in_providers() {
+async fn opencode_key_and_chatgpt_are_stored_privately_and_listed() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempdir().unwrap();
     let keys = dir.path().join("keys.json");
-    let login =
-        AgyLogin::new(dir.path().join("accounts/agy"), dir.path().join("agy")).with_keys(&keys);
+    let auth = dir.path().join("pi/agent/auth.json");
+    let login = AgyLogin::new(dir.path().join("accounts/agy"), dir.path().join("agy"))
+        .with_keys(&keys)
+        .with_pi_auth(&auth);
 
     let providers = login.providers().await;
-    assert_eq!(providers.len(), 2);
-    assert_eq!(providers[1].id, "opencode-go");
-    assert!(!providers[1].signed_in);
+    assert_eq!(providers.len(), 3);
+    let opencode = providers
+        .iter()
+        .find(|provider| provider.id == "opencode-go")
+        .unwrap();
+    assert!(!opencode.signed_in);
+    let chatgpt = providers
+        .iter()
+        .find(|provider| provider.id == "openai-codex")
+        .unwrap();
+    assert!(!chatgpt.signed_in);
 
     login.set_key("opencode-go", "  sk-oc-123  ").await.unwrap();
     let mode = std::fs::metadata(&keys).unwrap().permissions().mode() & 0o777;
@@ -156,10 +174,43 @@ async fn opencode_key_is_stored_privately_and_listed_in_providers() {
     assert_eq!(stored["opencode-go"], "sk-oc-123");
 
     let providers = login.providers().await;
-    assert!(providers[1].signed_in);
-    assert_eq!(providers[1].accounts.len(), 1);
-    assert_eq!(providers[1].accounts[0].id, "opencode-go");
+    let opencode = providers
+        .iter()
+        .find(|provider| provider.id == "opencode-go")
+        .unwrap();
+    assert!(opencode.signed_in);
+    assert_eq!(opencode.accounts.len(), 1);
+    assert_eq!(opencode.accounts[0].id, "opencode-go");
+
+    std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
+    std::fs::write(
+        &auth,
+        r#"{"openai-codex":{"type":"oauth","access":"at","refresh":"rt","expires":1}}"#,
+    )
+    .unwrap();
+    let chatgpt = login
+        .providers()
+        .await
+        .into_iter()
+        .find(|provider| provider.id == "openai-codex")
+        .unwrap();
+    assert!(chatgpt.signed_in);
+
+    login.sign_out("openai-codex").await.unwrap();
+    let chatgpt = login
+        .providers()
+        .await
+        .into_iter()
+        .find(|provider| provider.id == "openai-codex")
+        .unwrap();
+    assert!(!chatgpt.signed_in);
 
     login.sign_out("opencode-go").await.unwrap();
-    assert!(!login.providers().await[1].signed_in);
+    let opencode = login
+        .providers()
+        .await
+        .into_iter()
+        .find(|provider| provider.id == "opencode-go")
+        .unwrap();
+    assert!(!opencode.signed_in);
 }

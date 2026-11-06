@@ -40,7 +40,28 @@ pub struct CompressorStatus {
     pub active_blocks: usize,
     pub restored_blocks: usize,
     pub spilled_turns: usize,
+    pub tokens_compressed: u64,
     pub spill_dir: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CompressPolicy {
+    /// `compress.preserveRecentMessages`: turns at the tail that never fold.
+    pub preserve_recent_messages: usize,
+    /// `compress.protectedTools`: results of these tools never fold.
+    pub protected_tools: Vec<String>,
+}
+
+impl CompressPolicy {
+    pub fn with_recent(mut self, preserve_recent_messages: usize) -> Self {
+        self.preserve_recent_messages = preserve_recent_messages;
+        self
+    }
+
+    pub fn with_protected_tools(mut self, protected_tools: Vec<String>) -> Self {
+        self.protected_tools = protected_tools;
+        self
+    }
 }
 
 /// Billion-context backend. Phase 1 ships the native implementation; a future
@@ -48,6 +69,13 @@ pub struct CompressorStatus {
 pub trait Compressor: Send + Sync {
     fn compress(&mut self, contents: &mut Vec<Value>, call: CompressCall)
         -> Result<String, String>;
+    /// Fold several ranges in one call. Every range is numbered against the history as it is
+    /// now; they are validated together and either all fold or none does.
+    fn compress_batch(
+        &mut self,
+        contents: &mut Vec<Value>,
+        calls: Vec<CompressCall>,
+    ) -> Result<String, String>;
     fn decompress(
         &mut self,
         contents: &mut Vec<Value>,
@@ -56,9 +84,24 @@ pub trait Compressor: Send + Sync {
     fn search_context(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>, String>;
     fn status(&self) -> CompressorStatus;
 
+    /// Recent-turn and protected-tool policy for the next folds. Backends without folds ignore it.
+    fn set_policy(&mut self, _policy: CompressPolicy) {}
+
+    /// Why no stored fold matched `contents`: one line for the session log. Backends without
+    /// folds say nothing.
+    fn fold_report(&self, _contents: &[Value], _skip: &[Value]) -> Option<String> {
+        None
+    }
+
     /// Re-attach stored folds to a request that the harness rebuilt from its
     /// own history. Backends without folds do nothing.
-    fn apply(&mut self, _contents: &mut Vec<Value>) -> usize {
+    fn apply(&mut self, contents: &mut Vec<Value>) -> usize {
+        self.apply_skipping(contents, &[])
+    }
+
+    /// Like `apply`, ignoring `skip` turns when matching a fold's stored turns: steers and proxy
+    /// pairs the splice store puts back after the fold is applied.
+    fn apply_skipping(&mut self, _contents: &mut Vec<Value>, _skip: &[Value]) -> usize {
         0
     }
 }
@@ -67,6 +110,7 @@ pub struct NativeCompressor {
     blocks: Vec<Block>,
     next_id: usize,
     spill_dir: PathBuf,
+    policy: CompressPolicy,
 }
 
 impl NativeCompressor {
@@ -75,6 +119,7 @@ impl NativeCompressor {
             blocks: Vec::new(),
             next_id: 1,
             spill_dir: spill_dir.into(),
+            policy: CompressPolicy::default(),
         }
     }
 
@@ -111,6 +156,32 @@ impl NativeCompressor {
         json!({"role": "user", "parts": [{"text": marker}]})
     }
 
+    fn fold_range(
+        &mut self,
+        contents: &mut Vec<Value>,
+        call: CompressCall,
+        id: &str,
+    ) -> Result<String, String> {
+        let originals = contents[call.start..call.end].to_vec();
+        let summary_turn = Self::summary_turn(self.marker(&call, id));
+        let block = Block {
+            id: id.to_string(),
+            topic: call.topic.clone(),
+            summary: call.summary.clone(),
+            originals,
+            summary_turn: summary_turn.clone(),
+            restored: false,
+        };
+        self.spill_originals(&block)?;
+        contents.splice(call.start..call.end, [summary_turn]);
+        self.blocks.push(block);
+        Ok(format!(
+            "Compressed turns {}–{} into block {id}. Originals kept in the session spill dir.",
+            call.start,
+            call.end.saturating_sub(1)
+        ))
+    }
+
     fn block_index(&self, id: &str) -> Option<usize> {
         self.blocks.iter().position(|block| block.id == id)
     }
@@ -135,40 +206,51 @@ impl Compressor for NativeCompressor {
         contents: &mut Vec<Value>,
         call: CompressCall,
     ) -> Result<String, String> {
-        if call.start >= call.end || call.end > contents.len() {
-            return Err(format!(
-                "invalid range {}..{} for {} turns",
-                call.start,
-                call.end,
-                contents.len()
-            ));
+        self.compress_batch(contents, vec![call])
+    }
+
+    fn compress_batch(
+        &mut self,
+        contents: &mut Vec<Value>,
+        mut calls: Vec<CompressCall>,
+    ) -> Result<String, String> {
+        if calls.is_empty() {
+            return Err("ranges must not be empty".into());
         }
-        if call.summary.trim().is_empty() {
-            return Err("summary must not be empty".into());
+        calls.sort_by_key(|call| call.start);
+        let several = calls.len() > 1;
+        for (index, call) in calls.iter().enumerate() {
+            let named = |error: String| {
+                if several {
+                    format!("range {}: {error}", index + 1)
+                } else {
+                    error
+                }
+            };
+            validate_range(call, contents, &self.policy).map_err(named)?;
+            if index > 0 && call.start < calls[index - 1].end {
+                return Err(format!(
+                    "range {} overlaps range {}: turns {}–{} and {}–{}",
+                    index + 1,
+                    index,
+                    calls[index - 1].start,
+                    calls[index - 1].end.saturating_sub(1),
+                    call.start,
+                    call.end.saturating_sub(1)
+                ));
+            }
         }
 
-        let id = format!("b{}", self.next_id);
-        self.next_id += 1;
-        let originals = contents[call.start..call.end].to_vec();
-        let summary_turn = Self::summary_turn(self.marker(&call, &id));
-        let block = Block {
-            id: id.clone(),
-            topic: call.topic.clone(),
-            summary: call.summary.clone(),
-            originals,
-            summary_turn: summary_turn.clone(),
-            restored: false,
-        };
-        self.spill_originals(&block)?;
-
-        contents.splice(call.start..call.end, [summary_turn]);
-        self.blocks.push(block);
-
-        Ok(format!(
-            "Compressed turns {}–{} into block {id}. Originals kept in the session spill dir.",
-            call.start,
-            call.end.saturating_sub(1)
-        ))
+        // Ids follow the position in the history, but ranges are folded from the highest down
+        // so folding one never moves the numbers of the ones before it.
+        let first_id = self.next_id;
+        self.next_id += calls.len();
+        let mut lines = vec![String::new(); calls.len()];
+        for (index, call) in calls.into_iter().enumerate().rev() {
+            let id = format!("b{}", first_id + index);
+            lines[index] = self.fold_range(contents, call, &id)?;
+        }
+        Ok(lines.join("\n"))
     }
 
     fn decompress(
@@ -250,37 +332,276 @@ impl Compressor for NativeCompressor {
                 .filter(|block| !block.restored)
                 .map(|block| block.originals.len())
                 .sum(),
+            tokens_compressed: self
+                .blocks
+                .iter()
+                .filter(|block| !block.restored)
+                .map(|block| token_count(&block.originals))
+                .sum(),
             spill_dir: self.spill_dir.to_string_lossy().to_string(),
         }
     }
 
-    fn apply(&mut self, contents: &mut Vec<Value>) -> usize {
+    fn set_policy(&mut self, policy: CompressPolicy) {
+        self.policy = policy;
+    }
+
+    fn apply_skipping(&mut self, contents: &mut Vec<Value>, skip: &[Value]) -> usize {
+        let skip_ids = turn_ids(skip);
         let mut applied = 0;
-        for block in &self.blocks {
-            if block.restored || block.originals.is_empty() {
-                continue;
+        // Widest first: a block folded over an earlier block's raw turns must win, or the
+        // smaller fold lands first and the wider one can never match again. Then repeat until
+        // nothing moves, because every fold over a fold's marker needs the previous one applied:
+        // a chain of n folds takes n rounds.
+        let mut blocks: Vec<&Block> = self
+            .blocks
+            .iter()
+            .filter(|block| !block.restored && !block.originals.is_empty())
+            .collect();
+        blocks.sort_by_key(|block| std::cmp::Reverse(block.originals.len()));
+        let cap = blocks.len() * 2 + 4;
+        loop {
+            let mut moved = false;
+            for block in &blocks {
+                let wanted: Vec<Value> = block
+                    .originals
+                    .iter()
+                    .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, &skip_ids))
+                    .cloned()
+                    .collect();
+                if let Some((start, end)) = find_span(contents, &wanted) {
+                    let replacement = [block.summary_turn.clone()];
+                    contents.splice(start..end, replacement);
+                    applied += 1;
+                    moved = true;
+                }
             }
-            if let Some(position) = find_window(contents, &block.originals) {
-                let replacement = [block.summary_turn.clone()];
-                contents.splice(position..position + block.originals.len(), replacement);
-                applied += 1;
+            if !moved || applied >= cap {
+                break;
             }
         }
         applied
     }
+    fn fold_report(&self, contents: &[Value], skip: &[Value]) -> Option<String> {
+        let skip_ids = turn_ids(skip);
+        let block = self
+            .blocks
+            .iter()
+            .filter(|block| !block.restored && !block.originals.is_empty())
+            .max_by_key(|block| block.originals.len())?;
+        let wanted: Vec<Value> = block
+            .originals
+            .iter()
+            .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, &skip_ids))
+            .cloned()
+            .collect();
+        let head = wanted.first()?;
+        let Some(start) = contents.iter().position(|turn| turn_eq(turn, head)) else {
+            return Some(format!(
+                "{}: first stored turn `{}` is not in the request",
+                block.id,
+                brief(head)
+            ));
+        };
+        for (offset, turn) in wanted.iter().enumerate().skip(1) {
+            let found = contents.get(start + offset);
+            if found.is_none_or(|found| !turn_eq(turn, found)) {
+                return Some(format!(
+                    "{}: turns 0..{offset} matched at {start}, turn {offset} differs: stored `{}` vs request `{}`",
+                    block.id,
+                    brief(turn),
+                    found.map_or("<none>".to_string(), brief)
+                ));
+            }
+        }
+        None
+    }
 }
 
-fn find_window(contents: &[Value], window: &[Value]) -> Option<usize> {
-    if window.is_empty() || window.len() > contents.len() {
+/// One short line for a stored or requested turn, used only by `fold_report`.
+fn brief(turn: &Value) -> String {
+    let text = turn
+        .get("parts")
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .map(|part| {
+                    match part
+                        .get("functionCall")
+                        .or_else(|| part.get("functionResponse"))
+                    {
+                        Some(call) => format!(
+                            "{}[{}]",
+                            call.get("name").and_then(Value::as_str).unwrap_or("?"),
+                            call.get("id").and_then(Value::as_str).unwrap_or("?")
+                        ),
+                        None => part
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .chars()
+                            .take(40)
+                            .collect(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .unwrap_or_default();
+    text.chars().take(80).collect()
+}
+
+/// The nudge is injected into one request only; a fold that spanned it stored a turn no later
+/// request carries, which would otherwise stop the fold from ever matching again.
+fn is_transient(turn: &Value) -> bool {
+    turn.get("_nudge").is_some()
+}
+
+fn validate_range(
+    call: &CompressCall,
+    contents: &[Value],
+    policy: &CompressPolicy,
+) -> Result<(), String> {
+    let turns = contents.len();
+    if call.start >= call.end || call.end > turns {
+        return Err(format!(
+            "invalid range {}..{} for {turns} turns",
+            call.start, call.end
+        ));
+    }
+    if call.summary.trim().is_empty() {
+        return Err("summary must not be empty".into());
+    }
+    let keep = policy.preserve_recent_messages.min(turns);
+    if call.end > turns - keep {
+        return Err(format!(
+            "range {}..{} includes the last {keep} preserved turns",
+            call.start, call.end
+        ));
+    }
+    if let Some(name) = policy.protected_tools.iter().find(|name| {
+        contents[call.start..call.end]
+            .iter()
+            .any(|turn| turn_tool_names(turn).any(|tool| tool == name.as_str()))
+    }) {
+        return Err(format!(
+            "range {}..{} includes protected tool {name}",
+            call.start, call.end
+        ));
+    }
+    Ok(())
+}
+
+/// Names of every tool call and result in a turn, whatever the wire's shape.
+fn turn_tool_names(turn: &Value) -> impl Iterator<Item = &str> {
+    turn.get("parts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|part| {
+            part.get("functionCall")
+                .or_else(|| part.get("functionResponse"))
+                .and_then(|call| call.get("name"))
+                .and_then(Value::as_str)
+        })
+}
+
+fn token_count(turns: &[Value]) -> u64 {
+    turns
+        .iter()
+        .map(|turn| u64::try_from(turn.to_string().len() / 4).unwrap_or(u64::MAX))
+        .sum()
+}
+
+/// Most turns a stored steer or a proxy pair may add between two folded turns. They are put back
+/// into the history before a block is looked for, so the harness's own turns are no longer
+/// contiguous; a bigger gap is a different conversation, not a splice.
+const MAX_SPLICE_GAP: usize = 4;
+
+/// Where the folded turns sit in `contents`: the range from the first to the last of them, found
+/// in order with at most `MAX_SPLICE_GAP` unrelated turns between neighbours. The fast path is the
+/// exact contiguous window.
+fn find_span(contents: &[Value], originals: &[Value]) -> Option<(usize, usize)> {
+    if originals.is_empty() || originals.len() > contents.len() {
         return None;
     }
-    contents
-        .windows(window.len())
-        .position(|turns| turns == window)
+    if let Some(start) = contents
+        .windows(originals.len())
+        .position(|turns| turns.iter().zip(originals).all(|(a, b)| turn_eq(a, b)))
+    {
+        return Some((start, start + originals.len()));
+    }
+    (0..contents.len())
+        .filter(|&start| turn_eq(&contents[start], &originals[0]))
+        .find_map(|start| span_from(contents, originals, start))
+}
+
+fn span_from(contents: &[Value], originals: &[Value], start: usize) -> Option<(usize, usize)> {
+    let mut at = start;
+    for original in &originals[1..] {
+        let next = (at + 1..contents.len().min(at + 2 + MAX_SPLICE_GAP))
+            .find(|&index| turn_eq(&contents[index], original))?;
+        at = next;
+    }
+    Some((start, at + 1))
+}
+
+/// Turn equality that ignores `thoughtSignature` and `_raw`: the Google wire signs unsigned calls
+/// after a fold, and the chat wires wrap every turn in a `_raw` copy the proxy's own turns lack.
+fn turn_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            let kept = |m: &serde_json::Map<String, Value>| {
+                m.keys()
+                    .filter(|k| *k != "thoughtSignature" && *k != "_raw")
+                    .count()
+            };
+            kept(x) == kept(y)
+                && x.iter()
+                    .filter(|(k, _)| *k != "thoughtSignature" && *k != "_raw")
+                    .all(|(k, v)| y.get(k).is_some_and(|w| turn_eq(v, w)))
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| turn_eq(p, q))
+        }
+        _ => a == b,
+    }
+}
+
+/// Every function-call id the stored turns carry. A splice pair changes shape on the wire round
+/// trip (`_raw`, the tool name, the marker's field), so the id is what identifies it.
+fn turn_ids(turns: &[Value]) -> Vec<&str> {
+    turns
+        .iter()
+        .filter_map(|turn| turn.get("parts").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|part| {
+            part.get("functionCall")
+                .or_else(|| part.get("functionResponse"))
+        })
+        .filter_map(|call| call.get("id").and_then(Value::as_str))
+        .collect()
+}
+
+fn is_skipped(turn: &Value, skip: &[Value], skip_ids: &[&str]) -> bool {
+    let id_matches = turn
+        .get("parts")
+        .and_then(Value::as_array)
+        .is_some_and(|parts| {
+            parts.iter().any(|part| {
+                part.get("functionCall")
+                    .or_else(|| part.get("functionResponse"))
+                    .and_then(|call| call.get("id"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| skip_ids.contains(&id))
+            })
+        });
+    id_matches || skip.iter().any(|spliced| turn_eq(turn, spliced))
 }
 
 fn contains_window(contents: &[Value], window: &[Value]) -> bool {
-    find_window(contents, window).is_some()
+    find_span(contents, window).is_some()
 }
 
 fn snippet_for(summary: &str, needle: &str) -> String {
@@ -331,6 +652,44 @@ mod tests {
             summary: "**second** and **third** agreed on `x=1`".into(),
             topic: Some("plan".into()),
         }
+    }
+
+    #[test]
+    fn preserve_recent_messages_rejects_a_range_that_reaches_the_tail() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        compressor.set_policy(CompressPolicy::default().with_recent(2));
+        let mut contents = turns();
+        let error = compressor.compress(&mut contents, call()).unwrap_err();
+        assert!(error.contains("last 2 preserved turns"), "{error}");
+        assert_eq!(contents, turns());
+    }
+
+    #[test]
+    fn protected_tools_never_fold_and_are_named_in_the_error() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        compressor.set_policy(CompressPolicy::default().with_protected_tools(vec!["read".into()]));
+        let mut contents = vec![
+            json!({"role": "user", "parts": [{"text": "first"}]}),
+            json!({"role": "model", "parts": [{"functionCall": {"id": "c1", "name": "read", "args": {}}}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "c1", "name": "read", "response": {"result": "x"}}}]}),
+            json!({"role": "model", "parts": [{"text": "fourth"}]}),
+        ];
+        let error = compressor.compress(&mut contents, call()).unwrap_err();
+        assert!(error.contains("protected tool read"), "{error}");
+    }
+
+    #[test]
+    fn status_reports_compressed_tokens() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = turns();
+        compressor.compress(&mut contents, call()).unwrap();
+        let status = compressor.status();
+        assert_eq!(status.active_blocks, 1);
+        assert_eq!(status.spilled_turns, 2);
+        assert!(status.tokens_compressed > 0);
     }
 
     #[test]
@@ -389,6 +748,324 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("block b1"));
+    }
+
+    #[test]
+    fn apply_refolds_when_spliced_turns_sit_inside_the_folded_range() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = turns();
+        compressor.compress(&mut contents, call()).unwrap();
+
+        // The harness resends the original turns; a stored steer and a proxy pair were put
+        // back between them before the block is looked for.
+        let mut rebuilt = turns();
+        rebuilt.insert(
+            2,
+            json!({"role": "user", "parts": [{"text": "steer: spliced"}]}),
+        );
+        rebuilt.insert(3, json!({"role": "user", "parts": [{"text": "pair"}]}));
+        assert_eq!(compressor.apply(&mut rebuilt), 1);
+        assert!(rebuilt.iter().any(|turn| turn["parts"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("block b1"))));
+        assert!(!rebuilt
+            .iter()
+            .any(|turn| turn["parts"][0]["text"].as_str() == Some("steer: spliced")));
+    }
+
+    #[test]
+    fn apply_does_not_swallow_a_distant_lookalike() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = turns();
+        compressor.compress(&mut contents, call()).unwrap();
+
+        // The first folded turn is present, the rest is far away behind unrelated turns.
+        let originals = turns();
+        let mut rebuilt = vec![originals[1].clone()];
+        for n in 0..12 {
+            rebuilt.push(json!({"role": "user", "parts": [{"text": format!("other {n}")}]}));
+        }
+        rebuilt.push(originals[2].clone());
+        let before = rebuilt.clone();
+        assert_eq!(compressor.apply(&mut rebuilt), 0);
+        assert_eq!(rebuilt, before);
+    }
+
+    /// Turns as the OpenAI wire extracts them: every turn carries the exact wire message in `_raw`.
+    fn raw_turns() -> Vec<Value> {
+        (0..6)
+            .map(|n| {
+                json!({
+                    "role": "user",
+                    "parts": [{"text": format!("t{n}")}],
+                    "_raw": {"role": "user", "content": format!("t{n}")}
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn apply_refolds_a_fold_whose_marker_came_back_with_raw() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = raw_turns();
+        compressor.compress(&mut contents, range(1, 3)).unwrap();
+        // The wire round trip gives the inserted marker a `_raw` field; a later fold stores it.
+        for turn in &mut contents {
+            turn.as_object_mut()
+                .unwrap()
+                .insert("_raw".into(), json!({"role": "user"}));
+        }
+        compressor.compress(&mut contents, range(1, 4)).unwrap();
+
+        // The harness resends only its own turns: neither marker is in them.
+        let mut rebuilt = raw_turns();
+        assert_eq!(compressor.apply(&mut rebuilt), 2);
+        assert_eq!(rebuilt.len(), 3);
+        assert!(rebuilt[1]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("block b2"));
+    }
+
+    #[test]
+    fn apply_refolds_a_fold_whose_originals_carry_a_transient_nudge() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = raw_turns();
+        // The proxy inserts a nudge in every request while its gate holds, so a fold over the
+        // history stores one; the harness never saw it and its next request lacks the turn.
+        contents.insert(
+            2,
+            json!({"role": "user", "parts": [{"text": "nudge: first"}], "_nudge": true}),
+        );
+        compressor.compress(&mut contents, range(1, 4)).unwrap();
+
+        let mut rebuilt = raw_turns();
+        assert_eq!(compressor.apply(&mut rebuilt), 1);
+        assert!(rebuilt.iter().any(|turn| {
+            turn["parts"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("block b1")
+        }));
+    }
+
+    #[test]
+    fn apply_skipping_removes_a_proxy_pair_by_its_call_id() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = raw_turns();
+        let pair = [
+            json!({"role": "model", "parts": [{"functionCall": {"id": "call_p", "name": "compress", "args": {}}}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "call_p", "name": "tool", "response": {"result": "folded\n[emberloop-splice:call_p]"}}}]}),
+        ];
+        contents.splice(2..2, pair.clone());
+        compressor.compress(&mut contents, range(1, 4)).unwrap();
+
+        // The stored pair differs from the request copy: no `_raw`, the splice marker in its own
+        // response field, and the call's name instead of the wire's "tool".
+        let skip = vec![
+            pair[0].clone(),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "call_p", "name": "compress", "response": {"result": "folded", "splice": "emberloop-splice:call_p"}}}]}),
+        ];
+        let mut rebuilt = raw_turns();
+        assert_eq!(compressor.apply_skipping(&mut rebuilt, &skip), 1);
+        assert_eq!(rebuilt.len(), 6);
+        assert!(rebuilt[1]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("block b1"));
+    }
+
+    #[test]
+    fn a_chain_of_folds_collapses_to_the_outermost_summary() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = eight();
+        compressor.compress(&mut contents, range(1, 3)).unwrap();
+        compressor.compress(&mut contents, range(1, 4)).unwrap();
+        compressor.compress(&mut contents, range(1, 5)).unwrap();
+
+        // Each fold wrapped the previous marker, so the chain needs three rounds.
+        let mut rebuilt = eight();
+        assert_eq!(compressor.apply(&mut rebuilt), 3);
+        let marker = rebuilt[1]["parts"][0]["text"].as_str().unwrap();
+        assert!(marker.contains("summary of 1..5"), "{marker}");
+    }
+
+    #[test]
+    fn apply_prefers_the_widest_matching_fold_so_a_nested_block_does_not_shadow_it() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let wide = |n: usize| -> Vec<Value> {
+            (0..n)
+                .map(|i| json!({"role": "user", "parts": [{"text": format!("turn {i}")}]}))
+                .collect()
+        };
+        let mut first = wide(12);
+        compressor
+            .compress(
+                &mut first,
+                CompressCall {
+                    start: 1,
+                    end: 3,
+                    summary: "narrow fold".into(),
+                    topic: None,
+                },
+            )
+            .unwrap();
+        let mut second = wide(12);
+        compressor
+            .compress(
+                &mut second,
+                CompressCall {
+                    start: 1,
+                    end: 9,
+                    summary: "wide fold".into(),
+                    topic: None,
+                },
+            )
+            .unwrap();
+
+        let mut rebuilt = wide(12);
+        assert_eq!(compressor.apply(&mut rebuilt), 1);
+        assert!(rebuilt.iter().any(|turn| turn["parts"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("wide fold"))));
+    }
+
+    fn eight() -> Vec<Value> {
+        (0..8)
+            .map(|n| json!({"role": "user", "parts": [{"text": format!("t{n}")}]}))
+            .collect()
+    }
+
+    fn range(start: usize, end: usize) -> CompressCall {
+        CompressCall {
+            start,
+            end,
+            summary: format!("summary of {start}..{end}"),
+            topic: None,
+        }
+    }
+
+    fn texts(contents: &[Value]) -> Vec<String> {
+        contents
+            .iter()
+            .map(|turn| turn["parts"][0]["text"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn batch_folds_every_range_against_the_original_numbering() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = eight();
+
+        let result = compressor
+            .compress_batch(&mut contents, vec![range(1, 3), range(4, 6)])
+            .unwrap();
+
+        // Two folds, each replacing two turns by one: 8 - 2 = 6 turns, in place.
+        let got = texts(&contents);
+        assert_eq!(got.len(), 6);
+        assert_eq!(got[0], "t0");
+        assert!(got[1].contains("block b1"), "{got:?}");
+        assert_eq!(got[2], "t3");
+        assert!(got[3].contains("block b2"), "{got:?}");
+        assert_eq!(&got[4..], ["t6", "t7"]);
+        assert_eq!(result.lines().count(), 2);
+        assert!(result.contains("turns 1–2") && result.contains("block b1"));
+        assert!(result.contains("turns 4–5") && result.contains("block b2"));
+    }
+
+    #[test]
+    fn batch_order_given_does_not_matter() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = eight();
+        compressor
+            .compress_batch(&mut contents, vec![range(4, 6), range(1, 3)])
+            .unwrap();
+        let got = texts(&contents);
+        assert!(got[1].contains("block b1"), "lowest range is b1: {got:?}");
+        assert!(got[3].contains("block b2"), "{got:?}");
+    }
+
+    #[test]
+    fn batch_with_overlapping_ranges_changes_nothing() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = eight();
+        let before = contents.clone();
+        let error = compressor
+            .compress_batch(&mut contents, vec![range(1, 4), range(3, 6)])
+            .unwrap_err();
+        assert!(error.contains("overlap"), "{error}");
+        assert_eq!(contents, before);
+        assert_eq!(compressor.status().blocks, 0);
+    }
+
+    #[test]
+    fn batch_with_one_bad_range_changes_nothing_and_names_it() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = eight();
+        let before = contents.clone();
+        let mut bad = range(4, 6);
+        bad.summary = "  ".into();
+        let error = compressor
+            .compress_batch(&mut contents, vec![range(1, 3), bad])
+            .unwrap_err();
+        assert!(error.contains("range 2"), "{error}");
+        assert_eq!(contents, before);
+        assert_eq!(compressor.status().blocks, 0);
+
+        let out_of_bounds = compressor
+            .compress_batch(&mut contents, vec![range(1, 3), range(6, 9)])
+            .unwrap_err();
+        assert!(out_of_bounds.contains("range 2"), "{out_of_bounds}");
+        assert_eq!(contents, before);
+    }
+
+    #[test]
+    fn batch_blocks_each_restore_their_own_turns() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = eight();
+        let original = contents.clone();
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 3), range(4, 6)])
+            .unwrap();
+        for id in ["b1", "b2"] {
+            compressor
+                .decompress(
+                    &mut contents,
+                    DecompressCall {
+                        block_id: id.into(),
+                        to_file: None,
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(contents, original);
+    }
+
+    #[test]
+    fn a_single_range_batch_keeps_the_single_call_wording() {
+        let dir = tempdir().unwrap();
+        let mut single = NativeCompressor::new(dir.path());
+        let mut a = eight();
+        let one = single.compress(&mut a, range(1, 3)).unwrap();
+        let dir2 = tempdir().unwrap();
+        let mut batch = NativeCompressor::new(dir2.path());
+        let mut b = eight();
+        let many = batch.compress_batch(&mut b, vec![range(1, 3)]).unwrap();
+        assert_eq!(one, many);
+        assert_eq!(a, b);
     }
 
     #[test]
@@ -456,5 +1133,19 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("unknown block"));
+    }
+
+    #[test]
+    fn fold_report_names_the_turn_that_stopped_a_fold() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path());
+        let mut contents = raw_turns();
+        compressor.compress(&mut contents, range(1, 4)).unwrap();
+
+        let mut rebuilt = raw_turns();
+        rebuilt[2]["parts"][0]["text"] = json!("changed");
+        // `rebuilt[2]` is the second turn of the fold: the first one at index 1 is `turn 0`.
+        let report = compressor.fold_report(&rebuilt, &[]).expect("a report");
+        assert!(report.contains("turn 1 differs"), "{report}");
     }
 }

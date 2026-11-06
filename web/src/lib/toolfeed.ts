@@ -171,6 +171,7 @@ const PRIMARY_HANDLERS: Record<string, any> = {
   cancel: (json: any) => pick(json, ['id', 'session_id', 'sessionId', 'pane', 'target']) || pick(json, ['action']),
   check: (json: any) => pick(json, ['id', 'session_id', 'sessionId', 'pane', 'target']) || pick(json, ['action']),
   submit: (json: any) => firstLine(pick(json, ['status', 'summary', 'report']), 70),
+  todo: (json: any) => pick(json, ['action']),
   execute: (json: any) => firstLine(pick(json, ['desc', 'description', 'intent']) || pick(json, ['code']), 70),
   compress: (json: any, raw: any) => pick(json, ['summary', 'range', 'blockId']) || json.toolAction || firstLine(raw),
   decompress: (json: any, raw: any) => {

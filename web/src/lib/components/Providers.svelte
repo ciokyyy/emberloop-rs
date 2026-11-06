@@ -7,6 +7,7 @@
 
   let providers = $state<ProviderView[]>([]);
   let login = $state<LoginView | null>(null);
+  let codex = $state<LoginView | null>(null);
   let label = $state('');
   let address = $state('');
   let opencodeKey = $state('');
@@ -14,6 +15,7 @@
   let loading = $state(false);
   let copied = $state(false);
   let poll: ReturnType<typeof setInterval> | null = null;
+  let codexPoll: ReturnType<typeof setInterval> | null = null;
 
   async function refresh() {
     try {
@@ -44,6 +46,55 @@
   function stopWatch() {
     if (poll) clearInterval(poll);
     poll = null;
+  }
+
+  function watchCodex(id: string) {
+    stopCodexWatch();
+    codexPoll = setInterval(() => {
+      void (async () => {
+        try {
+          codex = await api.getCodexLogin(id);
+          if (codex.state !== 'running') {
+            stopCodexWatch();
+            await refresh();
+            if (codex.state === 'succeeded') await api.refreshModels();
+          }
+        } catch (cause) {
+          error = String(cause);
+          stopCodexWatch();
+        }
+      })();
+    }, 1000);
+  }
+
+  function stopCodexWatch() {
+    if (codexPoll) clearInterval(codexPoll);
+    codexPoll = null;
+  }
+
+  async function startCodex() {
+    loading = true;
+    error = '';
+    try {
+      codex = await api.startCodexLogin();
+      watchCodex(codex.id);
+    } catch (cause) {
+      error = String(cause);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function cancelCodex() {
+    if (!codex) return;
+    stopCodexWatch();
+    try {
+      await api.cancelCodexLogin(codex.id);
+      codex = null;
+      await refresh();
+    } catch (cause) {
+      error = String(cause);
+    }
   }
 
   async function signIn() {
@@ -119,9 +170,15 @@
 
   onMount(() => {
     void refresh();
-    return () => stopWatch();
+    return () => {
+      stopWatch();
+      stopCodexWatch();
+    };
   });
-  onDestroy(stopWatch);
+  onDestroy(() => {
+    stopWatch();
+    stopCodexWatch();
+  });
 </script>
 
 <section class="h-full overflow-y-auto p-6" in:rise|global>
@@ -149,6 +206,15 @@
             {provider.signedIn ? 'Signed in' : 'Signed out'}
           </div>
         </div>
+        {#if provider.id === 'openai-codex' && !provider.signedIn}
+          <button
+            class="btn"
+            disabled={loading || codex?.state === 'running'}
+            onclick={() => void startCodex()}
+          >
+            Connect
+          </button>
+        {/if}
       </div>
       <ul class="divide-y divide-border">
         {#each provider.accounts as account (account.id)}
@@ -176,6 +242,45 @@
       </ul>
     </div>
   {/each}
+
+  {#if codex}
+    <div class="mt-6 rounded border border-border p-4">
+      <div class="flex items-center justify-between">
+        <div class="font-medium">
+          {#if codex.state === 'running'}Connect ChatGPT
+          {:else if codex.state === 'succeeded'}ChatGPT connected
+          {:else if codex.state === 'canceled'}Login canceled
+          {:else}Login failed{/if}
+        </div>
+        {#if codex.state === 'running'}
+          <button class="btn" onclick={() => void cancelCodex()}>Cancel</button>
+        {/if}
+      </div>
+
+      {#if codex.state === 'running'}
+        <p class="mt-3 text-[13px] text-fg-3">
+          Open
+          <a class="underline" href={codex.verificationUri} target="_blank" rel="noreferrer">
+            {codex.verificationUri}
+          </a>
+          and enter this code.
+        </p>
+        <code class="mt-2 block w-fit rounded bg-surface-3 px-3 py-2 font-mono text-lg tracking-wider">
+          {codex.userCode}
+        </code>
+        {#if codex.expiresAt}
+          <p class="mt-2 text-[12px] text-fg-3">
+            Expires {new Date(codex.expiresAt).toLocaleTimeString()}.
+          </p>
+        {/if}
+      {:else if codex.state === 'succeeded'}
+        <p class="mt-2 text-[13px] text-fg-3">The ChatGPT OAuth credential is saved for pi Sessions.</p>
+      {:else if codex.error}
+        <p class="mt-2 text-[13px] text-status-failed">{codex.error}</p>
+      {/if}
+    </div>
+  {/if}
+
 
   {#if login}
     <div class="mt-6 rounded border border-border p-4">

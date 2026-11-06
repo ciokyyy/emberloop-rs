@@ -17,6 +17,7 @@ pub struct PiHarness {
     bin: PathBuf,
     homes: PathBuf,
     keys: PathBuf,
+    auth: Option<PathBuf>,
 }
 
 impl PiHarness {
@@ -29,7 +30,13 @@ impl PiHarness {
             bin: bin.into(),
             homes: homes.into(),
             keys: keys_file.into(),
+            auth: None,
         }
+    }
+
+    pub fn with_auth(mut self, auth_file: impl Into<PathBuf>) -> Self {
+        self.auth = Some(auth_file.into());
+        self
     }
 
     fn key(&self) -> Result<String, HarnessError> {
@@ -66,11 +73,16 @@ impl PiHarness {
         &self,
         session_id: &str,
         wiring: HarnessWiring,
+        require_key: bool,
     ) -> Result<AcpSession, HarnessError> {
-        let key = self.key()?;
+        let key = if require_key {
+            Some(self.key()?)
+        } else {
+            self.key().ok()
+        };
         let home = self.homes.join(session_id);
         let cwd = wiring.workdir.clone().unwrap_or_else(|| home.join("work"));
-        write_session_files(&home, &cwd, &wiring, &key)?;
+        write_session_files(&home, &cwd, &wiring, key.as_deref(), self.auth.as_deref())?;
         let launch = AcpLaunch {
             config: self.config(&home),
             cwd,
@@ -99,7 +111,7 @@ impl PiHarness {
             resume_token: None,
             workdir: None,
         };
-        let session = self.open("_catalogue", wiring).await?;
+        let session = self.open("_catalogue", wiring, false).await?;
         Ok(model_options(&session.config_options))
     }
 }
@@ -132,7 +144,11 @@ impl Harness for PiHarness {
         session_id: &str,
         wiring: HarnessWiring,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
-        Ok(Box::new(self.open(session_id, wiring).await?))
+        let require_key = wiring
+            .model
+            .as_deref()
+            .is_none_or(|model| model.starts_with("opencode-go/"));
+        Ok(Box::new(self.open(session_id, wiring, require_key).await?))
     }
 }
 
@@ -140,26 +156,49 @@ fn write_session_files(
     home: &Path,
     cwd: &Path,
     wiring: &HarnessWiring,
-    key: &str,
+    key: Option<&str>,
+    auth: Option<&Path>,
 ) -> std::io::Result<()> {
     let agent = home.join(".pi/agent");
     std::fs::create_dir_all(&agent)?;
     std::fs::create_dir_all(cwd)?;
-    // pi appends `/chat/completions` etc. to the base; the proxy routes on that suffix.
-    let models = serde_json::json!({"providers": {PROVIDER: {
-        "baseUrl": format!("{}/v1", wiring.proxy_url.trim_end_matches('/')),
-        "apiKey": key,
-    }}});
-    write_private(&agent.join("models.json"), &models.to_string())?;
+    let models_path = agent.join("models.json");
+    match key {
+        Some(key) => {
+            // pi appends `/chat/completions` etc. to the base; the proxy routes on that suffix.
+            let models = serde_json::json!({"providers": {PROVIDER: {
+                "baseUrl": format!("{}/v1", wiring.proxy_url.trim_end_matches('/')),
+                "apiKey": key,
+            }}});
+            write_private(&models_path, &models.to_string())?;
+        }
+        None => {
+            let _ = std::fs::remove_file(&models_path);
+        }
+    }
+    if let Some(auth) = auth {
+        match std::fs::read(auth) {
+            Ok(bytes) => write_private_bytes(&agent.join("auth.json"), &bytes)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let _ = std::fs::remove_file(agent.join("auth.json"));
+            }
+            Err(error) => return Err(error),
+        }
+    }
     write_private(&agent.join("mcp.json"), &mcp_config(wiring).to_string())
 }
 
 /// pi's own `mcp.json`: ACP `session/new` refuses HTTP MCP, this file does not.
 fn mcp_config(wiring: &HarnessWiring) -> serde_json::Value {
+    // pi aborts an MCP call after 60 s by default (pig docs, mcp.md); pig writes 600 on its own el entry.
+    const TIMEOUT_SECONDS: u64 = 600;
     let server = match (&wiring.mcp_url, &wiring.mcp_command) {
-        (Some(url), _) => serde_json::json!({"url": url, "exposure": "direct"}),
+        (Some(url), _) => serde_json::json!({
+            "url": url, "exposure": "direct", "timeout": TIMEOUT_SECONDS,
+        }),
         (None, Some(command)) if !command.is_empty() => serde_json::json!({
             "command": command[0], "args": &command[1..], "exposure": "direct",
+            "timeout": TIMEOUT_SECONDS,
         }),
         _ => return serde_json::json!({"mcpServers": {}}),
     };
@@ -167,6 +206,10 @@ fn mcp_config(wiring: &HarnessWiring) -> serde_json::Value {
 }
 
 fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    write_private_bytes(path, contents.as_bytes())
+}
+
+fn write_private_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     std::fs::OpenOptions::new()
         .write(true)
@@ -174,5 +217,5 @@ fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
         .truncate(true)
         .mode(0o600)
         .open(path)?
-        .write_all(contents.as_bytes())
+        .write_all(contents)
 }

@@ -34,7 +34,7 @@ impl WireKind {
 
 pub fn prompt_text(pins: &PinnedPrompts) -> String {
     let mut text = String::new();
-    for id in [prompts::POLICY, prompts::PONYTAIL] {
+    for id in [prompts::POLICY, prompts::PONYTAIL, prompts::CAVEMAN] {
         let Some(part) = pins.text(id).filter(|t| !t.trim().is_empty()) else {
             continue;
         };
@@ -164,18 +164,38 @@ fn tool_specs(pins: &PinnedPrompts) -> Vec<ToolSpec> {
             name: "compress",
             description: text(prompts::COMPRESS),
             google_props: json!({
-                "start": {"type": "INTEGER", "description": "First turn index to fold"},
-                "end": {"type": "INTEGER", "description": "Turn index after the last folded turn"},
-                "summary": {"type": "STRING", "description": "Summary of the folded turns, the only record kept"},
-                "topic": {"type": "STRING", "description": "Optional short topic"}
+                "ranges": {
+                    "type": "ARRAY",
+                    "description": "Every range to fold, numbered against the conversation as it is now",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "start": {"type": "INTEGER", "description": "First turn index to fold"},
+                            "end": {"type": "INTEGER", "description": "Turn index after the last folded turn"},
+                            "summary": {"type": "STRING", "description": "Summary of the folded turns, the only record kept"},
+                            "topic": {"type": "STRING", "description": "Optional short topic"}
+                        },
+                        "required": ["start", "end", "summary"]
+                    }
+                }
             }),
             json_props: json!({
-                "start": {"type": "integer", "description": "First turn index to fold"},
-                "end": {"type": "integer", "description": "Turn index after the last folded turn"},
-                "summary": {"type": "string", "description": "Summary of the folded turns, the only record kept"},
-                "topic": {"type": "string", "description": "Optional short topic"}
+                "ranges": {
+                    "type": "array",
+                    "description": "Every range to fold, numbered against the conversation as it is now",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "start": {"type": "integer", "description": "First turn index to fold"},
+                            "end": {"type": "integer", "description": "Turn index after the last folded turn"},
+                            "summary": {"type": "string", "description": "Summary of the folded turns, the only record kept"},
+                            "topic": {"type": "string", "description": "Optional short topic"}
+                        },
+                        "required": ["start", "end", "summary"]
+                    }
+                }
             }),
-            required: json!(["start", "end", "summary"]),
+            required: json!(["ranges"]),
         },
         ToolSpec {
             name: "decompress",
@@ -204,6 +224,13 @@ fn tool_specs(pins: &PinnedPrompts) -> Vec<ToolSpec> {
                 "limit": {"type": "integer", "description": "Maximum results (default 5)"}
             }),
             required: json!(["query"]),
+        },
+        ToolSpec {
+            name: "acp_status",
+            description: text(prompts::ACP_STATUS_DESCRIPTION),
+            google_props: json!({}),
+            json_props: json!({}),
+            required: json!([]),
         },
     ]
 }
@@ -342,6 +369,7 @@ pub fn extract_core_contents(wire: WireKind, request: &Value) -> Option<Vec<Valu
 }
 
 pub fn write_core_contents(wire: WireKind, request: &mut Value, contents: Vec<Value>) {
+    let contents = contents.into_iter().map(unmarked).collect::<Vec<_>>();
     match wire {
         WireKind::Google => {
             request["contents"] = Value::Array(contents);
@@ -373,6 +401,14 @@ pub fn write_core_contents(wire: WireKind, request: &mut Value, contents: Vec<Va
             request["input"] = Value::Array(core_to_responses(&contents));
         }
     }
+}
+
+/// Drops the proxy's own turn marks; upstream must not see them.
+fn unmarked(mut turn: Value) -> Value {
+    if let Some(map) = turn.as_object_mut() {
+        map.remove("_nudge");
+    }
+    turn
 }
 
 fn chat_to_core(messages: &[Value]) -> Option<Vec<Value>> {
@@ -813,7 +849,7 @@ fn parse_args_field(val: Option<&Value>) -> Value {
     }
 }
 
-fn response_text(fr: &Value) -> String {
+pub(crate) fn response_text(fr: &Value) -> String {
     fr.get("response")
         .map(|r| {
             let res = r.get("result").and_then(Value::as_str).unwrap_or("");
@@ -824,4 +860,16 @@ fn response_text(fr: &Value) -> String {
             }
         })
         .unwrap_or_default()
+}
+
+/// Rewrites a tool result's visible text, keeping the response object's other keys.
+pub(crate) fn set_response_text(part: &mut Value, text: &str) {
+    let Some(response) = part
+        .get_mut("functionResponse")
+        .and_then(|response| response.get_mut("response"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    response.insert("result".to_string(), Value::String(text.to_string()));
 }

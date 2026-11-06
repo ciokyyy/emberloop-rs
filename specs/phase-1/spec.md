@@ -1,6 +1,6 @@
 # emberloop-rs, phase 1: agy + Sessions + core tools + one proxy
 
-**Status:** tickets 01-08 and 10-15 built, `scripts/check` green; tickets 09, 16, 17 and 18 open, ticket 04 partial (see each issue). The daemon has no Session runner yet: nothing calls `Harness::spawn` or `send`, so a prompt only appends an event. Source: the 2026-11-05 grilling Session (`f88dc96e8e01e07bafdf370e16de1feb`) and its continuation.
+**Status:** tickets 01-20 built, `scripts/check` green; ticket 04 has two untested edge cases, ticket 11's live acceptance run is not complete, ticket 12 misses the prompt-error event, and ticket 21 is open (see each issue). Source: the 2026-11-05 grilling Session (`f88dc96e8e01e07bafdf370e16de1feb`) and its continuation.
 
 This repo, written in Rust. It is a different product, not a port: the paradigm changes to **MCP for tools and one proxy for everything on the model wire**, and every harness plugs into both through one small trait. Phase 1 proves the whole shape with `agy` only.
 
@@ -64,10 +64,11 @@ wiring: base_url_env(proxy_url), mcp_config(mcp_url), disable_native_tools()
 - Route `/p/<session-token>/…`. The token is HMAC-signed and carries the Session id, so the proxy knows the Session without a header.
 - It forwards model traffic, counts usage for the context meter from the last request's input tokens (not a running sum), and records spliced content.
 - **Billion context:** the proxy injects `compress`, `decompress` and `search_context`, runs them itself and never shows the harness a proxy tool call. It does this through one `Compressor` trait (`compress(range, summary)`, `decompress(block)`, `search_context(query)`, `status()`), so the proxy owns the wire and the compressor owns the blocks.
-  - **Phase 1 backend: native Rust.** The model writes the summary; the compressor swaps the chosen message range for a stored block, keeps the originals in the Session's `spill/`, restores them on `decompress` and searches them for `search_context`. No tiers, nudges or automatic compression.
+  - **Phase 1 backend: native Rust.** The model writes the summary; the compressor swaps the chosen message range for a stored block, keeps the originals in the Session's `spill/`, restores them on `decompress` and searches them for `search_context`. Tiers, nudges, `acp_status`, `acp_rule` and the preflight backstop follow billion-context 0.1.212 under ticket 20, proved by golden fixtures; the model still decides every fold, there is no automatic compression.
   - **One proxy.** bili (the `billion-context` npm package) is not run. A `bili` backend that talks to a supervised bili process, pinned to an exact version with `autoUpdate: false`, a start-time health and manifest check and its version recorded in `meta.json`, is a later optional ticket, and only for lanes where it works (agy through bili is unproven; see the Go repo's `agy-bili-lane`).
   - **Parity by fixtures.** The message shapes the native compressor must preserve are fixtures taken from the Go repo's bili tests and probe scripts.
 - **Ponytail:** one embedded `SKILL.md`, filtered by `ponytail_level` (`off`, `lite`, `full`, `ultra`), appended to the system prompt. No skill registry.
+- **Caveman:** the `caveman` plugin's `SKILL.md`, filtered to its `ultra` row and examples, always on: banner, ruleset, one-line reminder, appended to the system prompt after Ponytail. Copied from the Go repo's `el/voice.go`; there is no level switch and no second delivery owner.
 - **Stored splices:** anything the proxy adds to history (a steer, a compress marker) is stored keyed by the id of the tool-result turn it attached to, and re-attached byte-identically on every later request. If the harness drops that turn, the splice is dropped with it. Thought signatures and other opaque fields are never re-serialized.
 - **Gate:** if Ticket 1 shows agy cannot work behind the proxy, phase 1 ships with Ponytail through `systemPrompt.append`, steer path 2 only, and compression deferred.
 
@@ -95,23 +96,23 @@ Shared rules: every path resolves inside the Project root after symlink resoluti
 
 `GET/POST /api/projects`, `PATCH/DELETE /api/projects/:id`, `GET/POST /api/sessions`, `PATCH/DELETE /api/sessions/:id`, `POST /api/sessions/:id/prompt` (`{text, images}`), `POST /api/sessions/:id/steer`, `POST /api/sessions/:id/cancel`, `GET /api/sessions/:id/events?after=`, `GET/PUT /api/settings`, `GET /openapi.json`.
 
-Event kinds: `status`, `prompt`, `assistant_chunk`, `tool_started`, `tool_finished`, `steer_queued`, `steer_delivered`, `notice`, `compression`, `usage`, `error`, `timing`.
+Event kinds: `status`, `prompt`, `assistant_chunk`, `tool_started`, `tool_finished`, `steer_queued`, `steer_delivered`, `notice`, `compression`, `usage`, `error`, `timing`. `usage` carries the last request's input tokens and the model's window; the proxy publishes it, the harness never does.
 
 ### H. UI
 
 The mock is `mock/index.html`. Phase 1 UI:
 
-- Sidebar: Projects with their Sessions, status dot plus a word on hover, new Session dialog (Project, Ponytail level), per-row rename and delete, Settings entry.
+- Sidebar: Projects with their Sessions, status dot plus a word on hover, new Session dialog (Project, model, Ponytail level), per-row rename and delete, Settings entry. A Project URL scopes the list to that Project and its New session button opens the dialog with that Project chosen; a second button opens the same dialog for a new Project by path. The dialog always asks, because the model is one of its choices.
 - Session view: header with title, model, context meter and status; the feed; the composer.
 - Feed: user and assistant rows (Markdown), flat tool rows with hue glyphs (`bash` green, `read` blue, `edit` amber, `grep` violet), expandable bodies (diff for `edit`, highlighted text for `read`, command and output for `bash`, hits for `grep`), a compression card, steer and notice rows, error rows.
 - Composer: multiline, Enter sends, image paste/drop/pick with thumbnails (10 MB each, 5 per prompt), Stop while working, a steer box while working.
 - Settings tab: Proxy (billion context on/off), Ponytail default level, Subagents (scout, worker: model, effort, enabled, extra instruction; disabled in phase 1).
-- Left out: voice, Dashboard, quota cards, Memory, git panel, processes panel, groups, pinning.
+- Left out: Dashboard, quota cards, Memory, git panel, processes panel, groups, pinning.
 - Scroll follows the tail, pauses when the User scrolls up, and shows a jump-to-latest pill.
 
 ### I. Prompts as files
 
-- Every model-facing text the daemon owns is a file, not a constant: the Ponytail skill, the policy text, the compress/decompress/search_context tool descriptions and prompts, the MCP tool descriptions, and later the subagent prompts. Each has a stable id (`ponytail`, `policy`, `tool.edit.description`, ...).
+- Every model-facing text the daemon owns is a file, not a constant: the Ponytail skill, the caveman skill, the policy text, the compress/decompress/search_context tool descriptions and prompts, the MCP tool descriptions, and later the subagent prompts. Each has a stable id (`ponytail`, `policy`, `tool.edit.description`, ...).
 - Two layers, lowest first: the default embedded in the binary (`include_str!`), then an override file in `<config root>/prompts/<id>.md`. A missing or empty override means the default. No rebuild is needed to change a prompt.
 - Text may use `{{ name }}` placeholders filled by the daemon (Project name, root, level, date); unknown placeholders are an error at load, not at request time.
 - A watcher (`notify`) reloads changed files; a file that fails to parse keeps the last good text and emits an `error` event.

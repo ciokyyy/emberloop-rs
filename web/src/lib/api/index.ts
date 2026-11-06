@@ -109,6 +109,17 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ key })
     }),
+  startCodexLogin: (label = '') =>
+    request<LoginView>('/api/providers/openai-codex/login', {
+      method: 'POST',
+      body: JSON.stringify({ label })
+    }),
+  getCodexLogin: (id: string) =>
+    request<LoginView>(`/api/providers/openai-codex/login/${encodeURIComponent(id)}`),
+  cancelCodexLogin: (id: string) =>
+    request<{ ok: boolean }>(`/api/providers/openai-codex/login/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    }),
   listPrompts: () => request<PromptInfo[]>('/api/prompts'),
   getPrompt: (id: string) =>
     request<PromptText>(`/api/prompts/${encodeURIComponent(id)}`),

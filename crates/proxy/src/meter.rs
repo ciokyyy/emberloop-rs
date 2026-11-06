@@ -6,6 +6,8 @@ use serde_json::Value;
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Input tokens the upstream served from its prompt cache, when it says so.
+    pub cached_tokens: u64,
 }
 
 /// Extract usage from a Cloud Code SSE stream or a plain JSON response.
@@ -17,6 +19,9 @@ pub fn extract_usage(bytes: &[u8]) -> Option<Usage> {
     for payload in json_payloads(&text) {
         if let Some(usage) = usage_from_payload(&payload) {
             found = true;
+            if usage.cached_tokens > 0 {
+                merged.cached_tokens = usage.cached_tokens;
+            }
             if usage.input_tokens > 0 {
                 merged.input_tokens = usage.input_tokens;
             }
@@ -73,6 +78,7 @@ fn gemini_usage(root: &Value) -> Option<Usage> {
     Some(Usage {
         input_tokens: input,
         output_tokens: output,
+        cached_tokens: number(usage, "cachedContentTokenCount"),
     })
 }
 
@@ -86,15 +92,24 @@ fn openai_usage(root: &Value) -> Option<Usage> {
     Some(Usage {
         input_tokens: input,
         output_tokens: output,
+        cached_tokens: cached_tokens(usage),
     })
+}
+
+/// Where each wire reports the prefix it served from cache. OpenAI-style usage carries
+/// it under `*_tokens_details`; Anthropic under `cache_read_input_tokens`.
+fn cached_tokens(usage: &Value) -> u64 {
+    let details = |key: &str| number(usage.pointer(key).unwrap_or(usage), "cached_tokens");
+    number(usage, "cache_read_input_tokens")
+        .max(number(usage, "cached_tokens"))
+        .max(details("/prompt_tokens_details"))
+        .max(details("/input_tokens_details"))
 }
 
 fn number(value: &Value, key: &str) -> u64 {
     value.get(key).and_then(Value::as_u64).unwrap_or(0)
 }
 
-/// The reasoning text one OpenAI chat, Anthropic or Responses stream payload carries.
-/// Pi's ACP bridge does not forward it, so the proxy is the one place that sees it.
 pub fn thinking_delta(payload: &Value) -> Option<String> {
     let text = payload
         .pointer("/choices/0/delta/reasoning_content")
@@ -137,7 +152,8 @@ mod tests {
             extract_usage(body.as_bytes()),
             Some(Usage {
                 input_tokens: 120,
-                output_tokens: 7
+                output_tokens: 7,
+                cached_tokens: 0
             })
         );
     }
@@ -150,7 +166,8 @@ mod tests {
             extract_usage(body.as_bytes()),
             Some(Usage {
                 input_tokens: 9,
-                output_tokens: 3
+                output_tokens: 3,
+                cached_tokens: 0
             })
         );
     }
@@ -162,7 +179,8 @@ mod tests {
             extract_usage(body.as_bytes()),
             Some(Usage {
                 input_tokens: 44,
-                output_tokens: 2
+                output_tokens: 2,
+                cached_tokens: 0
             })
         );
     }
@@ -175,7 +193,8 @@ mod tests {
             extract_usage(anthropic.as_bytes()),
             Some(Usage {
                 input_tokens: 31,
-                output_tokens: 14
+                output_tokens: 14,
+                cached_tokens: 0
             })
         );
         let responses =
@@ -184,8 +203,28 @@ mod tests {
             extract_usage(responses.as_bytes()),
             Some(Usage {
                 input_tokens: 52,
-                output_tokens: 8
+                output_tokens: 8,
+                cached_tokens: 0
             })
+        );
+    }
+
+    #[test]
+    fn reads_cached_tokens_from_each_wire() {
+        let openai = r#"{"usage":{"prompt_tokens":44,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":30}}}"#;
+        assert_eq!(
+            extract_usage(openai.as_bytes()).map(|u| u.cached_tokens),
+            Some(30)
+        );
+        let anthropic = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":31,\"cache_read_input_tokens\":20}}}\n\n";
+        assert_eq!(
+            extract_usage(anthropic.as_bytes()).map(|u| u.cached_tokens),
+            Some(20)
+        );
+        let gemini = r#"{"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":7,"cachedContentTokenCount":15}}"#;
+        assert_eq!(
+            extract_usage(gemini.as_bytes()).map(|u| u.cached_tokens),
+            Some(15)
         );
     }
 

@@ -39,6 +39,12 @@ pub struct LoginView {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub url: String,
     #[serde(skip_serializing_if = "String::is_empty")]
+    pub user_code: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub verification_uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub output: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
@@ -128,6 +134,15 @@ pub trait ProviderLogin: Send + Sync {
     async fn cancel(&self, id: &str) -> Result<(), LoginError>;
     async fn complete(&self, id: &str, address: &str) -> Result<LoginView, LoginError>;
     async fn sign_out(&self, account_id: &str) -> Result<(), LoginError>;
+    async fn start_codex(&self, _label: &str) -> Result<LoginView, LoginError> {
+        Err(LoginError::unavailable("the daemon has no ChatGPT login"))
+    }
+    async fn codex_status(&self, _id: &str) -> Option<LoginView> {
+        None
+    }
+    async fn cancel_codex(&self, _id: &str) -> Result<(), LoginError> {
+        Err(LoginError::not_found("the ChatGPT login is not running"))
+    }
     async fn set_key(&self, _provider: &str, _key: &str) -> Result<(), LoginError> {
         Err(LoginError::unavailable(
             "the daemon does not store provider keys",
@@ -253,6 +268,55 @@ pub async fn set_opencode_key(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/providers/openai-codex/login",
+    request_body = LoginRequest,
+    responses(
+        (status = 201, body = LoginView),
+        (status = 409, description = "a login already runs"),
+        (status = 503, description = "no ChatGPT login seam")
+    )
+)]
+pub async fn start_codex_login(
+    State(state): State<AppState>,
+    Json(request): Json<LoginRequest>,
+) -> Result<(StatusCode, Json<LoginView>), LoginError> {
+    let view = login(&state)?.start_codex(&request.label).await?;
+    Ok((StatusCode::CREATED, Json(view)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/providers/openai-codex/login/{id}",
+    params(("id" = String, Path, description = "login id")),
+    responses((status = 200, body = LoginView), (status = 404, description = "unknown login"))
+)]
+pub async fn get_codex_login(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<LoginView>, LoginError> {
+    login(&state)?
+        .codex_status(&id)
+        .await
+        .map(Json)
+        .ok_or_else(|| LoginError::not_found("the ChatGPT login is not running"))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/providers/openai-codex/login/{id}",
+    params(("id" = String, Path, description = "login id")),
+    responses((status = 200, description = "canceled"), (status = 404, description = "unknown login"))
+)]
+pub async fn cancel_codex_login(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, LoginError> {
+    login(&state)?.cancel_codex(&id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/providers", get(list_providers))
@@ -270,4 +334,9 @@ pub fn router() -> Router<AppState> {
             delete(sign_out_agy_account),
         )
         .route("/api/providers/opencode-go/key", put(set_opencode_key))
+        .route("/api/providers/openai-codex/login", post(start_codex_login))
+        .route(
+            "/api/providers/openai-codex/login/{id}",
+            get(get_codex_login).delete(cancel_codex_login),
+        )
 }

@@ -37,6 +37,19 @@ describe('Feed motion', () => {
   });
 });
 
+describe('session switch', () => {
+  it('drops every row when the feed resets to empty', async () => {
+    const many = Array.from({ length: 12 }, (_, index) => msg(`m${index}`));
+    const view = render(Feed, { feed: state(many) });
+    expect(view.container.querySelectorAll('[data-index]').length).toBeGreaterThan(0);
+
+    await view.rerender({ feed: state([]) });
+
+    expect(view.container.querySelectorAll('[data-index]').length).toBe(0);
+    expect(view.getByText(/No messages yet/)).toBeTruthy();
+  });
+});
+
 describe('queued steer', () => {
   const at = (view: { container: HTMLElement }, text: string) => view.container.textContent!.indexOf(text);
   const items = (route: 'pending' | 'injected') =>

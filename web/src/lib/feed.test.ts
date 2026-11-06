@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyEvent, emptyFeedState, type FeedState } from './feed';
+import { applyEvent, applySnapshot, emptyFeedState, type FeedState } from './feed';
 import type { SessionEvent } from './api/types';
 
 const ev = (kind: SessionEvent['kind'], data: Record<string, unknown>, seq = 1): SessionEvent => ({
@@ -91,6 +91,23 @@ describe('feed reducer', () => {
     expect(state.items[2].text).toBe('daemon lost');
   });
 
+  it('renders folds and nudges as tool rows', () => {
+    const state = run(
+      ev('compression', {
+        action: 'compress',
+        args: { ranges: [{ start: 1, end: 40 }] },
+        result: 'Folded 39 turns.'
+      }),
+      ev('compression', { action: 'nudge', kind: 'first', text: 'nudge: first', tokens: 210_000 }, 2)
+    );
+    expect(state.items[0]).toMatchObject({
+      action: 'compress',
+      text: 'turns 1–39',
+      body: 'Folded 39 turns.'
+    });
+    expect(state.items[1]).toMatchObject({ action: 'nudge', text: 'first', meta: '210000 tokens' });
+  });
+
   it('merges repeated tool_started events and reads agy output objects', () => {
     const state = run(
       ev('tool_started', { id: 'c1', name: 'mcp__el__read', input: {} }, 1),
@@ -124,5 +141,74 @@ describe('feed reducer', () => {
       { ...ev('tool_finished', { id: 'b', status: 'failed', output: 'exit code: 1' }, 2), at: 3500 }
     );
     expect(state.items[0]).toMatchObject({ status: 'failed', elapsedMs: 2500 });
+  });
+});
+
+describe('todos', () => {
+  const items = [
+    { id: 't1', content: 'read the spec', status: 'completed' },
+    { id: 't2', content: 'write the parser', status: 'in_progress' }
+  ];
+
+  it('keeps the whole list from a todos event, with no feed row', () => {
+    const state = run(ev('todos', { items }));
+    expect(state.todos).toEqual(items);
+    expect(state.items).toEqual([]);
+  });
+
+  it('replaces the list on the next todos event', () => {
+    const state = run(ev('todos', { items }), ev('todos', { items: [] }, 2));
+    expect(state.todos).toEqual([]);
+  });
+
+  it('ignores a malformed item and defaults an unknown status', () => {
+    const state = run(ev('todos', { items: [{ content: 'no id' }, { id: 't1', content: 'x', status: 'later' }] }));
+    expect(state.todos).toEqual([{ id: 't1', content: 'x', status: 'pending' }]);
+  });
+
+  it('restores the list from the open snapshot', () => {
+    const state = applySnapshot(emptyFeedState(), { todos: { items } });
+    expect(state.todos).toEqual(items);
+  });
+});
+
+describe('todo tool row', () => {
+  it('keeps the row to the first line of the full list', () => {
+    const state = run(
+      ev('tool_started', { id: 't1', name: 'el_todo', input: { action: 'set' } }),
+      ev('tool_finished', { id: 't1', output: '2 pending · 0 in progress · 0 completed · 0 cancelled\nt1 [ ] one\nt2 [ ] two' }, 2)
+    );
+    expect(state.items[0].output).toBe('2 pending · 0 in progress · 0 completed · 0 cancelled');
+  });
+});
+
+describe('open snapshot', () => {
+  it('seeds working status and usage that the tail window did not contain', () => {
+    // The window holds only chunks: no status or usage event, so the reducer alone says idle.
+    const windowed = run(ev('assistant_chunk', { text: 'x' }));
+    expect(windowed.status).toBe('idle');
+    const state = applySnapshot(windowed, {
+      status: { state: 'working' },
+      usage: { inputTokens: 270000, contextWindow: 1_000_000 }
+    });
+    expect(state.status).toBe('working');
+    expect(state.usage).toEqual({ used: 270000, window: 1_000_000 });
+    // Items are untouched: a snapshot is not a feed row.
+    expect(state.items).toEqual(windowed.items);
+  });
+
+  it('keeps what the window said when the snapshot has nothing', () => {
+    const windowed = run(ev('status', { state: 'working' }));
+    expect(applySnapshot(windowed, { status: null, usage: null })).toEqual(windowed);
+  });
+
+  it('does not close the live row when the snapshot says working', () => {
+    const windowed = run(ev('assistant_chunk', { text: 'x' }));
+    const state = applySnapshot(windowed, { status: { state: 'working' }, usage: null });
+    expect(state.items[0]).toMatchObject({ live: true });
+  });
+
+  it('reads a cancelled status as idle', () => {
+    expect(run(ev('status', { state: 'cancelled' })).status).toBe('idle');
   });
 });

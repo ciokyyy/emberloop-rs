@@ -82,6 +82,17 @@ impl ModelCatalogue {
         self.merge().await
     }
 
+    /// The context window a model id is known to have; `None` when no source
+    /// lists it or the window is unknown.
+    pub async fn window(&self, model: &str) -> Option<usize> {
+        self.merge()
+            .await
+            .into_iter()
+            .find(|entry| entry.id == model)
+            .map(|entry| entry.context_window)
+            .filter(|window| *window > 0)
+    }
+
     pub async fn errors(&self) -> HashMap<String, String> {
         self.errors.read().await.clone()
     }

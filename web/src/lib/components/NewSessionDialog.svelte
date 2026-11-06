@@ -8,12 +8,15 @@
   let {
     open = $bindable(false),
     projects,
+    // Asking for a new Project by path only: no Project list.
+    newProject = false,
     models = [],
     defaultLevel = 'full',
     oncreate
   }: {
     open?: boolean;
     projects: Project[];
+    newProject?: boolean;
     models?: Model[];
     defaultLevel?: string;
     oncreate: (input: {
@@ -46,6 +49,10 @@
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     const targetProject = root.trim() ? undefined : projectId;
+    if (newProject && !root.trim()) {
+      error = 'Enter the path of the Project to add.';
+      return;
+    }
     if (!targetProject && !root.trim()) {
       error = 'Choose a Project or enter a path.';
       return;
@@ -77,18 +84,20 @@
     </Dialog.Overlay>
     <Dialog.Content
       forceMount
-      class="fixed left-1/2 top-1/2 z-50 flex w-[min(92vw,440px)] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-2xl border border-border bg-surface-2 p-5"
+      class="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[min(92vw,440px)] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 overflow-y-auto rounded-2xl border border-border bg-surface-2 p-5"
     >
       {#snippet child({ props, open: shown })}
         {#if shown}
           <div {...props} transition:rise>
-      <Dialog.Title class="text-[1.0625rem] font-semibold">New session</Dialog.Title>
+      <Dialog.Title class="text-[1.0625rem] font-semibold">
+        {newProject ? 'New project' : 'New session'}
+      </Dialog.Title>
       <Dialog.Description class="sr-only">
         Create a Session in an existing Project or in a new Project by path.
       </Dialog.Description>
 
       <form class="flex flex-col gap-4" onsubmit={submit}>
-        {#if projects.length}
+        {#if projects.length && !newProject}
           <label class="flex flex-col gap-1.5 text-[13px] text-fg-3">
             Project
             <select class="field" bind:value={projectId} disabled={!!root.trim()}>
@@ -100,7 +109,7 @@
         {/if}
 
         <label class="flex flex-col gap-1.5 text-[13px] text-fg-3">
-          Or add a Project by path
+          {newProject ? 'Project path' : 'Or add a Project by path'}
           <input class="field font-mono" bind:value={root} placeholder="/home/you/Projects/name" />
         </label>
 

@@ -1,5 +1,5 @@
 use crate::blocks::BlockWindow;
-use emberloop_core::events::SessionEvent;
+use emberloop_core::events::{EventKind, SessionEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -235,6 +235,39 @@ impl EventLog {
             }
         }
         Ok(events.into_iter().collect())
+    }
+
+    /// The newest event of `kind`, however old: the in-memory ring first, then the segments from
+    /// the newest back. A tail window can sit far past the last status or usage event of a long
+    /// Session, so the open snapshot asks for them by kind.
+    pub async fn latest(&self, kind: &EventKind) -> Result<Option<SessionEvent>, EventLogError> {
+        {
+            let ring = self.ring.lock().await;
+            if let Some(event) = ring.iter().rev().find(|event| &event.kind == kind) {
+                return Ok(Some(event.clone()));
+            }
+        }
+        let mut names = {
+            let state = self.state.lock().await;
+            state
+                .segments
+                .iter()
+                .map(|segment| segment.name.clone())
+                .collect::<Vec<_>>()
+        };
+        while let Some(name) = names.pop() {
+            let text = tokio::fs::read_to_string(self.dir.join(name)).await?;
+            let found = text
+                .lines()
+                .rev()
+                .filter(|line| !line.trim().is_empty())
+                .filter_map(|line| serde_json::from_str::<SessionEvent>(line).ok())
+                .find(|event| &event.kind == kind);
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        Ok(None)
     }
 
     pub async fn recent(&self, limit: usize) -> Vec<SessionEvent> {

@@ -20,4 +20,4 @@ No check.
 ## Child DOX Index
 
 - `issues/AGENTS.md` — phase 2 tickets once started
-- `spec.md` — phase 2 scope and the pi-rust harness ticket with its 2026-11-05 probe results
+- `spec.md` — phase 2 scope, the pi-rust harness ticket with its 2026-11-05 probe results, and the claude stream-json harness ticket (P2-2) with its candidate table

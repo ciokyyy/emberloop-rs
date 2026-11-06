@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sessionPath, viewOf, viewPath } from './route';
+import { newSessionProjects, sessionPath, viewOf, viewPath } from './route';
 
 describe('route', () => {
   it('builds the paths the Go app uses', () => {
@@ -15,5 +15,17 @@ describe('route', () => {
     expect(viewOf('/providers')).toBe('providers');
     expect(viewOf('/')).toBe('session');
     expect(viewOf(null)).toBe('session');
+  });
+});
+
+describe('newSessionProjects', () => {
+  const projects = [
+    { id: 'p1', name: 'One', root: '/tmp/one' },
+    { id: 'p2', name: 'Two', root: '/tmp/two' }
+  ];
+
+  it('offers only the Project the URL scopes, and every Project without one', () => {
+    expect(newSessionProjects('p2', projects).map((project) => project.id)).toEqual(['p2']);
+    expect(newSessionProjects(null, projects)).toBe(projects);
   });
 });

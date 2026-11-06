@@ -180,6 +180,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/providers/openai-codex/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["start_codex_login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/providers/openai-codex/login/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_codex_login"];
+        put?: never;
+        post?: never;
+        delete: operations["cancel_codex_login"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers/opencode-go/key": {
         parameters: {
             query?: never;
@@ -324,11 +356,15 @@ export interface components {
         LoginView: {
             accountId?: string | null;
             error?: string;
+            /** Format: int64 */
+            expiresAt?: number | null;
             id: string;
             output?: string;
             state: string;
             tier?: string;
             url?: string;
+            userCode?: string;
+            verificationUri?: string;
         };
         ModelEntry: {
             context_window: number;
@@ -390,8 +426,72 @@ export interface components {
             key: string;
         };
         Settings: {
+            /**
+             * Format: int32
+             * @description Reference `compress.emergencyThresholdPercent`.
+             * @default 95
+             */
+            emergency_threshold_percent: number;
+            /**
+             * @description Reference `compress.injectNudge`.
+             * @default true
+             */
+            inject_nudge: boolean;
+            /**
+             * @description Reference `compress.injectTool`.
+             * @default true
+             */
+            inject_tool: boolean;
+            /**
+             * Format: int32
+             * @description Reference `compress.maxContextLimit`, a percent of the window.
+             * @default 75
+             */
+            max_context_limit: number;
+            /**
+             * Format: int32
+             * @description Reference `compress.minPressureBenefitTokens`; 0 means `max(5000, window / 100)`.
+             * @default 0
+             */
+            min_pressure_benefit_tokens: number;
+            /** @default full */
             ponytail_default_level: string;
+            /**
+             * Format: int32
+             * @description Reference `compress.preserveRecentMessages`.
+             * @default 3
+             */
+            preserve_recent_messages: number;
+            /**
+             * @description Reference `compress.protectedTools`; results of these tools never fold.
+             * @default []
+             */
+            protected_tools: string[];
+            /** @default true */
             proxy_compression: boolean;
+            /**
+             * Format: int32
+             * @description Reference `compress.tiers.tier2Trigger`.
+             * @default 1000
+             */
+            tier2_trigger: number;
+            /**
+             * Format: int32
+             * @description Reference `compress.tiers.tier3Trigger`.
+             * @default 2000
+             */
+            tier3_trigger: number;
+            /** @default true */
+            todo_auto_expand: boolean;
+            /** @default true */
+            todo_hide_when_done: boolean;
+            /** @default true */
+            todo_reminders: boolean;
+            /**
+             * Format: int32
+             * @default 3
+             */
+            todo_reminders_max: number;
         };
         SteerRequest: {
             text: string;
@@ -882,6 +982,100 @@ export interface operations {
             };
             /** @description the login is not running */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    start_codex_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginView"];
+                };
+            };
+            /** @description a login already runs */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description no ChatGPT login seam */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_codex_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description login id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginView"];
+                };
+            };
+            /** @description unknown login */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_codex_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description login id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description canceled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description unknown login */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

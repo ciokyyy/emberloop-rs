@@ -16,7 +16,7 @@ Filesystem persistence and storage layer:
 Segments rotate at 4 MiB. `events/index.json` records each segment and each Prompt
 turn's segment plus byte offset; append rewrites it only on rotation or a turn
 start. `open` reads the sidecar and the last segment, never older events. `tail`
-reads newest segments until the window of N blocks is filled (`blocks.rs`: a chunk run, a whole tool call, or a prompt/notice/error is one block; a window never cuts a tool from its start). The in-memory ring keeps the
+reads newest segments until the window of N blocks is filled (`blocks.rs`: a chunk run, a whole tool call, or a prompt/notice/error is one block; a window never cuts a tool from its start). `latest(kind)` returns the newest event of one kind (ring first, then segments newest-first), for the open snapshot. The in-memory ring keeps the
 last 200 events; replay of anything older reads files. `SessionsStore::load` and
 `list` read only `meta.json`.
 
