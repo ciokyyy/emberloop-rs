@@ -42,8 +42,9 @@
     </div>
     <Combobox.Portal>
       <Combobox.Content forceMount sideOffset={6} class="z-[70] w-[var(--bits-combobox-anchor-width)] rounded-xl border border-border bg-surface-2 shadow-xl">
-        {#snippet child({ props })}
+        {#snippet child({ props, wrapperProps })}
           {#if open}
+            <div {...wrapperProps} class="z-[70]">
             <div {...props} transition:slideDown class="z-[70] max-h-[min(45dvh,360px)] w-[var(--bits-combobox-anchor-width)] overflow-y-auto rounded-xl border border-border bg-surface-2 p-1 shadow-xl">
               {#each groups as [group, items] (group)}
                 <Combobox.Group>
@@ -58,6 +59,7 @@
               {:else}
                 <p class="px-3 py-4 text-[13px] text-fg-3">No matching models.</p>
               {/each}
+            </div>
             </div>
           {/if}
         {/snippet}
