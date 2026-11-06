@@ -18,6 +18,9 @@ path jail, spill store and seen-line store:
 - `execute`: runs `python3 -I` in its own process group with a generated `tools.py` Unix-socket bridge (`tools.parallel`, `tools.store`/`load`, `tools.save`/`run`, 500-call cap).
 - `bash`: `sh -c` in the root, own process group, timeout kill, 1 MiB output cap, `cat`/`head`/`tail`/`sed -n`/`grep -n` views feed the seen store.
 - `background`: `list`, `read` (next byte offset), `wait`, `stop`; log files live in `spill/`.
+- `git`: read-only inspection (diff, log, show, blame, status, ls-files, grep, rev-parse, merge-base, cat-file, branch/tag listing); writing, executing and configuring flags are refused by prefix, config environment cleared.
+- `check`: runs a named check from `<root>/.emberloop/check` (plain command or JSON name-to-command map with one `{args}` slot, shell metacharacters refused); answers a pass/FAIL/TIMED OUT verdict plus the last 60 lines.
+- `ctx_search`: term-scored snippets over the Session's spill files, each with a pageable `ctx:<id>:<start>-<end>`.
 - `overflow`: rendered output over `overflow_threshold` is written to `<data root>/sessions/<id>/spill/<handle>` and replaced by a head/tail summary naming `ctx:<handle>`.
 ## Limits
 

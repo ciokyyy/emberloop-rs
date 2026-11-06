@@ -102,7 +102,8 @@ pub fn thinking_delta(payload: &Value) -> Option<String> {
         .or_else(|| payload.pointer("/delta/thinking"))
         .or_else(|| {
             let kind = payload.get("type").and_then(Value::as_str)?;
-            (kind == "response.reasoning_summary_text.delta" || kind == "response.reasoning_text.delta")
+            (kind == "response.reasoning_summary_text.delta"
+                || kind == "response.reasoning_text.delta")
                 .then(|| payload.get("delta"))
                 .flatten()
         })?
@@ -120,9 +121,11 @@ mod tests {
         assert_eq!(thinking_delta(&chat).as_deref(), Some("hmm"));
         let anthropic = serde_json::json!({"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"so"}});
         assert_eq!(thinking_delta(&anthropic).as_deref(), Some("so"));
-        let responses = serde_json::json!({"type":"response.reasoning_summary_text.delta","delta":"ok"});
+        let responses =
+            serde_json::json!({"type":"response.reasoning_summary_text.delta","delta":"ok"});
         assert_eq!(thinking_delta(&responses).as_deref(), Some("ok"));
-        let plain = serde_json::json!({"choices":[{"delta":{"content":"hi","reasoning_content":""}}]});
+        let plain =
+            serde_json::json!({"choices":[{"delta":{"content":"hi","reasoning_content":""}}]});
         assert_eq!(thinking_delta(&plain), None);
     }
 

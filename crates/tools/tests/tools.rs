@@ -485,6 +485,9 @@ fn mcp_serves_tools_and_errors() {
             "find",
             "readurl",
             "websearch",
+            "git",
+            "check",
+            "ctx_search",
             "execute"
         ]
     );
@@ -662,4 +665,34 @@ fn wait_until_exited(pid: &str) {
         std::thread::yield_now();
     }
     panic!("process {pid} did not become a zombie");
+}
+
+#[test]
+fn git_inspects_read_only_and_check_runs_the_repo_check() {
+    let fixture = setup();
+    write(&fixture, "a.txt", "one\n");
+    let sh = |command: &str| call(&fixture, "bash", json!({"command": command})).expect("bash");
+    sh("git init -q && git add a.txt && git -c user.name=t -c user.email=t@t commit -qm first");
+
+    let log = call(&fixture, "git", json!({"args": ["log", "--oneline"]})).expect("git log");
+    assert!(log.contains("first"), "{log}");
+    let refused = call(&fixture, "git", json!({"args": ["commit", "-m", "x"]}));
+    assert!(refused.is_err());
+
+    let none = call(&fixture, "check", json!({}));
+    assert!(none.is_err());
+    write(&fixture, ".emberloop/check", "echo fine");
+    let passed = call(&fixture, "check", json!({})).expect("check");
+    assert!(passed.contains("passed (exit 0):\nfine"), "{passed}");
+}
+
+#[test]
+fn ctx_search_finds_spilled_output() {
+    let fixture = fixture_with_threshold(10);
+    let big = "filler line\n".repeat(30) + "the rare needle sits here\n";
+    write(&fixture, "big.txt", &big);
+    let spilled = call(&fixture, "bash", json!({"command": "cat big.txt"})).expect("bash");
+    assert!(spilled.contains("ctx:"), "{spilled}");
+    let found = call(&fixture, "ctx_search", json!({"queries": ["needle"]})).expect("search");
+    assert!(found.contains("needle sits here"), "{found}");
 }

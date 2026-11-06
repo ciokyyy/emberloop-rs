@@ -1,9 +1,12 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 pub mod background;
 pub mod bash;
+pub mod check;
+pub mod ctxsearch;
 pub mod edit;
 pub mod execute;
 pub mod find;
+pub mod git;
 pub mod grep;
 pub mod jail;
 pub mod mcp;
@@ -171,6 +174,9 @@ impl Toolbox {
             }
             "readurl" => readurl::run(self, args).await,
             "grep" => grep::run(self, args),
+            "git" => git::run(self, args).await,
+            "check" => check::run(self, args).await,
+            "ctx_search" => ctxsearch::run(self, args),
             "find" => find::run(self, args),
             "edit" => edit::run(self, args),
             "write" => write::run(self, args),

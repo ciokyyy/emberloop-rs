@@ -40,7 +40,11 @@ pub async fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     toolbox.maybe_spill(output, &format!("bash {:?}", args.command))
 }
 
-async fn foreground(toolbox: &Toolbox, command: &str, timeout_secs: u64) -> ToolResult<String> {
+pub(crate) async fn foreground(
+    toolbox: &Toolbox,
+    command: &str,
+    timeout_secs: u64,
+) -> ToolResult<String> {
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c")
         .arg(format!("exec 2>&1\n{command}"))

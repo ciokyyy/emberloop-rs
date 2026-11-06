@@ -206,6 +206,42 @@ fn tool_specs() -> Vec<Value> {
             }
         },
         {
+            "name": "git",
+            "description": "Read-only git inspection: diff, log, show, blame, status, ls-files, grep, rev-parse, merge-base, cat-file, branch and tag listing. Takes args (a list of strings) run as git -C <root> --no-pager. Writing, executing and configuring flags (-c, -O, --output, --ext-diff, --textconv, --exec, --upload-pack, --open-files-in-pager, --filters, --show-signature and their abbreviations) are refused.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "args": {"type": "array", "items": {"type": "string"}, "description": "Git arguments starting with the subcommand, e.g. [\"log\", \"--oneline\", \"-5\"]. Branch and tag need a list flag."},
+                    "timeout": {"type": "integer", "description": "Seconds, default 120, max 600."}
+                },
+                "required": ["args"]
+            }
+        },
+        {
+            "name": "check",
+            "description": "Re-run one of the repo's named checks from .emberloop/check: name (default \"default\"), args substituted into the command's {args} slot. Shell metacharacters in args are refused.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Which named check to run (default \"default\")."},
+                    "args": {"type": "string", "description": "Substituted into the command's {args} slot only."}
+                }
+            }
+        },
+        {
+            "name": "ctx_search",
+            "description": "Search stored tool output (spilled ctx: handles): ranked snippets, each with its ctx:<id>:<start>-<end> range. Takes one or more queries, an optional source handle to scope the search, and a per-query limit (default 3). Page a hit with read ctx:<id>:<start>-<end>.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "queries": {"type": "array", "items": {"type": "string"}, "description": "One or more search strings."},
+                    "source": {"type": "string", "description": "Optional ctx: handle to scope the search to one stored output."},
+                    "limit": {"type": "integer", "description": "Matches per query (default 3)."}
+                },
+                "required": ["queries"]
+            }
+        },
+        {
             "name": "execute",
             "description": "Run a Python script (stdlib only) that calls el tools via `import tools` over a local bridge.",
             "inputSchema": {

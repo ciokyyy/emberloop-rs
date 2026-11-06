@@ -8,7 +8,7 @@ Model-wire proxy for every harness.
 - SSE and JSON responses run proxy tool calls (`compress`, `decompress`, `search_context`) locally and publish `EventKind::Compression` on the `EventBus` when a fold or restore runs; a pure proxy turn issues a follow-up request into the same client response, a mixed turn keeps only the harness calls and stores the proxy pair as a splice. `MAX_TOOL_ROUNDS` is 8, each round has `ROUND_TIMEOUT`, and a dropped client body drops the upstream stream.
 - `execute_tool` runs `compress`, `decompress` and `search_context` on the conversation; the harness never sees a proxy call.
 - `SpliceStore` persists to `<data root>/sessions/<id>/splices.jsonl`, append-only, keyed only by the tool-result turn id. `Splice::marker` is the exact string that proves a splice is already applied, so double-apply is impossible; a missing harness anchor drops the splice, a self-anchored proxy pair attaches before the newest turn. Opaque fields and thought signatures stay byte-exact.
-- `meter::extract_usage` reads `usageMetadata`/OpenAI `usage` from JSON or the last SSE payload; usage is published once per completed generation.
+- `meter::extract_usage` reads `usageMetadata`/OpenAI `usage` from JSON or the last SSE payload; usage is published once per completed generation. On non-Google wires `meter::thinking_delta` reads streamed reasoning text, published as `thinking_chunk`; the pi harness therefore drops its own ACP thought chunks (`AcpLaunch::forward_thoughts`) to avoid duplicates.
 - `Compressor` trait: `compress`, `decompress`, `search_context`, `status`, plus `apply` to refold a harness-rebuilt history. `NativeCompressor` swaps a turn range for a summary marker and spills originals to `<session spill>/blocks/<id>.json`.
 
 ## Tests
