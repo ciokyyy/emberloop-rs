@@ -105,6 +105,8 @@ export interface ProviderView {
   id: string;
   name: string;
   signedIn: boolean;
+  /** `login` (browser flow) or `key` (pasted API key). */
+  auth: string;
   accounts: AccountView[];
 }
 

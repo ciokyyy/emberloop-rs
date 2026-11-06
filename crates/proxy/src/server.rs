@@ -53,6 +53,8 @@ pub struct ProxyConfig {
     pub token_secret: Vec<u8>,
     /// OpenCode Go origin the pi wires (chat, responses, messages) stream to.
     pub opencode_upstream: String,
+    /// Replaces every key provider's origin on `x/<id>/…` routes; tests point it at a fake.
+    pub provider_origin: Option<String>,
 }
 
 impl ProxyConfig {
@@ -61,6 +63,7 @@ impl ProxyConfig {
             upstream_base: DEFAULT_UPSTREAM.to_string(),
             token_secret: token_secret.into(),
             opencode_upstream: DEFAULT_OPENCODE_UPSTREAM.to_string(),
+            provider_origin: None,
         }
     }
 
@@ -77,8 +80,17 @@ impl ProxyConfig {
     }
 }
 
+impl ProxyConfig {
+    pub fn with_provider_origin(mut self, origin: impl Into<String>) -> Self {
+        self.provider_origin = Some(origin.into());
+        self
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
+    #[error("unknown provider {0}")]
+    UnknownProvider(String),
     #[error("invalid session token")]
     Token(#[from] TokenError),
     #[error("unknown session")]
@@ -304,20 +316,50 @@ async fn dispatch(
         .await
         .map_err(|_| ProxyError::BodyTooLarge)?;
 
-    let Some((wire, pi_path)) = WireKind::from_rest(&rest) else {
-        return forward_plain(&state, &method, &rest, uri.query(), &headers, body).await;
+    let config = &state.inner.config;
+    let (base, path, wire) = match key_provider_route(config, &rest)? {
+        Some((origin, path)) => {
+            let wire = WireKind::from_rest(&path).map(|(wire, _)| wire);
+            (origin, path, wire)
+        }
+        None => match WireKind::from_rest(&rest) {
+            Some((wire, Some(pi_path))) => (config.opencode_upstream.clone(), pi_path, Some(wire)),
+            Some((wire, None)) => (config.upstream_base.clone(), rest, Some(wire)),
+            None => (config.upstream_base.clone(), rest, None),
+        },
+    };
+    let Some(wire) = wire else {
+        return forward_plain(&state, &method, &base, &path, uri.query(), &headers, body).await;
     };
     handle_generation(
         &state,
         &session_id,
         wire,
-        pi_path.as_deref(),
-        &rest,
+        &base,
+        &path,
         uri.query(),
         &headers,
         body,
     )
     .await
+}
+
+/// `x/<provider>/<path>` -> the provider's origin and `<path>`; `None` for any other route.
+fn key_provider_route(
+    config: &ProxyConfig,
+    rest: &str,
+) -> Result<Option<(String, String)>, ProxyError> {
+    let Some(tail) = rest.strip_prefix("x/") else {
+        return Ok(None);
+    };
+    let (id, path) = tail.split_once('/').unwrap_or((tail, ""));
+    let provider = emberloop_core::providers::key_provider(id)
+        .ok_or_else(|| ProxyError::UnknownProvider(id.to_string()))?;
+    let origin = config
+        .provider_origin
+        .clone()
+        .unwrap_or_else(|| provider.split().0.to_string());
+    Ok(Some((origin, path.to_string())))
 }
 
 /// The OpenCode Go path for a pi wire, by the request path suffix pi appends
@@ -339,12 +381,13 @@ fn pi_upstream_path(rest: &str) -> Option<String> {
 async fn forward_plain(
     state: &ProxyState,
     method: &Method,
-    rest: &str,
+    base: &str,
+    path: &str,
     query: Option<&str>,
     headers: &HeaderMap,
     body: Bytes,
 ) -> Result<Response<Body>, ProxyError> {
-    let url = upstream_url(&state.inner.config.upstream_base, rest, query);
+    let url = upstream_url(base, path, query);
     let mut request = state.inner.client.request(method.clone(), url);
     for (name, value) in headers {
         if is_hop_by_hop(name.as_str()) {
@@ -364,8 +407,8 @@ async fn handle_generation(
     state: &ProxyState,
     session_id: &str,
     wire: WireKind,
-    pi_path: Option<&str>,
-    rest: &str,
+    base: &str,
+    path: &str,
     query: Option<&str>,
     headers: &HeaderMap,
     body: Bytes,
@@ -381,10 +424,7 @@ async fn handle_generation(
     let outcome = prepare_request(&runtime, wire, &mut request, window, &settings)?;
     publish_prepare_events(&state.inner.events, session_id, outcome);
     dump_request(session_id, "out", &request);
-    let url = match pi_path {
-        Some(path) => upstream_url(&state.inner.config.opencode_upstream, path, query),
-        None => upstream_url(&state.inner.config.upstream_base, rest, query),
-    };
+    let url = upstream_url(base, path, query);
     let response = match send_stream(&state.inner.client, &url, headers, &request).await {
         Ok(response) => response,
         Err(error) => {
@@ -1486,6 +1526,7 @@ fn error_response(error: &ProxyError) -> Response<Body> {
         ProxyError::Token(_) | ProxyError::UnknownSession => StatusCode::UNAUTHORIZED,
         ProxyError::Json(_) | ProxyError::NoContents => StatusCode::BAD_REQUEST,
         ProxyError::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        ProxyError::UnknownProvider(_) => StatusCode::NOT_FOUND,
         ProxyError::Prompt(_)
         | ProxyError::ToolRoundLimit
         | ProxyError::Timeout

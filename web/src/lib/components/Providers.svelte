@@ -10,7 +10,9 @@
   let codex = $state<LoginView | null>(null);
   let label = $state('');
   let address = $state('');
-  let opencodeKey = $state('');
+  let search = $state('');
+  let picked = $state<string | null>(null);
+  let pickedKey = $state('');
   let error = $state('');
   let loading = $state(false);
   let copied = $state(false);
@@ -137,7 +139,7 @@
   }
 
   async function signOut(id: string) {
-    if (!window.confirm('Sign out of this Account? Its home directory is deleted.')) return;
+    if (!window.confirm('Remove this Account? Its saved credentials are deleted.')) return;
     try {
       await api.signOutAccount(id);
       await refresh();
@@ -146,12 +148,20 @@
     }
   }
 
-  async function saveOpenCodeKey() {
+  const connected = $derived(providers.filter((p) => p.signedIn || p.auth === 'login'));
+  const addable = $derived(
+    providers.filter(
+      (p) => p.auth === 'key' && !p.signedIn && p.name.toLowerCase().includes(search.trim().toLowerCase())
+    )
+  );
+
+  async function saveKey(id: string) {
     loading = true;
     error = '';
     try {
-      await api.setOpenCodeKey(opencodeKey);
-      opencodeKey = '';
+      await api.setProviderKey(id, pickedKey);
+      pickedKey = '';
+      picked = null;
       await refresh();
       await api.refreshModels();
     } catch (cause) {
@@ -197,7 +207,7 @@
     </p>
   {/if}
 
-  {#each providers as provider (provider.id)}
+  {#each connected as provider (provider.id)}
     <div class="mt-6 rounded border border-border" in:rise>
       <div class="flex items-center justify-between border-b border-border px-4 py-3">
         <div>
@@ -232,7 +242,9 @@
               </div>
             </div>
             {#if account.signedIn}
-              <button class="btn" onclick={() => void signOut(account.id)}>Sign out</button>
+              <button class="btn" onclick={() => void signOut(account.id)}>
+                {provider.auth === 'key' ? 'Remove key' : 'Sign out'}
+              </button>
             {/if}
           </li>
         {/each}
@@ -338,17 +350,48 @@
   {/if}
 
   <div class="mt-6 rounded border border-border p-4">
-    <div class="font-medium">OpenCode Go API key (pi harness)</div>
-    <div class="mt-2 flex gap-2">
-      <input
-        class="input min-w-0 flex-1"
-        type="password"
-        placeholder="API key"
-        bind:value={opencodeKey}
-      />
-      <button class="btn" disabled={loading || !opencodeKey.trim()} onclick={() => void saveOpenCodeKey()}>
-        Save key
-      </button>
-    </div>
+    <div class="font-medium">Add provider</div>
+    <p class="mt-1 text-[12px] text-fg-3">
+      Paste an API key. pi Sessions reach the provider through the proxy; the key stays in the
+      daemon's keys file.
+    </p>
+    <input
+      class="input mt-2 w-full"
+      placeholder="Search providers"
+      aria-label="Search providers"
+      bind:value={search}
+    />
+    <ul class="mt-2 max-h-72 divide-y divide-border overflow-y-auto">
+      {#each addable as provider (provider.id)}
+        <li class="py-2" in:slide={rowEnter}>
+          <button
+            class="row w-full px-2 py-1.5 text-left text-[14px]"
+            onclick={() => ((picked = picked === provider.id ? null : provider.id), (pickedKey = ''))}
+          >
+            {provider.name}
+          </button>
+          {#if picked === provider.id}
+            <div class="mt-2 flex gap-2 px-2" transition:slideDown>
+              <input
+                class="input min-w-0 flex-1"
+                type="password"
+                placeholder="{provider.name} API key"
+                bind:value={pickedKey}
+              />
+              <button
+                class="btn"
+                disabled={loading || !pickedKey.trim()}
+                onclick={() => void saveKey(provider.id)}
+              >
+                Save key
+              </button>
+            </div>
+          {/if}
+        </li>
+      {/each}
+      {#if addable.length === 0}
+        <li class="py-2 text-[13px] text-fg-3">No provider matches.</li>
+      {/if}
+    </ul>
   </div>
 </section>

@@ -1046,6 +1046,7 @@ version = "0.0.7"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
+ "emberloop-core",
  "futures",
  "harness",
  "harness-acp",

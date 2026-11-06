@@ -154,7 +154,10 @@ async fn opencode_key_and_chatgpt_are_stored_privately_and_listed() {
         .with_pi_auth(&auth);
 
     let providers = login.providers().await;
-    assert_eq!(providers.len(), 3);
+    assert_eq!(
+        providers.len(),
+        3 + emberloop_core::providers::KEY_PROVIDERS.len()
+    );
     let opencode = providers
         .iter()
         .find(|provider| provider.id == "opencode-go")
@@ -213,4 +216,35 @@ async fn opencode_key_and_chatgpt_are_stored_privately_and_listed() {
         .find(|provider| provider.id == "opencode-go")
         .unwrap();
     assert!(!opencode.signed_in);
+}
+
+#[tokio::test]
+async fn registry_providers_take_a_pasted_key_and_unknown_ids_are_refused() {
+    let dir = tempdir().unwrap();
+    let keys = dir.path().join("keys.json");
+    let login =
+        AgyLogin::new(dir.path().join("accounts/agy"), dir.path().join("agy")).with_keys(&keys);
+    let groq = |providers: Vec<api::providers::ProviderView>| {
+        providers
+            .into_iter()
+            .find(|provider| provider.id == "groq")
+            .unwrap()
+    };
+    let before = groq(login.providers().await);
+    assert_eq!(
+        (before.name.as_str(), before.auth.as_str()),
+        ("Groq", "key")
+    );
+    assert!(!before.signed_in);
+
+    login.set_key("groq", "gsk-1").await.unwrap();
+    let after = groq(login.providers().await);
+    assert!(after.signed_in);
+    assert_eq!(after.accounts[0].id, "groq");
+
+    let error = login.set_key("nope", "k").await.unwrap_err();
+    assert_eq!(error.status, axum::http::StatusCode::NOT_FOUND);
+    assert!(login.clear_key("nope").await.is_err());
+    login.clear_key("groq").await.unwrap();
+    assert!(!groq(login.providers().await).signed_in);
 }

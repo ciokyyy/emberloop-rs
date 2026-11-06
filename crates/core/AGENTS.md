@@ -6,6 +6,7 @@ Defines shared workspace foundational types:
 - `Context`: scoped services registry and cancellation token tree
 - `EventBus`: typed event publish/subscribe
 - `id`: unique identifier generation
+- `providers`: the API-key provider registry (id, name, pi's default `baseUrl`) shared by the proxy route, the pi harness and the Providers API
 
 ## Steering
 

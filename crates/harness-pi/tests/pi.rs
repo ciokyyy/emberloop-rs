@@ -165,6 +165,41 @@ async fn an_auth_file_lets_a_codex_session_start_without_an_opencode_key() {
 }
 
 #[tokio::test]
+async fn every_saved_key_provider_gets_a_proxied_entry_and_its_models_need_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("keys.json"),
+        r#"{"groq":"sk-groq","opencode-go":"sk-go","nope":"x","cerebras":""}"#,
+    )
+    .unwrap();
+    let harness = PiHarness::new(
+        env!("CARGO_BIN_EXE_fake-pi"),
+        dir.path().join("pi"),
+        dir.path().join("keys.json"),
+    );
+    let mut groq = wiring();
+    groq.model = Some("groq/llama-3.3-70b-versatile".into());
+    let _session = harness.spawn("s1", groq).await.unwrap();
+    let models: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("pi/s1/.pi/agent/models.json")).unwrap(),
+    )
+    .unwrap();
+    let providers = models["providers"].as_object().unwrap();
+    assert_eq!(providers["groq"]["apiKey"], "sk-groq");
+    assert_eq!(
+        providers["groq"]["baseUrl"],
+        "http://127.0.0.1:9/p/tok/x/groq/openai/v1"
+    );
+    assert_eq!(providers["opencode-go"]["apiKey"], "sk-go");
+    assert_eq!(providers.len(), 2, "unknown and empty keys write no entry");
+
+    let mut cerebras = wiring();
+    cerebras.model = Some("cerebras/gpt-oss-120b".into());
+    let error = harness.spawn("s2", cerebras).await.err().unwrap();
+    assert!(error.to_string().contains("cerebras"), "{error}");
+}
+
+#[tokio::test]
 async fn forget_deletes_the_session_in_pi() {
     let dir = tempfile::tempdir().unwrap();
     let harness = harness(dir.path(), true);

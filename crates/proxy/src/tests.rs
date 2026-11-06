@@ -879,28 +879,29 @@ async fn a_failed_request_requeues_the_steer() {
 /// What the fake pi upstream saw: (path, auth header, body).
 type Seen = Arc<Mutex<Vec<(String, Option<String>, String)>>>;
 
+async fn pi_chat(
+    AxumState(seen): AxumState<Seen>,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> Response {
+    let key = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    seen.lock().unwrap().push(("chat".into(), key, body));
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .body(Body::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+             data: {\"usage\":{\"prompt_tokens\":44,\"completion_tokens\":2}}\n\n\
+             data: [DONE]\n\n",
+        ))
+        .unwrap()
+}
+
 fn pi_upstream(seen: Seen) -> AxumRouter {
-    async fn chat(
-        AxumState(seen): AxumState<Seen>,
-        headers: axum::http::HeaderMap,
-        body: String,
-    ) -> Response {
-        let key = headers
-            .get("authorization")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        seen.lock().unwrap().push(("chat".into(), key, body));
-        Response::builder()
-            .header(header::CONTENT_TYPE, "text/event-stream")
-            .body(Body::from(
-                "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
-                 data: {\"usage\":{\"prompt_tokens\":44,\"completion_tokens\":2}}\n\n\
-                 data: [DONE]\n\n",
-            ))
-            .unwrap()
-    }
     AxumRouter::new()
-        .route("/inference/go/openai/v1/chat/completions", post(chat))
+        .route("/inference/go/openai/v1/chat/completions", post(pi_chat))
         .with_state(seen)
 }
 
@@ -982,6 +983,45 @@ async fn pi_chat_requests_inject_prompts_tools_and_steers_and_are_metered() {
         }
     }
     assert!(saw_usage);
+}
+
+#[tokio::test]
+async fn a_key_provider_route_forwards_to_its_origin_with_the_clients_key() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = AxumRouter::new()
+        .route("/openai/v1/chat/completions", post(pi_chat))
+        .with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_provider_origin(format!("http://{addr}"))
+    })
+    .await;
+    let call = |path: &'static str| {
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/proxy/{}/{path}", fixture.token))
+            .header(header::AUTHORIZATION, "Bearer sk-groq")
+            .body(Body::from(
+                json!({"model": "m", "stream": true, "messages": [{"role": "user", "content": "hi"}]})
+                    .to_string(),
+            ))
+            .unwrap();
+        router(fixture.state.clone()).oneshot(request)
+    };
+
+    let response = call("x/groq/openai/v1/chat/completions").await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].1.as_deref(), Some("Bearer sk-groq"));
+        assert!(seen[0].2.contains("Emberloop proxy policy"));
+    }
+
+    let unknown = call("x/nope/v1/chat/completions").await.unwrap();
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

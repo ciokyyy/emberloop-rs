@@ -212,7 +212,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/providers/opencode-go/key": {
+    "/api/providers/{id}/key": {
         parameters: {
             query?: never;
             header?: never;
@@ -220,9 +220,9 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put: operations["set_opencode_key"];
+        put: operations["set_provider_key"];
         post?: never;
-        delete?: never;
+        delete: operations["delete_provider_key"];
         options?: never;
         head?: never;
         patch?: never;
@@ -406,6 +406,8 @@ export interface components {
         };
         ProviderView: {
             accounts: components["schemas"]["AccountView"][];
+            /** @description How the User signs in: `login` (browser flow), `key` (pasted API key). */
+            auth?: string;
             id: string;
             name: string;
             signedIn: boolean;
@@ -1083,11 +1085,14 @@ export interface operations {
             };
         };
     };
-    set_opencode_key: {
+    set_provider_key: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                /** @description provider id */
+                id: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -1105,6 +1110,41 @@ export interface operations {
             };
             /** @description empty key */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description not an API-key provider */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_provider_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description provider id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description not an API-key provider */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

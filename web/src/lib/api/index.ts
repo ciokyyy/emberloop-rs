@@ -104,8 +104,8 @@ export const api = {
     request<{ ok: boolean }>(`/api/providers/agy/accounts/${encodeURIComponent(id)}`, {
       method: 'DELETE'
     }),
-  setOpenCodeKey: (key: string) =>
-    request<{ ok: boolean }>('/api/providers/opencode-go/key', {
+  setProviderKey: (id: string, key: string) =>
+    request<{ ok: boolean }>(`/api/providers/${encodeURIComponent(id)}/key`, {
       method: 'PUT',
       body: JSON.stringify({ key })
     }),

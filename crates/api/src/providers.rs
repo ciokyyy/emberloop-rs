@@ -28,6 +28,9 @@ pub struct ProviderView {
     pub id: String,
     pub name: String,
     pub signed_in: bool,
+    /// How the User signs in: `login` (browser flow), `key` (pasted API key).
+    #[serde(default)]
+    pub auth: String,
     pub accounts: Vec<AccountView>,
 }
 
@@ -148,6 +151,11 @@ pub trait ProviderLogin: Send + Sync {
             "the daemon does not store provider keys",
         ))
     }
+    async fn clear_key(&self, _provider: &str) -> Result<(), LoginError> {
+        Err(LoginError::unavailable(
+            "the daemon does not store provider keys",
+        ))
+    }
 }
 
 fn login(state: &AppState) -> Result<&std::sync::Arc<dyn ProviderLogin>, LoginError> {
@@ -256,15 +264,38 @@ pub async fn sign_out_agy_account(
 
 #[utoipa::path(
     put,
-    path = "/api/providers/opencode-go/key",
+    path = "/api/providers/{id}/key",
+    params(("id" = String, Path, description = "provider id")),
     request_body = SetKeyRequest,
-    responses((status = 200, description = "saved"), (status = 400, description = "empty key"))
+    responses(
+        (status = 200, description = "saved"),
+        (status = 400, description = "empty key"),
+        (status = 404, description = "not an API-key provider")
+    )
 )]
-pub async fn set_opencode_key(
+pub async fn set_provider_key(
     State(state): State<AppState>,
+    Path(id): Path<String>,
     Json(request): Json<SetKeyRequest>,
 ) -> Result<Json<serde_json::Value>, LoginError> {
-    login(&state)?.set_key("opencode-go", &request.key).await?;
+    login(&state)?.set_key(&id, &request.key).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/providers/{id}/key",
+    params(("id" = String, Path, description = "provider id")),
+    responses(
+        (status = 200, description = "removed"),
+        (status = 404, description = "not an API-key provider")
+    )
+)]
+pub async fn delete_provider_key(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, LoginError> {
+    login(&state)?.clear_key(&id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -333,7 +364,10 @@ pub fn router() -> Router<AppState> {
             "/api/providers/agy/accounts/{id}",
             delete(sign_out_agy_account),
         )
-        .route("/api/providers/opencode-go/key", put(set_opencode_key))
+        .route(
+            "/api/providers/{id}/key",
+            put(set_provider_key).delete(delete_provider_key),
+        )
         .route("/api/providers/openai-codex/login", post(start_codex_login))
         .route(
             "/api/providers/openai-codex/login/{id}",

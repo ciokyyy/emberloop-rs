@@ -33,9 +33,12 @@ pub mod tooldisplay;
 pub mod update;
 
 pub fn is_pi_model(model: Option<&str>) -> bool {
-    model.is_some_and(|model| {
-        model.starts_with("opencode-go/") || model.starts_with("openai-codex/")
-    })
+    model
+        .and_then(|model| model.split_once('/'))
+        .is_some_and(|(provider, _)| {
+            matches!(provider, "opencode-go" | "openai-codex")
+                || emberloop_core::providers::key_provider(provider).is_some()
+        })
 }
 
 struct MultiHarness {

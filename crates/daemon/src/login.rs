@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::codex::CodexLogin;
 use api::providers::{AccountView, LoginError, LoginView, ProviderLogin, ProviderView};
 use async_trait::async_trait;
+use emberloop_core::providers::{key_provider, KEY_PROVIDERS};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -139,6 +140,16 @@ impl AgyLogin {
             http,
             codex: CodexLogin::new(PathBuf::new()),
         }
+    }
+
+    /// The keys file, when `provider` is one that takes a pasted key.
+    fn keys_store(&self, provider: &str) -> Result<&Path, LoginError> {
+        if !is_key_provider(provider) {
+            return Err(LoginError::not_found("not an API-key provider"));
+        }
+        self.keys_file
+            .as_deref()
+            .ok_or_else(|| LoginError::unavailable("the daemon has no keys store"))
     }
 
     pub fn with_keys(mut self, keys_file: impl Into<PathBuf>) -> Self {
@@ -334,11 +345,17 @@ impl ProviderLogin for AgyLogin {
             id: "agy".to_string(),
             name: "Antigravity".to_string(),
             signed_in: accounts.iter().any(|account| account.signed_in),
+            auth: "login".to_string(),
             accounts,
         }];
         list.push(self.codex.provider().await);
         if let Some(keys) = &self.keys_file {
-            list.push(opencode_provider(keys));
+            list.push(key_view(keys, "opencode-go", "OpenCode Go"));
+            list.extend(
+                KEY_PROVIDERS
+                    .iter()
+                    .map(|provider| key_view(keys, provider.id, provider.name)),
+            );
         }
         list
     }
@@ -472,12 +489,8 @@ impl ProviderLogin for AgyLogin {
         if id == "openai-codex" {
             return self.codex.sign_out().await;
         }
-        if id == "opencode-go" {
-            let keys = self
-                .keys_file
-                .as_deref()
-                .ok_or_else(|| LoginError::not_found("unknown account"))?;
-            return clear_key(keys, "opencode-go");
+        if is_key_provider(id) {
+            return self.clear_key(id).await;
         }
         std::fs::remove_dir_all(self.home()).map_err(LoginError::server)?;
         match std::fs::remove_file(self.accounts_file()) {
@@ -488,11 +501,11 @@ impl ProviderLogin for AgyLogin {
     }
 
     async fn set_key(&self, provider: &str, key: &str) -> Result<(), LoginError> {
-        let keys = self
-            .keys_file
-            .as_deref()
-            .ok_or_else(|| LoginError::unavailable("the daemon has no keys store"))?;
-        write_key(keys, provider, key)
+        write_key(self.keys_store(provider)?, provider, key)
+    }
+
+    async fn clear_key(&self, provider: &str) -> Result<(), LoginError> {
+        clear_key(self.keys_store(provider)?, provider)
     }
 
     async fn start_codex(&self, label: &str) -> Result<LoginView, LoginError> {
@@ -508,12 +521,16 @@ impl ProviderLogin for AgyLogin {
     }
 }
 
-fn opencode_provider(keys: &Path) -> ProviderView {
-    let signed_in = has_key(keys, "opencode-go");
+fn is_key_provider(id: &str) -> bool {
+    id == "opencode-go" || key_provider(id).is_some()
+}
+
+fn key_view(keys: &Path, id: &str, name: &str) -> ProviderView {
+    let signed_in = has_key(keys, id);
     let accounts = if signed_in {
         vec![AccountView {
-            id: "opencode-go".to_string(),
-            label: "OpenCode Go API key".to_string(),
+            id: id.to_string(),
+            label: format!("{name} API key"),
             tier: "Key".to_string(),
             signed_in: true,
             last_login: 0,
@@ -522,9 +539,10 @@ fn opencode_provider(keys: &Path) -> ProviderView {
         Vec::new()
     };
     ProviderView {
-        id: "opencode-go".to_string(),
-        name: "OpenCode Go".to_string(),
+        id: id.to_string(),
+        name: name.to_string(),
         signed_in,
+        auth: "key".to_string(),
         accounts,
     }
 }

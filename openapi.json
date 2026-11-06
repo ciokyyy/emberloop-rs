@@ -585,12 +585,23 @@
         }
       }
     },
-    "/api/providers/opencode-go/key": {
+    "/api/providers/{id}/key": {
       "put": {
         "tags": [
           "crate::providers"
         ],
-        "operationId": "set_opencode_key",
+        "operationId": "set_provider_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "provider id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -607,6 +618,34 @@
           },
           "400": {
             "description": "empty key"
+          },
+          "404": {
+            "description": "not an API-key provider"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "crate::providers"
+        ],
+        "operationId": "delete_provider_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "provider id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "removed"
+          },
+          "404": {
+            "description": "not an API-key provider"
           }
         }
       }
@@ -1183,6 +1222,10 @@
             "items": {
               "$ref": "#/components/schemas/AccountView"
             }
+          },
+          "auth": {
+            "type": "string",
+            "description": "How the User signs in: `login` (browser flow), `key` (pasted API key)."
           },
           "id": {
             "type": "string"

@@ -85,6 +85,7 @@ impl CodexLogin {
             id: "openai-codex".into(),
             name: "ChatGPT".into(),
             signed_in,
+            auth: "login".into(),
             accounts: signed_in
                 .then(|| AccountView {
                     id: "openai-codex".into(),

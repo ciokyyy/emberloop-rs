@@ -12,7 +12,7 @@ Exposes axum REST API, SSE event endpoints and the model catalogue with utoipa O
 - `/api/settings`: get and update system settings, including the ticket-20 Context keys (`max_context_limit`, `min_pressure_benefit_tokens`, `emergency_threshold_percent`, `preserve_recent_messages`, `protected_tools`, `inject_tool`, `inject_nudge`, `tier2_trigger`, `tier3_trigger`); `serde(default)` fills them for older saved settings.
 - `/api/prompts`: list prompt ids with default/override/active hashes; `PUT/DELETE /api/prompts/:id` writes or removes an override
 - `/api/models`: merged model catalogue; `POST /api/models/refresh` forces the configured sources to refresh
-- `/api/providers`: list providers, Antigravity login flow, and `PUT /api/providers/opencode-go/key`
+- `/api/providers`: list providers, Antigravity login flow, and `PUT`/`DELETE /api/providers/:id/key` for API-key providers (`opencode-go` and the `emberloop_core::providers` registry; any other id is 404). `ProviderView.auth` is `login` or `key`
 - `/openapi.json`: OpenAPI 3.0 specification
 - `AppState::new` reads prompts from `<data root>/prompts`; `AppState::with_prompts` and `AppState::with_models` let the daemon pass the config-root prompt store and multi-source model catalogue.
 

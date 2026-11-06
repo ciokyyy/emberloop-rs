@@ -14,7 +14,9 @@
     loading = true;
     error = '';
     try {
-      providers = await api.listProviders();
+      providers = (await api.listProviders()).filter(
+        (provider) => provider.signedIn || provider.auth === 'login'
+      );
     } catch (cause) {
       error = String(cause);
     } finally {
@@ -58,7 +60,7 @@
           <span class="chip">{provider.signedIn ? 'Ready' : 'Off'}</span>
         </div>
 
-        {#if provider.signedIn}
+        {#if provider.signedIn && provider.auth !== 'key'}
           <div class="mt-4 grid gap-3 sm:grid-cols-2">
             <div class="rounded-xl border border-border bg-background p-3">
               <div class="flex items-center justify-between text-[12px] text-fg-3">
@@ -80,7 +82,11 @@
             </div>
           </div>
         {:else}
-          <p class="mt-3 text-[13px] text-fg-3">Connect this provider from Providers to read usage.</p>
+          <p class="mt-3 text-[13px] text-fg-3">
+            {provider.signedIn
+              ? 'API-key providers report no usage here.'
+              : 'Connect this provider from Providers to read usage.'}
+          </p>
         {/if}
       </div>
     {/each}

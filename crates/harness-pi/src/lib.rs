@@ -2,13 +2,15 @@
 use agent_client_protocol::v1::schema::McpServer;
 use agent_client_protocol::AcpAgentConfig;
 use async_trait::async_trait;
+use emberloop_core::providers::{key_provider, KEY_PROVIDERS};
 use harness::{Harness, HarnessError, HarnessSession, HarnessWiring};
 use harness_acp::{start, AcpLaunch, AcpSession};
+use std::collections::BTreeMap;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-/// The one provider phase 2 wires: pi's built-in OpenCode Go catalogue.
-const PROVIDER: &str = "opencode-go";
+/// pi's built-in OpenCode Go catalogue; its wires are routed by path suffix, not by `x/<id>`.
+const OPENCODE_GO: &str = "opencode-go";
 
 /// `pi --mode acp` (pi-rust). Each Session gets its own `HOME` under `homes`
 /// holding `models.json` (proxy base URL and key) and `mcp.json` (the tools);
@@ -39,16 +41,19 @@ impl PiHarness {
         self
     }
 
-    fn key(&self) -> Result<String, HarnessError> {
-        let missing =
-            || HarnessError::Process(format!("no {PROVIDER} key in {}", self.keys.display()));
-        let text = std::fs::read_to_string(&self.keys).map_err(|_| missing())?;
-        let keys: serde_json::Value = serde_json::from_str(&text)?;
-        keys[PROVIDER]
-            .as_str()
-            .filter(|key| !key.is_empty())
-            .map(str::to_string)
-            .ok_or_else(missing)
+    /// The saved keys of providers the proxy can route; empty and unknown entries drop out.
+    fn keys(&self) -> Result<BTreeMap<String, String>, HarnessError> {
+        let Ok(text) = std::fs::read_to_string(&self.keys) else {
+            return Ok(BTreeMap::new());
+        };
+        let saved: BTreeMap<String, serde_json::Value> = serde_json::from_str(&text)?;
+        Ok(saved
+            .into_iter()
+            .filter(|(id, _)| id == OPENCODE_GO || key_provider(id).is_some())
+            .filter_map(|(id, key)| {
+                Some((id, key.as_str().filter(|key| !key.is_empty())?.to_string()))
+            })
+            .collect())
     }
 
     /// `env -i` clears what the daemon inherited; the key travels in
@@ -73,16 +78,18 @@ impl PiHarness {
         &self,
         session_id: &str,
         wiring: HarnessWiring,
-        require_key: bool,
+        required: Option<&str>,
     ) -> Result<AcpSession, HarnessError> {
-        let key = if require_key {
-            Some(self.key()?)
-        } else {
-            self.key().ok()
-        };
+        let keys = self.keys()?;
+        if let Some(provider) = required.filter(|provider| !keys.contains_key(*provider)) {
+            return Err(HarnessError::Process(format!(
+                "no {provider} key in {}",
+                self.keys.display()
+            )));
+        }
         let home = self.homes.join(session_id);
         let cwd = wiring.workdir.clone().unwrap_or_else(|| home.join("work"));
-        write_session_files(&home, &cwd, &wiring, key.as_deref(), self.auth.as_deref())?;
+        write_session_files(&home, &cwd, &wiring, &keys, self.auth.as_deref())?;
         let launch = AcpLaunch {
             config: self.config(&home),
             cwd,
@@ -111,7 +118,7 @@ impl PiHarness {
             resume_token: None,
             workdir: None,
         };
-        let session = self.open("_catalogue", wiring, false).await?;
+        let session = self.open("_catalogue", wiring, None).await?;
         Ok(model_options(&session.config_options))
     }
 }
@@ -144,11 +151,17 @@ impl Harness for PiHarness {
         session_id: &str,
         wiring: HarnessWiring,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
-        let require_key = wiring
-            .model
-            .as_deref()
-            .is_none_or(|model| model.starts_with("opencode-go/"));
-        Ok(Box::new(self.open(session_id, wiring, require_key).await?))
+        // A model of a provider that needs a saved key (not Codex OAuth) needs that key.
+        let required = match wiring.model.as_deref() {
+            None => Some(OPENCODE_GO.to_string()),
+            Some(model) => model
+                .split_once('/')
+                .map(|(provider, _)| provider)
+                .filter(|provider| *provider == OPENCODE_GO || key_provider(provider).is_some())
+                .map(str::to_string),
+        };
+        let session = self.open(session_id, wiring, required.as_deref()).await?;
+        Ok(Box::new(session))
     }
 }
 
@@ -156,25 +169,17 @@ fn write_session_files(
     home: &Path,
     cwd: &Path,
     wiring: &HarnessWiring,
-    key: Option<&str>,
+    keys: &BTreeMap<String, String>,
     auth: Option<&Path>,
 ) -> std::io::Result<()> {
     let agent = home.join(".pi/agent");
     std::fs::create_dir_all(&agent)?;
     std::fs::create_dir_all(cwd)?;
     let models_path = agent.join("models.json");
-    match key {
-        Some(key) => {
-            // pi appends `/chat/completions` etc. to the base; the proxy routes on that suffix.
-            let models = serde_json::json!({"providers": {PROVIDER: {
-                "baseUrl": format!("{}/v1", wiring.proxy_url.trim_end_matches('/')),
-                "apiKey": key,
-            }}});
-            write_private(&models_path, &models.to_string())?;
-        }
-        None => {
-            let _ = std::fs::remove_file(&models_path);
-        }
+    if keys.is_empty() {
+        let _ = std::fs::remove_file(&models_path);
+    } else {
+        write_private(&models_path, &models_config(wiring, keys).to_string())?;
     }
     if let Some(auth) = auth {
         match std::fs::read(auth) {
@@ -186,6 +191,26 @@ fn write_session_files(
         }
     }
     write_private(&agent.join("mcp.json"), &mcp_config(wiring).to_string())
+}
+
+/// pi's `models.json`: every saved provider talks to the proxy, which holds no key of its own.
+/// pi appends `/chat/completions` etc. to the base; the proxy routes on that suffix.
+fn models_config(wiring: &HarnessWiring, keys: &BTreeMap<String, String>) -> serde_json::Value {
+    let proxy = wiring.proxy_url.trim_end_matches('/');
+    let providers: serde_json::Map<_, _> = keys
+        .iter()
+        .map(|(id, key)| {
+            let base_url = match KEY_PROVIDERS.iter().find(|provider| provider.id == id) {
+                Some(provider) => provider.proxied_base_url(proxy),
+                None => format!("{proxy}/v1"),
+            };
+            (
+                id.clone(),
+                serde_json::json!({"baseUrl": base_url, "apiKey": key}),
+            )
+        })
+        .collect();
+    serde_json::json!({ "providers": providers })
 }
 
 /// pi's own `mcp.json`: ACP `session/new` refuses HTTP MCP, this file does not.
