@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
@@ -926,6 +926,8 @@ struct SseState {
     request: Value,
     stream: Option<ByteStream>,
     pending: Vec<u8>,
+    /// Events decided to pass through after being buffered behind a tool call.
+    forward: VecDeque<Bytes>,
     rounds: usize,
     done: bool,
     harness_call_id: Option<String>,
@@ -933,6 +935,19 @@ struct SseState {
     usage: Option<meter::Usage>,
     /// The signature of the step being streamed: the model signs its first call.
     step_signature: Option<Value>,
+    /// Tool calls a pi wire streams in fragments; the wire decides run or hide.
+    stream_calls: Vec<StreamCall>,
+    stream_events: Vec<Bytes>,
+    stream_finish: Vec<Bytes>,
+    proxy_round: bool,
+}
+
+#[derive(Debug, Default)]
+struct StreamCall {
+    index: usize,
+    id: String,
+    name: String,
+    args: String,
 }
 
 impl SseState {
@@ -957,12 +972,17 @@ impl SseState {
             request,
             stream: Some(response.bytes_stream().boxed()),
             pending: Vec::new(),
+            forward: VecDeque::new(),
             rounds: 1,
             done: false,
             harness_call_id: None,
             completed: Vec::new(),
             usage: None,
             step_signature: None,
+            stream_calls: Vec::new(),
+            stream_events: Vec::new(),
+            stream_finish: Vec::new(),
+            proxy_round: false,
         }
     }
 
@@ -976,6 +996,8 @@ impl SseState {
         .await?;
         self.stream = Some(response.bytes_stream().boxed());
         self.step_signature = None;
+        self.proxy_round = false;
+        self.stream_calls.clear();
         self.rounds += 1;
         Ok(())
     }
@@ -1020,19 +1042,26 @@ impl SseState {
     }
 
     fn process_event(&mut self, event: &[u8]) -> Result<Option<Bytes>, ProxyError> {
+        let raw = delimited(event);
         let text = String::from_utf8_lossy(event);
         let Some(data) = sse_data(&text) else {
-            return Ok(Some(delimited(event)));
+            return Ok(Some(raw));
         };
         let Ok(mut payload) = serde_json::from_str::<Value>(&data) else {
-            return Ok(Some(delimited(event)));
+            return Ok((!self.proxy_round || data.trim() != "[DONE]").then_some(raw));
         };
         if let Some(usage) = meter::extract_usage(event) {
             self.usage = Some(usage);
         }
+        if self.proxy_round && is_stream_end(&payload) {
+            return Ok(None);
+        }
+        if self.pi_stream_event(&mut payload, raw.clone())?.is_some() {
+            return Ok(None);
+        }
         let outcome = rewrite_payload(&mut payload, self)?;
         if !outcome.changed {
-            return Ok(Some(delimited(event)));
+            return Ok(Some(raw));
         }
         if outcome.empty {
             return Ok(None);
@@ -1042,6 +1071,166 @@ impl SseState {
             "data: {}\n\n",
             String::from_utf8_lossy(&body)
         ))))
+    }
+
+    /// A pi wire's fragmented tool call: buffer it, then run a proxy tool and
+    /// follow up, or hand the exact same events to the harness.
+    fn pi_stream_event(
+        &mut self,
+        payload: &mut Value,
+        raw: Bytes,
+    ) -> Result<Option<RewriteOutcome>, ProxyError> {
+        match self.wire {
+            WireKind::OpenAiChat => self.openai_stream_event(payload, raw),
+            WireKind::Anthropic => self.anthropic_stream_event(payload, raw),
+            WireKind::OpenAiResponses => self.responses_stream_event(payload, raw),
+            WireKind::Google => Ok(None),
+        }
+    }
+
+    fn openai_stream_event(
+        &mut self,
+        payload: &mut Value,
+        raw: Bytes,
+    ) -> Result<Option<RewriteOutcome>, ProxyError> {
+        let (saw_tool, finished) = collect_openai_calls(payload, &mut self.stream_calls);
+        if !saw_tool && !(finished && !self.stream_calls.is_empty()) {
+            return Ok(None);
+        }
+        if saw_tool && !finished {
+            self.stream_events.push(raw);
+        } else {
+            self.stream_finish.push(raw);
+        }
+        if finished {
+            self.decide_stream_calls()?;
+        }
+        Ok(Some(RewriteOutcome {
+            changed: true,
+            empty: true,
+        }))
+    }
+
+    fn anthropic_stream_event(
+        &mut self,
+        payload: &mut Value,
+        raw: Bytes,
+    ) -> Result<Option<RewriteOutcome>, ProxyError> {
+        let kind = payload.get("type").and_then(Value::as_str).unwrap_or("");
+        match kind {
+            "content_block_start" => {
+                if payload
+                    .pointer("/content_block/type")
+                    .and_then(Value::as_str)
+                    != Some("tool_use")
+                {
+                    return Ok(None);
+                }
+                push_stream_call(payload, &mut self.stream_calls, false);
+                self.stream_events.push(raw);
+                Ok(Some(suppressed_outcome()))
+            }
+            "content_block_delta" => {
+                if payload.pointer("/delta/type").and_then(Value::as_str)
+                    != Some("input_json_delta")
+                {
+                    return Ok(None);
+                }
+                push_stream_call(payload, &mut self.stream_calls, true);
+                self.stream_events.push(raw);
+                Ok(Some(suppressed_outcome()))
+            }
+            "content_block_stop" => {
+                let index = stream_index(payload);
+                if !self.stream_calls.iter().any(|call| call.index == index) {
+                    return Ok(None);
+                }
+                self.stream_events.push(raw);
+                Ok(Some(suppressed_outcome()))
+            }
+            "message_delta" => {
+                if self.stream_calls.is_empty() {
+                    return Ok(None);
+                }
+                self.stream_finish.push(raw);
+                Ok(Some(suppressed_outcome()))
+            }
+            "message_stop" => {
+                if self.stream_calls.is_empty() {
+                    return Ok(None);
+                }
+                self.stream_finish.push(raw);
+                self.decide_stream_calls()?;
+                Ok(Some(suppressed_outcome()))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn responses_stream_event(
+        &mut self,
+        payload: &mut Value,
+        raw: Bytes,
+    ) -> Result<Option<RewriteOutcome>, ProxyError> {
+        let kind = payload.get("type").and_then(Value::as_str).unwrap_or("");
+        match kind {
+            "response.output_item.added" => {
+                if payload.pointer("/item/type").and_then(Value::as_str) != Some("function_call") {
+                    return Ok(None);
+                }
+                push_responses_call(payload, &mut self.stream_calls, false);
+                self.stream_events.push(raw);
+                Ok(Some(suppressed_outcome()))
+            }
+            "response.function_call_arguments.delta" => {
+                push_responses_call(payload, &mut self.stream_calls, true);
+                self.stream_events.push(raw);
+                Ok(Some(suppressed_outcome()))
+            }
+            "response.output_item.done" => {
+                if payload.pointer("/item/type").and_then(Value::as_str) != Some("function_call") {
+                    return Ok(None);
+                }
+                self.stream_events.push(raw);
+                Ok(Some(suppressed_outcome()))
+            }
+            "response.completed" => {
+                if self.stream_calls.is_empty() {
+                    return Ok(None);
+                }
+                self.stream_finish.push(raw);
+                self.decide_stream_calls()?;
+                Ok(Some(suppressed_outcome()))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn decide_stream_calls(&mut self) -> Result<(), ProxyError> {
+        if self.stream_calls.is_empty() {
+            return Ok(());
+        }
+        let proxy = self
+            .stream_calls
+            .iter()
+            .any(|call| PROXY_TOOLS.contains(&call.name.as_str()));
+        let harness = self
+            .stream_calls
+            .iter()
+            .any(|call| !PROXY_TOOLS.contains(&call.name.as_str()));
+        if !proxy || harness {
+            self.forward.extend(self.stream_events.drain(..));
+            self.forward.extend(self.stream_finish.drain(..));
+            self.stream_calls.clear();
+            return Ok(());
+        }
+        for call in std::mem::take(&mut self.stream_calls) {
+            self.record_call(proxy_call(call));
+        }
+        self.stream_events.clear();
+        self.stream_finish.clear();
+        self.proxy_round = true;
+        Ok(())
     }
 
     fn record_call(&mut self, call: ProxyCall) {
@@ -1061,6 +1250,160 @@ impl SseState {
     }
 }
 
+fn suppressed_outcome() -> RewriteOutcome {
+    RewriteOutcome {
+        changed: true,
+        empty: true,
+    }
+}
+
+fn is_stream_end(payload: &Value) -> bool {
+    matches!(
+        payload.get("type").and_then(Value::as_str),
+        Some("message_stop" | "response.completed")
+    )
+}
+
+fn stream_index(payload: &Value) -> usize {
+    payload
+        .get("index")
+        .or_else(|| payload.get("output_index"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize
+}
+
+fn stream_call_mut(calls: &mut Vec<StreamCall>, index: usize) -> &mut StreamCall {
+    if let Some(position) = calls.iter().position(|call| call.index == index) {
+        return &mut calls[position];
+    }
+    let position = calls.len();
+    calls.push(StreamCall {
+        index,
+        ..StreamCall::default()
+    });
+    &mut calls[position]
+}
+
+fn arguments_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(value) if !value.is_null() => value.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn collect_openai_calls(payload: &mut Value, calls: &mut Vec<StreamCall>) -> (bool, bool) {
+    let mut saw_tool = false;
+    let mut finished = false;
+    let Some(choices) = payload.get_mut("choices").and_then(Value::as_array_mut) else {
+        return (false, false);
+    };
+    for choice in choices {
+        if let Some(delta) = choice.get_mut("delta").and_then(Value::as_object_mut) {
+            if let Some(Value::Array(items)) = delta.remove("tool_calls") {
+                saw_tool = true;
+                for item in items {
+                    collect_openai_call(&item, calls);
+                }
+            }
+        }
+        if choice
+            .get("finish_reason")
+            .is_some_and(|value| !value.is_null())
+        {
+            finished = true;
+        }
+    }
+    (saw_tool, finished)
+}
+
+fn collect_openai_call(item: &Value, calls: &mut Vec<StreamCall>) {
+    let index = item
+        .get("index")
+        .and_then(Value::as_u64)
+        .unwrap_or(calls.len() as u64) as usize;
+    let call = stream_call_mut(calls, index);
+    if let Some(id) = item
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        call.id = id.to_string();
+    }
+    let Some(function) = item.get("function") else {
+        return;
+    };
+    if let Some(name) = function.get("name").and_then(Value::as_str) {
+        call.name = name.to_string();
+    }
+    call.args
+        .push_str(&arguments_text(function.get("arguments")));
+}
+
+fn push_stream_call(payload: &Value, calls: &mut Vec<StreamCall>, append_args: bool) {
+    let block = payload.get("content_block");
+    let index = stream_index(payload);
+    let call = stream_call_mut(calls, index);
+    if let Some(id) = block
+        .and_then(|block| block.get("id"))
+        .and_then(Value::as_str)
+    {
+        call.id = id.to_string();
+    }
+    if let Some(name) = block
+        .and_then(|block| block.get("name"))
+        .and_then(Value::as_str)
+    {
+        call.name = name.to_string();
+    }
+    if append_args {
+        let fragment = arguments_text(payload.get("delta").and_then(|d| d.get("partial_json")));
+        if call.args == "{}" {
+            call.args.clear();
+        }
+        call.args.push_str(&fragment);
+    } else if let Some(input) = block.and_then(|block| block.get("input")) {
+        if !input.as_object().is_some_and(serde_json::Map::is_empty) {
+            call.args = arguments_text(Some(input));
+        }
+    }
+}
+
+fn push_responses_call(payload: &Value, calls: &mut Vec<StreamCall>, append_args: bool) {
+    let index = stream_index(payload);
+    let call = stream_call_mut(calls, index);
+    if let Some(item) = payload.get("item") {
+        if let Some(id) = item.get("call_id").and_then(Value::as_str) {
+            call.id = id.to_string();
+        }
+        if let Some(name) = item.get("name").and_then(Value::as_str) {
+            call.name = name.to_string();
+        }
+        if !append_args {
+            call.args = arguments_text(item.get("arguments"));
+        }
+    }
+    if append_args {
+        call.args.push_str(&arguments_text(payload.get("delta")));
+    }
+}
+
+fn proxy_call(call: StreamCall) -> ProxyCall {
+    let args = serde_json::from_str(&call.args).unwrap_or_else(|_| json!({}));
+    let part = json!({
+        "functionCall": {
+            "id": call.id,
+            "name": call.name,
+            "args": args
+        }
+    });
+    ProxyCall {
+        name: call.name,
+        id: call.id,
+        part,
+        args,
+    }
+}
 struct RewriteOutcome {
     changed: bool,
     empty: bool,
@@ -1201,6 +1544,9 @@ fn streaming_response(state: SseState) -> Response<Body> {
 
 async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error>, SseState)> {
     loop {
+        if let Some(bytes) = state.forward.pop_front() {
+            return Some((Ok(bytes), state));
+        }
         if state.done {
             finish_stream(&mut state);
             return None;

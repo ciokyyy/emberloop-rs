@@ -1084,3 +1084,158 @@ fn only_the_pi_wire_suffixes_map_to_opencode_paths() {
     assert_eq!(pi_upstream_path("v1internal:generateContent"), None);
     assert_eq!(pi_upstream_path("v1internal/models"), None);
 }
+
+#[tokio::test]
+async fn openai_chat_streaming_proxy_tool_is_swallowed_and_followed_up() {
+    type SeenJson = Arc<Mutex<Vec<Value>>>;
+    let seen: SeenJson = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = seen.clone();
+    async fn chat(AxumState(seen): AxumState<SeenJson>, Json(body): Json<Value>) -> Response {
+        let round = {
+            let mut seen = seen.lock().unwrap();
+            let round = seen.len();
+            seen.push(body);
+            round
+        };
+        let body = if round == 0 {
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_c1\",\"type\":\"function\",\"function\":{\"name\":\"compress\",\"arguments\":\"{\\\"start\\\":0,\\\"end\\\":1,\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"summary\\\":\\\"folded intro\\\"}\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n\
+             data: [DONE]\n\n"
+                .to_string()
+        } else {
+            "data: {\"choices\":[{\"delta\":{\"content\":\"done after compress\"}}]}\n\n\
+             data: [DONE]\n\n"
+                .to_string()
+        };
+        Response::builder()
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(body))
+            .unwrap()
+    }
+    let app = AxumRouter::new()
+        .route("/inference/go/openai/v1/chat/completions", post(chat))
+        .with_state(seen_clone);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+
+    let req_body = json!({
+        "model": "glm-5",
+        "stream": true,
+        "messages": [{"role": "system", "content": "Base"}, {"role": "user", "content": "hello"}]
+    });
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/p/{}/v1/chat/completions", fixture.token))
+                .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("done after compress"), "{text}");
+    assert!(!text.contains("tool_calls"), "proxy call leaked: {text}");
+    assert!(!text.contains("\"compress\""), "proxy name leaked: {text}");
+
+    let captured = seen.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    let second = serde_json::to_string(&captured[1]).unwrap();
+    assert!(
+        second.contains("Compressed turns 0–0 into block b1"),
+        "{second}"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_streaming_proxy_tool_is_swallowed_and_followed_up() {
+    type SeenJson = Arc<Mutex<Vec<Value>>>;
+    let seen: SeenJson = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = seen.clone();
+    async fn messages(AxumState(seen): AxumState<SeenJson>, Json(body): Json<Value>) -> Response {
+        let round = {
+            let mut seen = seen.lock().unwrap();
+            let round = seen.len();
+            seen.push(body);
+            round
+        };
+        let body = if round == 0 {
+            "event: message_start\n\
+             data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\"}}\n\n\
+             event: content_block_start\n\
+             data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_c1\",\"name\":\"compress\",\"input\":{}}}\n\n\
+             event: content_block_delta\n\
+             data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"start\\\":0,\\\"end\\\":1,\"}}\n\n\
+             event: content_block_delta\n\
+             data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"summary\\\":\\\"folded intro\\\"}\"}}\n\n\
+             event: content_block_stop\n\
+             data: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+             event: message_delta\n\
+             data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n\
+             event: message_stop\n\
+             data: {\"type\":\"message_stop\"}\n\n"
+                .to_string()
+        } else {
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+             data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done after compress\"}}\n\n\
+             data: {\"type\":\"message_stop\"}\n\n"
+                .to_string()
+        };
+        Response::builder()
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(body))
+            .unwrap()
+    }
+    let app = AxumRouter::new()
+        .route("/inference/go/anthropic/v1/messages", post(messages))
+        .with_state(seen_clone);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+
+    let req_body = json!({
+        "model": "claude-sonnet",
+        "stream": true,
+        "messages": [{"role": "user", "content": "hello"}]
+    });
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/p/{}/v1/v1/messages", fixture.token))
+                .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("done after compress"), "{text}");
+    assert!(!text.contains("tool_use"), "proxy call leaked: {text}");
+    assert!(!text.contains("\"compress\""), "proxy name leaked: {text}");
+
+    let captured = seen.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    let second = serde_json::to_string(&captured[1]).unwrap();
+    assert!(
+        second.contains("Compressed turns 0–0 into block b1"),
+        "{second}"
+    );
+}
