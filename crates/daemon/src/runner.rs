@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::tooldisplay::ToolTracker;
 use api::driver::SessionDriver;
 use api::routes::PromptImageDto;
 use emberloop_core::events::{EventBus, EventKind, SessionEvent};
@@ -94,6 +95,7 @@ impl SessionRunner {
             mcp_command,
             env: Vec::new(),
             model: Some(meta.model.clone()),
+            thought_level: meta.thought_level.clone(),
             resume_token: meta.resume_token.clone(),
             workdir: Some(self.data_root.session_dir(session_id).join("agent-work")),
         }
@@ -171,6 +173,7 @@ impl SessionRunner {
             self.data_root.session_events_dir(session_id),
             self.data_root.clone(),
             self.steers.clone(),
+            project.root.clone(),
         ));
         Ok(handle)
     }
@@ -248,6 +251,17 @@ impl SessionDriver for SessionRunner {
         let woken = handle.session.wake(text).await;
         if woken.is_err() {
             handle.queue.set_turn_active(false);
+        } else {
+            let status_ev = SessionEvent::new(
+                session_id,
+                0,
+                EventKind::Status,
+                serde_json::json!({ "state": "working" }),
+            );
+            let events_dir = self.data_root.session_events_dir(session_id);
+            if let Ok(stored) = append(&self.logs, &events_dir, &status_ev).await {
+                self.events.publish(stored);
+            }
         }
         woken.map_err(|error| error.to_string())
     }
@@ -255,8 +269,20 @@ impl SessionDriver for SessionRunner {
     async fn connect(&self, session_id: &str) -> Result<(), String> {
         self.ensure(session_id).await.map(|_| ())
     }
+
+    async fn set_thought_level(&self, session_id: &str, level: &str) -> Result<(), String> {
+        if let Some(handle) = self.handle(session_id).await {
+            handle
+                .session
+                .set_thought_level(level)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn pump(
     handle: Arc<Handle>,
     session_id: String,
@@ -265,14 +291,16 @@ async fn pump(
     events_dir: std::path::PathBuf,
     data_root: DataRoot,
     steers: SteerQueues,
+    project_root: std::path::PathBuf,
 ) {
     let mut stream = handle.session.events();
+    let mut tracker = ToolTracker::default();
     while let Some(event) = stream.next().await {
         let turn_over = matches!(event, HarnessEvent::TurnFinished { .. });
         if turn_over || matches!(event, HarnessEvent::Error(_)) {
             handle.queue.set_turn_active(false);
         }
-        if let Some(mapped) = map_event(&session_id, event) {
+        if let Some(mapped) = map_event(&session_id, event, &mut tracker, &project_root) {
             let stored = match append(&logs, &events_dir, &mapped).await {
                 Ok(stored) => stored,
                 Err(error) => {
@@ -292,7 +320,11 @@ async fn pump(
         if turn_over {
             drain_notices(&data_root, &steers, &session_id).await;
             let waker = SessionWaker {
-                session: Arc::clone(&handle.session),
+                handle: Arc::clone(&handle),
+                session_id: session_id.clone(),
+                events: Arc::clone(&events),
+                logs: Arc::clone(&logs),
+                events_dir: events_dir.clone(),
             };
             let _ = deliver_idle(&handle.queue, &waker, &events, &session_id).await;
         }
@@ -300,33 +332,81 @@ async fn pump(
 }
 
 struct SessionWaker {
-    session: Arc<dyn HarnessSession>,
+    handle: Arc<Handle>,
+    session_id: String,
+    events: Arc<EventBus>,
+    logs: Arc<RwLock<HashMap<String, EventLog>>>,
+    events_dir: std::path::PathBuf,
 }
 
 #[async_trait::async_trait]
 impl SteerWaker for SessionWaker {
     async fn wake(&self, text: &str) -> Result<(), String> {
-        self.session
+        self.handle.queue.set_turn_active(true);
+        let res = self
+            .handle
+            .session
             .wake(text)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string());
+        if res.is_err() {
+            self.handle.queue.set_turn_active(false);
+        } else {
+            let status_ev = SessionEvent::new(
+                &self.session_id,
+                0,
+                EventKind::Status,
+                serde_json::json!({ "state": "working" }),
+            );
+            if let Ok(stored) = append(&self.logs, &self.events_dir, &status_ev).await {
+                self.events.publish(stored);
+            }
+        }
+        res
     }
 }
 
-fn map_event(session_id: &str, event: HarnessEvent) -> Option<SessionEvent> {
+fn map_event(
+    session_id: &str,
+    event: HarnessEvent,
+    tracker: &mut ToolTracker,
+    project_root: &std::path::Path,
+) -> Option<SessionEvent> {
     let (kind, data) = match event {
         HarnessEvent::AssistantChunk(text) => (
             EventKind::AssistantChunk,
             serde_json::json!({ "text": text }),
         ),
-        HarnessEvent::ToolStarted { id, name, input } => (
-            EventKind::ToolStarted,
-            serde_json::json!({ "id": id, "name": name, "input": input }),
+        HarnessEvent::ThoughtChunk(text) => (
+            EventKind::ThinkingChunk,
+            serde_json::json!({ "text": text }),
         ),
-        HarnessEvent::ToolFinished { id, output } => (
-            EventKind::ToolFinished,
-            serde_json::json!({ "id": id, "output": output }),
-        ),
+        HarnessEvent::ToolStarted { id, name, input } => {
+            let display = tracker.on_start(&id, &name, &input, project_root);
+            let mut obj = serde_json::json!({ "id": id, "name": name, "input": input });
+            if let Some(display) = display {
+                obj["display"] = display;
+            }
+            (EventKind::ToolStarted, obj)
+        }
+        HarnessEvent::ToolFinished { id, output, status } => {
+            let (name, input, display) = tracker.on_finish(&id, project_root);
+            let mut obj = serde_json::json!({
+                "id": id,
+                "output": output,
+                "status": status.unwrap_or_else(|| "completed".to_string()),
+            });
+            if let Some(name) = name {
+                obj["name"] = serde_json::Value::String(name);
+            }
+            if let Some(input) = input {
+                obj["input"] = input;
+            }
+            if let Some(display) = display {
+                obj["display"] = display;
+            }
+            (EventKind::ToolFinished, obj)
+        }
         HarnessEvent::TurnFinished { stop_reason, usage } => (
             EventKind::Status,
             serde_json::json!({ "state": "idle", "stopReason": stop_reason, "usage": usage }),

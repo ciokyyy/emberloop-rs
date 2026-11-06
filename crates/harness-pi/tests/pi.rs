@@ -17,6 +17,7 @@ fn wiring() -> HarnessWiring {
         ]),
         env: Vec::new(),
         model: Some("opencode-go/glm-5".into()),
+        thought_level: None,
         resume_token: None,
         workdir: None,
     }

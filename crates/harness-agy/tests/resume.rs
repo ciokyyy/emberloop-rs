@@ -46,6 +46,7 @@ fn wiring(workdir: &Path, token: Option<&str>) -> HarnessWiring {
         mcp_command: None,
         env: Vec::new(),
         model: None,
+        thought_level: None,
         resume_token: token.map(str::to_string),
         workdir: Some(workdir.to_path_buf()),
     }

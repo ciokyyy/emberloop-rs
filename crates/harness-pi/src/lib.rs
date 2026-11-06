@@ -77,6 +77,7 @@ impl PiHarness {
             mcp_servers: Vec::<McpServer>::new(),
             meta: None,
             model: wiring.model.filter(|model| !model.is_empty()),
+            thought_level: wiring.thought_level.filter(|level| !level.is_empty()),
             client_name: "emberloop",
             label: "pi",
             resume: wiring.resume_token,
@@ -93,6 +94,7 @@ impl PiHarness {
             mcp_command: None,
             env: Vec::new(),
             model: None,
+            thought_level: None,
             resume_token: None,
             workdir: None,
         };

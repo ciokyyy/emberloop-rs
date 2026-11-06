@@ -315,6 +315,7 @@ export interface components {
             model?: string | null;
             ponytailLevel?: string | null;
             projectId: string;
+            thoughtLevel?: string | null;
             title?: string | null;
         };
         LoginRequest: {
@@ -380,6 +381,7 @@ export interface components {
             model: string;
             ponytailLevel: string;
             projectId: string;
+            thoughtLevel?: string | null;
             title: string;
             /** Format: int64 */
             updatedAt: number;
@@ -402,7 +404,8 @@ export interface components {
             text: string;
         };
         UpdateSessionRequest: {
-            title: string;
+            thoughtLevel?: string | null;
+            title?: string | null;
         };
     };
     responses: never;

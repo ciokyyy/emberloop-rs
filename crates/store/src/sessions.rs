@@ -24,6 +24,8 @@ pub struct SessionMeta {
     pub ponytail_level: String,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(rename = "thoughtLevel", default)]
+    pub thought_level: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: u64,
     #[serde(rename = "updatedAt")]
@@ -55,6 +57,7 @@ impl Default for SessionMeta {
             title: String::new(),
             ponytail_level: default_ponytail(),
             model: default_model(),
+            thought_level: None,
             created_at: 0,
             updated_at: 0,
             prompt_hashes: HashMap::new(),
@@ -187,6 +190,24 @@ impl SessionsStore {
         tokio::fs::rename(&tmp_path, &meta_file).await?;
 
         Ok(updated)
+    }
+
+    pub async fn update_thought_level(
+        &self,
+        id: &str,
+        thought_level: Option<String>,
+    ) -> Result<SessionMeta, SessionStoreError> {
+        let mut meta = self
+            .get(id)
+            .await
+            .ok_or_else(|| SessionStoreError::NotFound(id.to_string()))?;
+        meta.thought_level = thought_level.filter(|l| !l.trim().is_empty());
+        meta.updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.save(&meta).await?;
+        Ok(meta)
     }
 
     pub async fn set_prompt_hashes(

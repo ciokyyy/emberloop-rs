@@ -21,6 +21,9 @@ pub struct HarnessWiring {
     /// The Session's model; the harness default applies when unset.
     #[serde(default)]
     pub model: Option<String>,
+    /// The Session's thinking effort / thought level (`off`, `low`, `medium`, `high`).
+    #[serde(default)]
+    pub thought_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +36,7 @@ pub struct PromptImage {
 #[serde(tag = "type", content = "data")]
 pub enum HarnessEvent {
     AssistantChunk(String),
+    ThoughtChunk(String),
     ToolStarted {
         id: String,
         name: String,
@@ -41,6 +45,8 @@ pub enum HarnessEvent {
     ToolFinished {
         id: String,
         output: serde_json::Value,
+        #[serde(default)]
+        status: Option<String>,
     },
     TurnFinished {
         stop_reason: Option<String>,
@@ -69,6 +75,10 @@ pub trait HarnessSession: Send + Sync {
     }
     /// Delete the harness's copy of this Session.
     async fn forget(&self, resume_token: &str) -> Result<(), HarnessError>;
+    /// Update the thinking effort (`thought_level`) on a live Session.
+    async fn set_thought_level(&self, _level: &str) -> Result<(), HarnessError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -853,6 +853,12 @@
           "projectId": {
             "type": "string"
           },
+          "thoughtLevel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "title": {
             "type": [
               "string",
@@ -1111,6 +1117,12 @@
           "projectId": {
             "type": "string"
           },
+          "thoughtLevel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "title": {
             "type": "string"
           },
@@ -1188,12 +1200,18 @@
       },
       "UpdateSessionRequest": {
         "type": "object",
-        "required": [
-          "title"
-        ],
         "properties": {
+          "thoughtLevel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "title": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }

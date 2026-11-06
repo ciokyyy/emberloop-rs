@@ -12,7 +12,7 @@ Composition root and binary for the whole system.
 
 ## Tests
 
-`SessionRunner` stores the harness `resume_token` in `meta.json`, passes it back with the stable `<session>/agent-work` directory on the next spawn, and resets the proxy history (splices, compressed blocks) when the harness conversation started over. `tests/acceptance.rs` covers Ticket 11 checks 1, 2, 7, 8 against a fake upstream: Project/Session persistence, token rejection and acceptance, prompt pinning across a config edit, background PID adoption across a daemon restart, embedded SPA fallback, remote-bind validation, and harness wiring.
+`SessionRunner` stores the harness `resume_token` in `meta.json`, passes it back with the stable `<session>/agent-work` directory on the next spawn, resets the proxy history (splices, compressed blocks) when the harness conversation started over, enriches tool events with bash command classification (`display.kind`, `display.parts`) and write-tool unified diffs (`display.diff`) via `tooldisplay.rs`, and emits `EventKind::Status` (`{"state": "working"}`) on prompt and idle steer wakes. `tests/acceptance.rs` covers Ticket 11 checks 1, 2, 7, 8 against a fake upstream: Project/Session persistence, token rejection and acceptance, prompt pinning across a config edit, background PID adoption across a daemon restart, embedded SPA fallback, remote-bind validation, and harness wiring.
 
 ## Child DOX Index
 

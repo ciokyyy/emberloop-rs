@@ -104,6 +104,8 @@ pub struct SessionDto {
     #[serde(rename = "ponytailLevel")]
     pub ponytail_level: String,
     pub model: String,
+    #[serde(rename = "thoughtLevel", skip_serializing_if = "Option::is_none")]
+    pub thought_level: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: u64,
     #[serde(rename = "updatedAt")]
@@ -118,11 +120,15 @@ pub struct CreateSessionRequest {
     #[serde(rename = "ponytailLevel")]
     pub ponytail_level: Option<String>,
     pub model: Option<String>,
+    #[serde(rename = "thoughtLevel")]
+    pub thought_level: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
 pub struct UpdateSessionRequest {
-    pub title: String,
+    pub title: Option<String>,
+    #[serde(rename = "thoughtLevel")]
+    pub thought_level: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -267,18 +273,7 @@ pub async fn list_sessions(
     Query(query): Query<ListSessionsQuery>,
 ) -> Json<Vec<SessionDto>> {
     let list = state.sessions.list(query.project_id.as_deref()).await;
-    let dtos = list
-        .into_iter()
-        .map(|s| SessionDto {
-            id: s.id,
-            project_id: s.project_id,
-            title: s.title,
-            ponytail_level: s.ponytail_level,
-            model: s.model,
-            created_at: s.created_at,
-            updated_at: s.updated_at,
-        })
-        .collect();
+    let dtos = list.into_iter().map(session_dto).collect();
     Json(dtos)
 }
 
@@ -316,6 +311,7 @@ pub async fn create_session(
         model: payload
             .model
             .unwrap_or_else(|| "gemini-3.8-flash".to_string()),
+        thought_level: payload.thought_level.filter(|l| !l.trim().is_empty()),
         created_at: now,
         updated_at: now,
         last_used_at: Some(now),
@@ -329,18 +325,7 @@ pub async fn create_session(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(SessionDto {
-            id: saved.id,
-            project_id: saved.project_id,
-            title: saved.title,
-            ponytail_level: saved.ponytail_level,
-            model: saved.model,
-            created_at: saved.created_at,
-            updated_at: saved.updated_at,
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(session_dto(saved))))
 }
 
 #[utoipa::path(
@@ -357,21 +342,27 @@ pub async fn update_session(
     Path(id): Path<String>,
     Json(payload): Json<UpdateSessionRequest>,
 ) -> Result<Json<SessionDto>, (StatusCode, String)> {
-    let updated = state
+    let mut updated = state
         .sessions
-        .update_title(&id, &payload.title)
+        .get(&id)
         .await
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
-
-    Ok(Json(SessionDto {
-        id: updated.id,
-        project_id: updated.project_id,
-        title: updated.title,
-        ponytail_level: updated.ponytail_level,
-        model: updated.model,
-        created_at: updated.created_at,
-        updated_at: updated.updated_at,
-    }))
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Session not found: {id}")))?;
+    if let Some(title) = payload.title {
+        updated = state
+            .sessions
+            .update_title(&id, &title)
+            .await
+            .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    }
+    if let Some(level) = payload.thought_level {
+        updated = state
+            .sessions
+            .update_thought_level(&id, Some(level.clone()))
+            .await
+            .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+        let _ = state.driver.set_thought_level(&id, &level).await;
+    }
+    Ok(Json(session_dto(updated)))
 }
 
 #[utoipa::path(
@@ -392,15 +383,20 @@ pub async fn delete_session(
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
-    Ok(Json(SessionDto {
-        id: deleted.id,
-        project_id: deleted.project_id,
-        title: deleted.title,
-        ponytail_level: deleted.ponytail_level,
-        model: deleted.model,
-        created_at: deleted.created_at,
-        updated_at: deleted.updated_at,
-    }))
+    Ok(Json(session_dto(deleted)))
+}
+
+fn session_dto(s: SessionMeta) -> SessionDto {
+    SessionDto {
+        id: s.id,
+        project_id: s.project_id,
+        title: s.title,
+        ponytail_level: s.ponytail_level,
+        model: s.model,
+        thought_level: s.thought_level,
+        created_at: s.created_at,
+        updated_at: s.updated_at,
+    }
 }
 
 #[utoipa::path(
@@ -450,6 +446,15 @@ pub async fn prompt_session(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.event_bus.publish(appended);
 
+    let status_event = SessionEvent::new(
+        &id,
+        0,
+        EventKind::Status,
+        serde_json::json!({ "state": "working" }),
+    );
+    if let Ok(appended_status) = log.append(status_event).await {
+        state.event_bus.publish(appended_status);
+    }
     let images = payload
         .images
         .into_iter()

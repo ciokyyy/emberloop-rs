@@ -8,6 +8,7 @@ pub enum EventKind {
     Status,
     Prompt,
     AssistantChunk,
+    ThinkingChunk,
     ToolStarted,
     ToolFinished,
     SteerQueued,

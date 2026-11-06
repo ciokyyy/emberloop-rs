@@ -28,6 +28,8 @@ pub struct AcpLaunch {
     pub meta: Option<serde_json::Map<String, serde_json::Value>>,
     /// Picked with `session/set_config_option`; the agent default applies when unset.
     pub model: Option<String>,
+    /// Picked with `session/set_config_option` (`thought_level`) when non-empty.
+    pub thought_level: Option<String>,
     /// The name sent in `initialize`; some servers gate models on it.
     pub client_name: &'static str,
     /// Names the agent in error messages.
@@ -42,6 +44,7 @@ enum Command {
     Cancel,
     Resume(String),
     Forget(String),
+    SetThoughtLevel(String),
 }
 
 pub struct AcpSession {
@@ -68,6 +71,7 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
         mcp_servers,
         meta,
         model,
+        thought_level,
         client_name,
         resume,
         ..
@@ -177,6 +181,16 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
                             return Ok(());
                         }
                     }
+                    if let Some(level) = thought_level.filter(|l| !l.trim().is_empty()) {
+                        let _ = connection
+                            .send_request(SetSessionConfigOptionRequest::new(
+                                session_id.clone(),
+                                "thought_level",
+                                SessionConfigOptionValue::value_id(level),
+                            ))
+                            .block_task()
+                            .await;
+                    }
                     let _ = ready_sender.try_send(Ok((session_id.clone(), options, resumed)));
 
                     while let Some(command) = receiver.recv().await {
@@ -220,6 +234,16 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
                                     .send_request(DeleteSessionRequest::new(token))
                                     .block_task()
                                     .await?;
+                            }
+                            Command::SetThoughtLevel(level) => {
+                                let _ = connection
+                                    .send_request(SetSessionConfigOptionRequest::new(
+                                        session_id.clone(),
+                                        "thought_level",
+                                        SessionConfigOptionValue::value_id(level),
+                                    ))
+                                    .block_task()
+                                    .await;
                             }
                         }
                     }
@@ -291,6 +315,10 @@ fn notification_event(update: SessionUpdate) -> Option<HarnessEvent> {
             ContentBlock::Text(text) => Some(HarnessEvent::AssistantChunk(text.text)),
             _ => None,
         },
+        SessionUpdate::AgentThoughtChunk(chunk) => match chunk.content {
+            ContentBlock::Text(text) => Some(HarnessEvent::ThoughtChunk(text.text)),
+            _ => None,
+        },
         SessionUpdate::ToolCall(call) => {
             let name = call.name.unwrap_or_else(|| call.title.clone());
             let done = matches!(
@@ -301,6 +329,7 @@ fn notification_event(update: SessionUpdate) -> Option<HarnessEvent> {
                 Some(HarnessEvent::ToolFinished {
                     id: call.tool_call_id.to_string(),
                     output: tool_output(call.raw_output, call.content),
+                    status: Some(status_name(call.status)),
                 })
             } else {
                 Some(HarnessEvent::ToolStarted {
@@ -316,7 +345,17 @@ fn notification_event(update: SessionUpdate) -> Option<HarnessEvent> {
                 Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
             );
             if !done {
-                return None;
+                let raw_input = update.fields.raw_input?;
+                let name = update
+                    .fields
+                    .name
+                    .or(update.fields.title)
+                    .unwrap_or_default();
+                return Some(HarnessEvent::ToolStarted {
+                    id: update.tool_call_id.to_string(),
+                    name,
+                    input: raw_input,
+                });
             }
             Some(HarnessEvent::ToolFinished {
                 id: update.tool_call_id.to_string(),
@@ -324,9 +363,17 @@ fn notification_event(update: SessionUpdate) -> Option<HarnessEvent> {
                     update.fields.raw_output,
                     update.fields.content.unwrap_or_default(),
                 ),
+                status: update.fields.status.map(status_name),
             })
         }
         _ => None,
+    }
+}
+
+fn status_name(status: ToolCallStatus) -> String {
+    match status {
+        ToolCallStatus::Failed => "failed".to_string(),
+        _ => "completed".to_string(),
     }
 }
 
@@ -334,9 +381,6 @@ fn tool_output(
     raw: Option<serde_json::Value>,
     content: Vec<agent_client_protocol::v1::schema::ToolCallContent>,
 ) -> serde_json::Value {
-    if let Some(raw) = raw {
-        return raw;
-    }
     let value = serde_json::to_value(content).unwrap_or(serde_json::Value::Null);
     let texts: Vec<&str> = value
         .as_array()
@@ -344,11 +388,37 @@ fn tool_output(
         .flatten()
         .filter_map(|item| item.pointer("/content/text").and_then(|t| t.as_str()))
         .collect();
-    if texts.is_empty() {
-        value
-    } else {
-        serde_json::Value::String(texts.join("\n"))
+    if !texts.is_empty() {
+        return serde_json::Value::String(texts.join("\n"));
     }
+    if let Some(raw) = raw {
+        if let Some(unwrapped) = unwrap_raw_output(&raw) {
+            return serde_json::Value::String(unwrapped);
+        }
+        return raw;
+    }
+    value
+}
+
+fn unwrap_raw_output(raw: &serde_json::Value) -> Option<String> {
+    if let Some(s) = raw.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(arr) = raw.get("content").and_then(serde_json::Value::as_array) {
+        let parts: Vec<&str> = arr
+            .iter()
+            .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
+            .collect();
+        if !parts.is_empty() {
+            return Some(parts.join("\n"));
+        }
+    }
+    for key in ["output", "result", "text"] {
+        if let Some(s) = raw.get(key).and_then(serde_json::Value::as_str) {
+            return Some(s.to_string());
+        }
+    }
+    None
 }
 
 #[async_trait]
@@ -400,6 +470,12 @@ impl HarnessSession for AcpSession {
             .send(Command::Forget(resume_token.to_string()))
             .map_err(|_| HarnessError::Process("ACP connection closed".into()))
     }
+
+    async fn set_thought_level(&self, level: &str) -> Result<(), HarnessError> {
+        self.commands
+            .send(Command::SetThoughtLevel(level.to_string()))
+            .map_err(|_| HarnessError::Process("ACP connection closed".into()))
+    }
 }
 
 #[cfg(test)]
@@ -447,6 +523,24 @@ mod tests {
         assert_eq!(
             tool_output(None, content),
             serde_json::Value::String("file contents".into())
+        );
+    }
+
+    #[test]
+    fn thought_chunks_and_mcp_raw_outputs_are_extracted() {
+        let thought = notification_event(SessionUpdate::AgentThoughtChunk(
+            agent_client_protocol::v1::schema::ContentChunk::new("thinking step".into()),
+        ));
+        assert!(matches!(
+            thought,
+            Some(HarnessEvent::ThoughtChunk(ref text)) if text == "thinking step"
+        ));
+        let mcp_raw = serde_json::json!({
+            "content": [{"type": "text", "text": "line 1"}, {"type": "text", "text": "line 2"}]
+        });
+        assert_eq!(
+            tool_output(Some(mcp_raw), Vec::new()),
+            serde_json::Value::String("line 1\nline 2".into())
         );
     }
 }

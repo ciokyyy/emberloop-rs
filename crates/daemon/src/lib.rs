@@ -27,6 +27,7 @@ use tools::{McpServer, ToolConfig, Toolbox};
 
 pub mod login;
 pub mod runner;
+pub mod tooldisplay;
 
 pub fn is_pi_model(model: Option<&str>) -> bool {
     model.is_some_and(|model| model.starts_with("opencode-go/"))
@@ -432,6 +433,7 @@ impl Daemon {
             mcp_command,
             env: Vec::new(),
             model: Some(meta.model.clone()),
+            thought_level: meta.thought_level.clone(),
             resume_token: None,
             workdir: None,
         }))

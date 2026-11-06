@@ -42,6 +42,10 @@ impl AgyHarness {
             mcp_servers: mcp_servers(wiring.mcp_command.clone()),
             meta: Some(session_meta()),
             model: Some(self.model_for(wiring)),
+            thought_level: wiring
+                .thought_level
+                .clone()
+                .filter(|level| !level.is_empty()),
             // The agy server lists Claude and GPT-OSS only to allowlisted
             // clients, so the harness announces itself as `zed`.
             client_name: "zed",
@@ -125,6 +129,7 @@ mod tests {
             mcp_command: None,
             env: Vec::new(),
             model: Some("gemini-4-argon".into()),
+            thought_level: None,
             resume_token: None,
             workdir: None,
         };
@@ -142,6 +147,7 @@ mod tests {
             mcp_command: None,
             env: Vec::new(),
             model: None,
+            thought_level: None,
             resume_token: None,
             workdir: None,
         };
@@ -159,6 +165,7 @@ mod tests {
             mcp_command: Some(vec!["emberloop-mcp".into(), "--root".into(), "/p".into()]),
             env: vec![("EXTRA".into(), "1".into())],
             model: None,
+            thought_level: None,
             resume_token: None,
             workdir: None,
         };
