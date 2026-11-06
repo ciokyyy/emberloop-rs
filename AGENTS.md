@@ -18,7 +18,7 @@ One command, `scripts/check`, is the repo check and must pass before any change 
 - `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` with the `[workspace.lints]` table (including `cognitive_complexity`, its threshold in `clippy.toml`);
 - `cargo nextest run --workspace` and `cargo test --doc`;
 - `cargo deny check` and `cargo machete`;
-- in `web/`: `npm ci`, `svelte-check` (which covers `tsc`), a blocking Fallow complexity check with the Go repo's thresholds, and the web tests;
+- in `web/`: `npm ci`, `svelte-check` (which covers `tsc`), a blocking Fallow complexity check with the Go repo's thresholds, the web tests and `npm run build`, because the daemon embeds `web/build/` at compile time and `crates/daemon/tests/web_bundle.rs` fails on a bundle older than `web/src`;
 - the OpenAPI document is dumped, the TypeScript client regenerated, and `git diff --exit-code` passes.
 
 The check has a time budget (spec decision O): the loop check 30 s or less, the full check 3 minutes or less. A slow test, a real sleep or a real harness in the check is a defect. No stage is skipped, softened with `|| true`, or guarded by "if the tool exists".

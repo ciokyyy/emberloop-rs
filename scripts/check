@@ -79,7 +79,7 @@ run_stage doc cargo test --doc
 wait_stage
 
 echo "==> web"
-run_stage web bash -c 'cd web && npm ci && npx svelte-check --tsconfig ./tsconfig.json && npx fallow health --score --min-score 87.9 && npm test'
+run_stage web bash -c 'cd web && npm ci && npx svelte-check --tsconfig ./tsconfig.json && npx fallow health --score --min-score 87.9 && npm test && npm run build'
 wait_stage
 
 echo "==> openapi"
