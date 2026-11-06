@@ -91,7 +91,7 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 
 pub fn default_manifest_url() -> String {
     std::env::var("EMBERLOOP_UPDATE_URL").unwrap_or_else(|_| {
-        "https://github.com/yannelli/emberloop-rs/releases/latest/download/latest.json".to_string()
+        "https://github.com/ciokyyy/emberloop-rs/releases/latest/download/latest.json".to_string()
     })
 }
 
