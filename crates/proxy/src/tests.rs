@@ -319,6 +319,8 @@ async fn injects_tools_prompts_and_meters_usage() {
     assert!(system.contains("Ponytail"));
     assert!(system.contains("demo"));
 
+    let comp_event = events.try_recv().expect("compression event");
+    assert_eq!(comp_event.kind, EventKind::Compression);
     let event = events.try_recv().expect("usage event");
     assert_eq!(event.kind, EventKind::Usage);
     assert_eq!(event.data["inputTokens"], 11);
@@ -837,7 +839,7 @@ fn pi_upstream(seen: Seen) -> AxumRouter {
 }
 
 #[tokio::test]
-async fn pi_chat_requests_stream_to_the_opencode_upstream_untouched_and_are_metered() {
+async fn pi_chat_requests_inject_prompts_tools_and_steers_and_are_metered() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -849,14 +851,32 @@ async fn pi_chat_requests_stream_to_the_opencode_upstream_untouched_and_are_mete
     .await;
     let state = fixture.state.clone();
     let mut events = fixture.events.subscribe();
+    fixture
+        .steers
+        .queue("ses_1")
+        .enqueue(
+            emberloop_core::steer::SteerKind::Steer,
+            "steer: use the fast path",
+        )
+        .await;
 
+    let req_body = json!({
+        "model": "glm-5",
+        "stream": true,
+        "messages": [
+            {"role": "system", "content": "Base system"},
+            {"role": "user", "content": "read file"},
+            {"role": "assistant", "tool_calls": [{"id": "call_pi_1", "type": "function", "function": {"name": "read", "arguments": "{\"path\":\"a\"}"}}]},
+            {"role": "tool", "tool_call_id": "call_pi_1", "content": "file body"}
+        ]
+    });
     let response = router(state)
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/p/{}/v1/chat/completions", fixture.token))
                 .header(header::AUTHORIZATION, "Bearer sk-pi")
-                .body(Body::from(r#"{"model":"glm-5","stream":true}"#))
+                .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
                 .unwrap(),
         )
         .await
@@ -868,17 +888,179 @@ async fn pi_chat_requests_stream_to_the_opencode_upstream_untouched_and_are_mete
     assert!(String::from_utf8_lossy(&body).contains("\"content\":\"hi\""));
 
     let seen = seen.lock().unwrap();
-    assert_eq!(
-        seen.as_slice(),
-        [(
-            "chat".to_string(),
-            Some("Bearer sk-pi".to_string()),
-            r#"{"model":"glm-5","stream":true}"#.to_string()
-        )]
-    );
-    let event = events.try_recv().expect("usage event");
-    assert_eq!(event.kind, EventKind::Usage);
-    assert_eq!(event.data["inputTokens"], 44);
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].1.as_deref(), Some("Bearer sk-pi"));
+    let sent: Value = serde_json::from_str(&seen[0].2).unwrap();
+    let sys = sent["messages"][0]["content"].as_str().unwrap();
+    assert!(sys.contains("Base system"));
+    assert!(sys.contains("Emberloop proxy policy"));
+    assert!(sys.contains("Ponytail"));
+    let tool_names: Vec<&str> = sent["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(tool_names.contains(&"compress"));
+    assert!(tool_names.contains(&"decompress"));
+    assert!(tool_names.contains(&"search_context"));
+    let last_msg = sent["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(last_msg["role"], "user");
+    assert_eq!(last_msg["content"], "steer: use the fast path");
+
+    let mut saw_usage = false;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == EventKind::Usage {
+            assert_eq!(event.data["inputTokens"], 44);
+            saw_usage = true;
+        }
+    }
+    assert!(saw_usage);
+}
+
+#[tokio::test]
+async fn pi_anthropic_and_responses_wires_inject_prompts_tools_steers_and_compress() {
+    type SeenJson = Arc<Mutex<Vec<(String, Value)>>>;
+    let seen: SeenJson = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = seen.clone();
+    async fn messages(AxumState(seen): AxumState<SeenJson>, Json(body): Json<Value>) -> Response {
+        let round = seen.lock().unwrap().len();
+        seen.lock().unwrap().push(("messages".into(), body));
+        if round == 0 {
+            Json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_comp_1",
+                    "name": "compress",
+                    "input": {"start": 0, "end": 2, "summary": "folded intro", "topic": "intro"}
+                }],
+                "usage": {"input_tokens": 20, "output_tokens": 5}
+            }))
+            .into_response()
+        } else {
+            Json(json!({
+                "id": "msg_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "done after compress"}],
+                "usage": {"input_tokens": 12, "output_tokens": 4}
+            }))
+            .into_response()
+        }
+    }
+    async fn responses(AxumState(seen): AxumState<SeenJson>, Json(body): Json<Value>) -> Response {
+        seen.lock().unwrap().push(("responses".into(), body));
+        Json(json!({
+            "id": "resp_1",
+            "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}],
+            "usage": {"input_tokens": 19, "output_tokens": 3}
+        }))
+        .into_response()
+    }
+    let app = AxumRouter::new()
+        .route("/inference/go/anthropic/v1/messages", post(messages))
+        .route("/inference/go/openai/v1/responses", post(responses))
+        .with_state(seen_clone);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+    let mut events = fixture.events.subscribe();
+    fixture
+        .steers
+        .queue("ses_1")
+        .enqueue(
+            emberloop_core::steer::SteerKind::Steer,
+            "steer: anthropic note",
+        )
+        .await;
+
+    let anthropic_req = json!({
+        "model": "claude-sonnet-4-6",
+        "messages": [
+            {"role": "user", "content": "turn 0"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "read", "input": {"path": "x"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "x body"}]}
+        ]
+    });
+    let resp = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/p/{}/v1/v1/messages", fixture.token))
+                .body(Body::from(serde_json::to_vec(&anthropic_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("done after compress"));
+
+    {
+        let captured = seen.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        let first = &captured[0].1;
+        let sys_str = serde_json::to_string(&first["system"]).unwrap();
+        assert!(sys_str.contains("Emberloop proxy policy"));
+        let msg_str = serde_json::to_string(&first["messages"]).unwrap();
+        assert!(msg_str.contains("steer: anthropic note"));
+        let second = &captured[1].1;
+        let second_msgs = serde_json::to_string(&second["messages"]).unwrap();
+        assert!(second_msgs.contains("Compressed turns 0–1 into block b1"));
+    }
+
+    let mut saw_compression = false;
+    while let Ok(ev) = events.try_recv() {
+        if ev.kind == EventKind::Compression {
+            saw_compression = true;
+        }
+    }
+    assert!(saw_compression, "expected Compression event on EventBus");
+
+    fixture
+        .steers
+        .queue("ses_1")
+        .enqueue(
+            emberloop_core::steer::SteerKind::Steer,
+            "steer: responses note",
+        )
+        .await;
+    let responses_req = json!({
+        "model": "gpt-5",
+        "input": [
+            {"role": "user", "content": "hi"},
+            {"type": "function_call", "call_id": "call_r1", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_r1", "output": "ok"}
+        ]
+    });
+    let resp2 = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/p/{}/v1/responses", fixture.token))
+                .body(Body::from(serde_json::to_vec(&responses_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let captured = seen.lock().unwrap();
+    let third = &captured[2].1;
+    assert!(third["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("Emberloop proxy policy"));
+    let input_str = serde_json::to_string(&third["input"]).unwrap();
+    assert!(input_str.contains("steer: responses note"));
 }
 
 #[test]

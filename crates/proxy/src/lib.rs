@@ -7,6 +7,7 @@ pub mod meter;
 pub mod server;
 pub mod splice;
 pub mod token;
+pub mod wire;
 
 pub use compressor::{
     CompressCall, Compressor, CompressorStatus, DecompressCall, NativeCompressor, SearchHit,

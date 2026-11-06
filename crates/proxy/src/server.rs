@@ -20,6 +20,10 @@ use crate::compressor::{CompressCall, Compressor, DecompressCall, NativeCompress
 use crate::meter;
 use crate::splice::{Splice, SpliceStore};
 use crate::token::{TokenError, TokenSigner};
+use crate::wire::{
+    extract_core_contents, extract_proxy_call_from_payload, inject_prompts_for_wire,
+    inject_tools_for_wire, write_core_contents, WireKind,
+};
 pub const DEFAULT_UPSTREAM: &str = "https://daily-cloudcode-pa.googleapis.com";
 /// Unverified with a real key: docs.opencode.ai names `/inference/go`, third-party guides `/zen/go/v1`.
 pub const DEFAULT_OPENCODE_UPSTREAM: &str = "https://opencode.ai/inference/go";
@@ -29,9 +33,7 @@ const ROUND_TIMEOUT: Duration = Duration::from_secs(120);
 const ROUND_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_TOOL_ROUNDS: usize = 8;
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
-/// The response tail kept to read usage from a streamed pi wire.
-const USAGE_WINDOW: usize = 64 * 1024;
-const PROXY_TOOLS: &[&str] = &["compress", "decompress", "search_context"];
+pub(crate) const PROXY_TOOLS: &[&str] = &["compress", "decompress", "search_context"];
 
 type ByteStream = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
 
@@ -268,26 +270,25 @@ async fn dispatch(
         .await
         .map_err(|_| ProxyError::BodyTooLarge)?;
 
-    if let Some(path) = pi_upstream_path(&rest) {
-        return forward_wire(
-            &state,
-            &session_id,
-            &method,
-            &path,
-            uri.query(),
-            &headers,
-            body,
-        )
-        .await;
-    }
-    if !is_generation(&rest) {
+    let Some((wire, pi_path)) = WireKind::from_rest(&rest) else {
         return forward_plain(&state, &method, &rest, uri.query(), &headers, body).await;
-    }
-    handle_generation(&state, &session_id, &rest, uri.query(), &headers, body).await
+    };
+    handle_generation(
+        &state,
+        &session_id,
+        wire,
+        pi_path.as_deref(),
+        &rest,
+        uri.query(),
+        &headers,
+        body,
+    )
+    .await
 }
 
 /// The OpenCode Go path for a pi wire, by the request path suffix pi appends
 /// to its base URL; `None` for everything else (Cloud Code, plain forwards).
+#[cfg(test)]
 fn pi_upstream_path(rest: &str) -> Option<String> {
     if rest.ends_with("/chat/completions") {
         Some("openai/v1/chat/completions".to_string())
@@ -299,56 +300,6 @@ fn pi_upstream_path(rest: &str) -> Option<String> {
         rest.strip_prefix("v1/models/")
             .map(|model| format!("google/v1beta/models/{model}"))
     }
-}
-
-/// Streams a pi wire request to OpenCode Go untouched. pi's own key travels in
-/// its headers; the proxy keeps none. Steer, splice and compression need a
-/// codec per wire and do not apply here yet; only usage is metered.
-async fn forward_wire(
-    state: &ProxyState,
-    session_id: &str,
-    method: &Method,
-    path: &str,
-    query: Option<&str>,
-    headers: &HeaderMap,
-    body: Bytes,
-) -> Result<Response<Body>, ProxyError> {
-    let url = upstream_url(&state.inner.config.opencode_upstream, path, query);
-    let response = with_headers(state.inner.client.request(method.clone(), url), headers)
-        .body(body)
-        .send()
-        .await?;
-    let status = axum_status(response.status());
-    let content_type = header_value(response.headers(), header::CONTENT_TYPE.as_str());
-    let tail = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let window = tail.clone();
-    let events = Arc::clone(&state.inner.events);
-    let session = session_id.to_string();
-    let metered = response.bytes_stream().inspect(move |chunk| {
-        if let (Ok(chunk), Ok(mut window)) = (chunk, window.lock()) {
-            window.extend_from_slice(chunk);
-            let excess = window.len().saturating_sub(USAGE_WINDOW);
-            window.drain(..excess);
-        }
-    });
-    let publish = futures::stream::once(async move {
-        let tail = tail.lock().map(|tail| Bytes::from(tail.clone()));
-        if let Ok(tail) = tail {
-            publish_usage_event(&events, &session, &tail);
-        }
-    })
-    .filter_map(|()| async { None });
-    let mut builder = Response::builder().status(status);
-    if let Some(content_type) = content_type {
-        builder = builder.header(header::CONTENT_TYPE, content_type);
-    }
-    Ok(builder
-        .body(Body::from_stream(metered.chain(publish)))
-        .unwrap_or_else(|_| Response::new(Body::empty())))
-}
-
-fn is_generation(rest: &str) -> bool {
-    rest.contains(":streamGenerateContent") || rest.contains(":generateContent")
 }
 
 async fn forward_plain(
@@ -374,9 +325,12 @@ async fn forward_plain(
     Ok(response_with(status, content_type.as_deref(), bytes))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_generation(
     state: &ProxyState,
     session_id: &str,
+    wire: WireKind,
+    pi_path: Option<&str>,
     rest: &str,
     query: Option<&str>,
     headers: &HeaderMap,
@@ -386,10 +340,13 @@ async fn handle_generation(
     let mut request: Value = serde_json::from_slice(&body)?;
     let queue = state.inner.steers.queue(session_id);
     queue.begin_request().await;
-    let injected = inject_steer(&runtime, &mut request, &queue).await;
-    prepare_request(&runtime, &mut request)?;
+    let injected = inject_steer(&runtime, wire, &mut request, &queue).await;
+    prepare_request(&runtime, wire, &mut request)?;
 
-    let url = upstream_url(&state.inner.config.upstream_base, rest, query);
+    let url = match pi_path {
+        Some(path) => upstream_url(&state.inner.config.opencode_upstream, path, query),
+        None => upstream_url(&state.inner.config.upstream_base, rest, query),
+    };
     let response = match send_stream(&state.inner.client, &url, headers, &request).await {
         Ok(response) => response,
         Err(error) => {
@@ -419,6 +376,7 @@ async fn handle_generation(
             state.clone(),
             runtime,
             session_id.to_string(),
+            wire,
             url,
             headers.clone(),
             request,
@@ -430,6 +388,7 @@ async fn handle_generation(
         state,
         runtime,
         session_id,
+        wire,
         url,
         headers,
         request,
@@ -438,10 +397,12 @@ async fn handle_generation(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn buffered_generation(
     state: &ProxyState,
     runtime: Arc<SessionRuntime>,
     session_id: &str,
+    wire: WireKind,
     url: String,
     headers: &HeaderMap,
     mut request: Value,
@@ -461,7 +422,7 @@ async fn buffered_generation(
             final_response = Some((status, content_type, bytes));
             break;
         };
-        let turns = run_proxy_tool(&runtime, &mut request, call)?;
+        let turns = run_proxy_tool(state, session_id, &runtime, wire, &mut request, call)?;
         store_proxy_splice(&runtime, &turns)?;
     }
 
@@ -472,17 +433,24 @@ async fn buffered_generation(
     Ok(response_with(status, content_type.as_deref(), bytes))
 }
 
-fn prepare_request(runtime: &SessionRuntime, request: &mut Value) -> Result<(), ProxyError> {
+fn prepare_request(
+    runtime: &SessionRuntime,
+    wire: WireKind,
+    request: &mut Value,
+) -> Result<(), ProxyError> {
     let request = request_body_mut(request);
 
-    inject_tools(request, &runtime.pins);
-    inject_prompts(request, &runtime.pins);
-    let Some(contents) = contents_mut(request) else {
+    inject_tools_for_wire(wire, request, &runtime.pins);
+    inject_prompts_for_wire(wire, request, &runtime.pins);
+    let Some(mut contents) = extract_core_contents(wire, request) else {
         return Ok(());
     };
-    lock(&runtime.compressor)?.apply(contents);
-    lock(&runtime.splices)?.apply(contents);
-    crate::splice::sign_unsigned_calls(contents);
+    lock(&runtime.compressor)?.apply(&mut contents);
+    lock(&runtime.splices)?.apply(&mut contents);
+    if wire == WireKind::Google {
+        crate::splice::sign_unsigned_calls(&mut contents);
+    }
+    write_core_contents(wire, request, contents);
     Ok(())
 }
 
@@ -490,6 +458,7 @@ fn prepare_request(runtime: &SessionRuntime, request: &mut Value) -> Result<(), 
 /// results, and remember the exact part so later requests replay it unchanged.
 async fn inject_steer(
     runtime: &SessionRuntime,
+    wire: WireKind,
     request: &mut Value,
     queue: &SteerQueue,
 ) -> Vec<SteerEntry> {
@@ -498,8 +467,8 @@ async fn inject_steer(
         return entries;
     }
     let ids: Vec<String> = entries.iter().map(|entry| entry.id.clone()).collect();
-    let Some(turn_id) =
-        contents_mut(request_body_mut(request)).and_then(|contents| last_tool_result_id(contents))
+    let Some(turn_id) = extract_core_contents(wire, request_body_mut(request))
+        .and_then(|contents| last_tool_result_id(&contents))
     else {
         queue.requeue(&ids).await;
         return Vec::new();
@@ -568,133 +537,12 @@ fn request_body_mut(root: &mut Value) -> &mut Value {
     }
 }
 
-fn contents_mut(request: &mut Value) -> Option<&mut Vec<Value>> {
-    request.get_mut("contents").and_then(Value::as_array_mut)
-}
-
-fn inject_tools(request: &mut Value, pins: &PinnedPrompts) {
-    let declarations = tool_declarations(pins);
-    let Some(tools) = request.get_mut("tools") else {
-        request["tools"] = json!([{ "functionDeclarations": declarations }]);
-        return;
-    };
-    let Some(tools) = tools.as_array_mut() else {
-        return;
-    };
-    if let Some(holder) = tools
-        .iter_mut()
-        .find(|tool| tool.get("functionDeclarations").is_some())
-    {
-        if let Some(declarations_array) = holder
-            .get_mut("functionDeclarations")
-            .and_then(Value::as_array_mut)
-        {
-            push_missing_declarations(declarations_array, declarations);
-        }
-        return;
-    }
-    if tools.iter().all(|tool| tool.get("name").is_some()) {
-        push_missing_declarations(tools, declarations);
-        return;
-    }
-    tools.push(json!({ "functionDeclarations": declarations }));
-}
-
-fn push_missing_declarations(existing: &mut Vec<Value>, declarations: Vec<Value>) {
-    for declaration in declarations {
-        let name = declaration.get("name").cloned();
-        if !existing
-            .iter()
-            .any(|tool| tool.get("name") == name.as_ref())
-        {
-            existing.push(declaration);
-        }
-    }
-}
-
-fn tool_declarations(pins: &PinnedPrompts) -> Vec<Value> {
-    let text = |id: &str| pins.text(id).unwrap_or("");
-    vec![
-        declaration(
-            "compress",
-            text(prompts::COMPRESS),
-            json!({
-                "start": {"type": "INTEGER", "description": "First turn index to fold"},
-                "end": {"type": "INTEGER", "description": "Turn index after the last folded turn"},
-                "summary": {"type": "STRING", "description": "Summary of the folded turns, the only record kept"},
-                "topic": {"type": "STRING", "description": "Optional short topic"}
-            }),
-            json!(["start", "end", "summary"]),
-        ),
-        declaration(
-            "decompress",
-            text(prompts::DECOMPRESS),
-            json!({
-                "blockId": {"type": "STRING", "description": "Block id returned by compress"},
-                "toFile": {"type": "STRING", "description": "Plain file name under the session spill dir"},
-                "full": {"type": "BOOLEAN", "description": "Accepted for parity; phase 1 has one tier"}
-            }),
-            json!(["blockId"]),
-        ),
-        declaration(
-            "search_context",
-            text(prompts::SEARCH_CONTEXT),
-            json!({
-                "query": {"type": "STRING", "description": "Keyword to find in block summaries"},
-                "limit": {"type": "INTEGER", "description": "Maximum results (default 5)"}
-            }),
-            json!(["query"]),
-        ),
-    ]
-}
-
-fn declaration(name: &str, description: &str, properties: Value, required: Value) -> Value {
-    json!({
-        "name": name,
-        "description": description,
-        "parameters": {
-            "type": "OBJECT",
-            "properties": properties,
-            "required": required
-        }
-    })
-}
-
-fn inject_prompts(request: &mut Value, pins: &PinnedPrompts) {
-    let mut text = String::new();
-    for id in [prompts::POLICY, prompts::PONYTAIL] {
-        let Some(part) = pins.text(id).filter(|text| !text.trim().is_empty()) else {
-            continue;
-        };
-        if !text.is_empty() {
-            text.push_str("\n\n");
-        }
-        text.push_str(part);
-    }
-    if text.is_empty() {
-        return;
-    }
-
-    let part = json!({ "text": text });
-    match request.get_mut("systemInstruction") {
-        Some(Value::Object(instruction)) => match instruction.get_mut("parts") {
-            Some(Value::Array(parts)) => parts.push(part),
-            _ => {
-                instruction.insert("parts".into(), json!([part]));
-            }
-        },
-        _ => {
-            request["systemInstruction"] = json!({ "parts": [part] });
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
-struct ProxyCall {
-    name: String,
-    id: String,
-    part: Value,
-    args: Value,
+pub struct ProxyCall {
+    pub name: String,
+    pub id: String,
+    pub part: Value,
+    pub args: Value,
 }
 
 fn extract_proxy_call(bytes: &Bytes) -> Option<ProxyCall> {
@@ -708,6 +556,9 @@ fn extract_proxy_call(bytes: &Bytes) -> Option<ProxyCall> {
 }
 
 fn proxy_call_in(payload: &Value) -> Option<ProxyCall> {
+    if let Some(call) = extract_proxy_call_from_payload(payload) {
+        return Some(call);
+    }
     let candidates = payload
         .get("response")
         .and_then(|response| response.get("candidates"))
@@ -763,28 +614,60 @@ fn call_arguments(call: &Value) -> Value {
 /// Run the tool and append its model+user pair to the request. Returns the
 /// stored pair so the caller can persist it.
 fn run_proxy_tool(
+    state: &ProxyState,
+    session_id: &str,
     runtime: &SessionRuntime,
+    wire: WireKind,
     request: &mut Value,
     call: ProxyCall,
 ) -> Result<Vec<Value>, ProxyError> {
     let request = request_body_mut(request);
-    let contents = contents_mut(request).ok_or(ProxyError::NoContents)?;
-    let text = execute_by_name(runtime, contents, &call);
+    let mut contents = extract_core_contents(wire, request).ok_or(ProxyError::NoContents)?;
+    let text = execute_by_name(state, session_id, runtime, &mut contents, &call);
     let turns = proxy_pair(&call, &text, &format!("emberloop-splice:{}", call.id));
     contents.extend(turns.clone());
-
+    write_core_contents(wire, request, contents);
     Ok(turns)
 }
 
 fn execute_by_name(
+    state: &ProxyState,
+    session_id: &str,
     runtime: &SessionRuntime,
     contents: &mut Vec<Value>,
     call: &ProxyCall,
 ) -> String {
     match execute_tool(runtime, contents, call) {
-        Ok(text) => text,
+        Ok(text) => {
+            if matches!(call.name.as_str(), "compress" | "decompress") {
+                publish_compression_event(&state.inner.events, session_id, runtime, call, &text);
+            }
+            text
+        }
         Err(error) => format!("error: {error}"),
     }
+}
+
+fn publish_compression_event(
+    events: &EventBus,
+    session_id: &str,
+    runtime: &SessionRuntime,
+    call: &ProxyCall,
+    result_text: &str,
+) {
+    let status = lock(&runtime.compressor).ok().map(|c| c.status());
+    events.publish(SessionEvent::new(
+        session_id,
+        0,
+        EventKind::Compression,
+        json!({
+            "action": call.name,
+            "args": call.args,
+            "result": result_text,
+            "activeBlocks": status.as_ref().map(|s| s.active_blocks).unwrap_or(0),
+            "spilledTurns": status.as_ref().map(|s| s.spilled_turns).unwrap_or(0),
+        }),
+    ));
 }
 
 fn proxy_pair(call: &ProxyCall, text: &str, marker: &str) -> Vec<Value> {
@@ -902,6 +785,7 @@ async fn send_stream(
     let bytes = serde_json::to_vec(body)?;
     let mut request = client.post(url);
     request = with_headers(request, headers);
+    let request = request.header(header::CONTENT_TYPE, "application/json");
     timeout(ROUND_TIMEOUT, request.body(bytes).send())
         .await
         .map_err(|_| ProxyError::Timeout)?
@@ -1036,6 +920,7 @@ struct SseState {
     proxy: ProxyState,
     runtime: Arc<SessionRuntime>,
     session_id: String,
+    wire: WireKind,
     url: String,
     headers: HeaderMap,
     request: Value,
@@ -1051,10 +936,12 @@ struct SseState {
 }
 
 impl SseState {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         proxy: ProxyState,
         runtime: Arc<SessionRuntime>,
         session_id: String,
+        wire: WireKind,
         url: String,
         headers: HeaderMap,
         request: Value,
@@ -1064,6 +951,7 @@ impl SseState {
             proxy,
             runtime,
             session_id,
+            wire,
             url,
             headers,
             request,
@@ -1119,9 +1007,10 @@ impl SseState {
             .unwrap_or_default();
         let splice = Splice::new(&anchor, turns.clone()).with_marker(&marker);
         lock(&self.runtime.splices)?.insert(splice)?;
-        let contents = contents_mut(request_body_mut(&mut self.request));
-        if let Some(contents) = contents {
+        let req_body = request_body_mut(&mut self.request);
+        if let Some(mut contents) = extract_core_contents(self.wire, req_body) {
             contents.extend(turns);
+            write_core_contents(self.wire, req_body, contents);
         }
         if self.rounds >= MAX_TOOL_ROUNDS {
             return Err(ProxyError::ToolRoundLimit);
@@ -1156,11 +1045,18 @@ impl SseState {
     }
 
     fn record_call(&mut self, call: ProxyCall) {
-        let contents = match contents_mut(request_body_mut(&mut self.request)) {
-            Some(contents) => contents,
-            None => return,
+        let req_body = request_body_mut(&mut self.request);
+        let Some(mut contents) = extract_core_contents(self.wire, req_body) else {
+            return;
         };
-        let text = execute_by_name(&self.runtime, contents, &call);
+        let text = execute_by_name(
+            &self.proxy,
+            &self.session_id,
+            &self.runtime,
+            &mut contents,
+            &call,
+        );
+        write_core_contents(self.wire, req_body, contents);
         self.completed.push(CompletedCall { call, text });
     }
 }
