@@ -340,8 +340,10 @@ async fn handle_generation(
     let mut request: Value = serde_json::from_slice(&body)?;
     let queue = state.inner.steers.queue(session_id);
     queue.begin_request().await;
+    dump_request(session_id, "in", &request);
     let injected = inject_steer(&runtime, wire, &mut request, &queue).await;
     prepare_request(&runtime, wire, &mut request)?;
+    dump_request(session_id, "out", &request);
 
     let url = match pi_path {
         Some(path) => upstream_url(&state.inner.config.opencode_upstream, path, query),
@@ -1679,3 +1681,18 @@ fn sse_error(message: &str) -> String {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+/// Debug aid: with `EMBERLOOP_PROXY_DUMP=<dir>` the last request of each Session
+/// is written before (`in`) and after (`out`) the proxy rewrote it.
+fn dump_request(session_id: &str, stage: &str, request: &Value) {
+    let Some(dir) = std::env::var_os("EMBERLOOP_PROXY_DUMP") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(
+            dir.join(format!("{session_id}.{stage}.json")),
+            request.to_string(),
+        );
+    }
+}
