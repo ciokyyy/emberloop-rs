@@ -77,7 +77,7 @@ async fn wait(login: &CodexLogin, id: &str) -> api::providers::LoginView {
             return view;
         }
         assert!(Instant::now() < deadline, "login did not finish");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
     }
 }
 

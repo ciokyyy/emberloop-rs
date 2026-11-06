@@ -1,6 +1,6 @@
 # Emberloop proxy policy
 
-You run through the Emberloop proxy. The proxy owns model-facing plumbing: tool declarations, this policy, Ponytail, steering and context compression. The harness never composes that text.
+You run inside emberloop-rs, the Rust rewrite of Emberloop. It is a different project from the Go Emberloop at `~/Projects/emberloop`; never read or edit that one unless the user says so. You run through the emberloop-rs proxy. The proxy owns model-facing plumbing: tool declarations, this policy, Ponytail, steering and context compression. The harness never composes that text.
 
 ## Billion context
 

@@ -51,8 +51,18 @@ impl OverflowStore {
         Ok(handle)
     }
 
-    /// Resolves a ctx handle to its spill file. Handles never leave the spill dir.
+    /// Resolves a ctx handle to its spill file. Handles never leave the spill dir. The proxy
+    /// mints `c`-prefixed handles beside the tools' bare ones and models drop or add the `c`,
+    /// so the other spelling is tried when the exact one is missing.
     pub fn path(&self, handle: &str) -> Option<PathBuf> {
+        let alternate = match handle.strip_prefix('c') {
+            Some(bare) => bare.to_string(),
+            None => format!("c{handle}"),
+        };
+        self.exact(handle).or_else(|| self.exact(&alternate))
+    }
+
+    fn exact(&self, handle: &str) -> Option<PathBuf> {
         if handle.is_empty() || handle.len() > MAX_HANDLE_LEN {
             return None;
         }
@@ -95,5 +105,21 @@ fn push_window(out: &mut String, label: &str, lines: &[&str], range: std::ops::R
     for line in &lines[range] {
         out.push_str(line);
         out.push('\n');
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_forgives_a_dropped_or_added_c_prefix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("c1f0"), "proxy").expect("write");
+        fs::write(dir.path().join("2a0"), "tool").expect("write");
+        let store = OverflowStore::new(dir.path(), 10);
+        assert_eq!(store.path("1f0"), Some(dir.path().join("c1f0")));
+        assert_eq!(store.path("c2a0"), Some(dir.path().join("2a0")));
+        assert_eq!(store.path("zzz"), None);
     }
 }

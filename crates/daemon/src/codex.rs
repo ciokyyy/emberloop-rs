@@ -253,6 +253,8 @@ async fn run(
     }
 }
 
+// Production-only wait on the provider's polling interval; the tests answer on the first poll.
+#[allow(clippy::disallowed_methods)]
 async fn poll_and_exchange(
     http: &reqwest::Client,
     endpoints: &CodexEndpoints,

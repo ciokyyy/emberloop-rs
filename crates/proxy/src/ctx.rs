@@ -19,9 +19,10 @@ use serde_json::Value;
 
 use crate::wire::{response_text, set_response_text};
 
-/// Smallest result, in estimated tokens, that is replaced by a handle. The tools spill at
-/// 10 KiB (about 2500 tokens), so this catches everything that came back big anyway.
-pub const MIN_TOKENS: u64 = 2_000;
+/// Smallest result, in estimated tokens, that is replaced by a handle: the reference's
+/// `minToolTokens`. The tools spill their own output at 10 KiB with a head/tail preview, so
+/// this only catches what a foreign tool sent back whole.
+pub const MIN_TOKENS: u64 = 4_000;
 const HEAD_CHARS: usize = 96;
 const PREVIEW: &str = "[ctx:";
 
@@ -84,6 +85,9 @@ impl CtxStore {
                 let Some(result) = large_result(part) else {
                     continue;
                 };
+                if args.get(&result.id).is_some_and(pages_a_handle) {
+                    continue;
+                }
                 let title = args
                     .get(&result.id)
                     .and_then(subject)
@@ -207,6 +211,15 @@ fn call_args(contents: &[Value]) -> HashMap<String, Value> {
     args
 }
 
+/// A `read ctx:<handle>` call: its result is a page of an original already stored, and
+/// replacing it would send the model round in circles.
+fn pages_a_handle(arguments: &Value) -> bool {
+    arguments
+        .get("path")
+        .and_then(Value::as_str)
+        .is_some_and(|path| path.trim_start().starts_with("ctx:"))
+}
+
 /// The call's subject (command, path, query), so the placeholder says what was run.
 fn subject(arguments: &Value) -> Option<String> {
     ["command", "cmd", "script", "query", "path", "url"]
@@ -295,7 +308,27 @@ mod tests {
     }
 
     fn big() -> String {
-        "line of test output\n".repeat(400)
+        "line of test output\n".repeat(900)
+    }
+
+    #[test]
+    fn a_result_under_the_threshold_is_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store = store(dir.path());
+        let mut turns = contents(&"line of test output\n".repeat(700));
+        assert_eq!(store.apply(&mut turns), 0);
+    }
+
+    #[test]
+    fn a_page_read_back_from_a_handle_is_never_replaced_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store = store(dir.path());
+        let mut turns = contents(&big());
+        turns[0]["parts"][0]["functionCall"]["args"] = json!({"path": "ctx:c1f0:1-900"});
+        turns[0]["parts"][0]["functionCall"]["name"] = json!("read");
+        turns[1]["parts"][0]["functionResponse"]["name"] = json!("read");
+        assert_eq!(store.apply(&mut turns), 0);
+        assert_eq!(result_text(&turns), big());
     }
 
     fn store(dir: &Path) -> CtxStore {

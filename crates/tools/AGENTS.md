@@ -21,7 +21,7 @@ path jail, spill store and seen-line store:
 - `check`: runs a named check from `<root>/.emberloop/check` (plain command or JSON name-to-command map with one `{args}` slot, shell metacharacters refused); answers a pass/FAIL/TIMED OUT verdict plus the last 60 lines.
 - `todo`: the plan as one ordered list addressed by stable ids (`t1`, `t2`, …), one tool with `action` of `read`, `set`, `add`, `update`, `remove` or `clear`; statuses `pending`, `in_progress`, `completed`, `cancelled`, at most one in progress; ids never reused, `set` restarts them; persisted as `todos.json` in the Session directory (temp name plus rename).
 - `ctx_search`: term-scored snippets over the Session's spill files, each with a pageable `ctx:<id>:<start>-<end>`.
-- `overflow`: rendered output over `overflow_threshold` is written to `<data root>/sessions/<id>/spill/<handle>` and replaced by a head/tail summary naming `ctx:<handle>`.
+- `overflow`: rendered output over `overflow_threshold` is written to `<data root>/sessions/<id>/spill/<handle>` and replaced by a head/tail summary naming `ctx:<handle>`. Handle lookup accepts the proxy's `c`-prefixed spelling and the bare one interchangeably.
 ## Limits
 
 Seen-line snapshots persist in the Session's `seen/` directory (`state.json`,

@@ -141,6 +141,26 @@ fn read_overflow_spills_and_ctx_pages() {
 }
 
 #[test]
+fn read_ctx_forgives_a_dropped_or_added_c_prefix() {
+    let fixture = fixture_with_threshold(50);
+    let content = (1..=100)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let path = write(&fixture, "big.txt", &content);
+    let output = read(&fixture, &path, 1, 0);
+    let handle = output
+        .split_whitespace()
+        .find(|word| word.starts_with("ctx:"))
+        .and_then(|word| word.split(':').nth(1))
+        .expect("handle id")
+        .to_string();
+    // The proxy mints `c`-prefixed handles beside the tools' bare ones; models mix them up.
+    let added = read(&fixture, Path::new(&format!("ctx:c{handle}:2-3")), 1, 0);
+    assert!(added.contains("line 1"), "{added}");
+}
+
+#[test]
 fn jail_blocks_escapes_and_symlinks() {
     let fixture = setup();
     let outside = fixture._dir.path().join("outside.txt");
