@@ -90,4 +90,39 @@ describe('feed reducer', () => {
     expect(state.items.map((item) => item.kind)).toEqual(['compression', 'notice', 'error']);
     expect(state.items[2].text).toBe('daemon lost');
   });
+
+  it('merges repeated tool_started events and reads agy output objects', () => {
+    const state = run(
+      ev('tool_started', { id: 'c1', name: 'mcp__el__read', input: {} }, 1),
+      ev('tool_started', { id: 'c1', name: '', input: { path: 'a.rs' } }, 2),
+      ev('tool_finished', { id: 'c1', status: 'completed', output: { text: 'line' } }, 3)
+    );
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]).toMatchObject({
+      name: 'mcp__el__read',
+      input: '{"path":"a.rs"}',
+      output: 'line',
+      status: 'completed'
+    });
+  });
+
+  it('streams thinking into its own live row and closes it when the turn goes idle', () => {
+    const state = run(
+      ev('thinking_chunk', { text: 'let me ' }, 1),
+      ev('thinking_chunk', { text: 'think' }, 2),
+      ev('assistant_chunk', { text: 'ok' }, 3),
+      ev('status', { state: 'idle' }, 4)
+    );
+    expect(state.items.map((item) => item.kind)).toEqual(['thinking', 'assistant']);
+    expect(state.items[0]).toMatchObject({ text: 'let me think', live: false });
+    expect(state.items[1].live).toBe(false);
+  });
+
+  it('marks a failed tool and measures its elapsed time', () => {
+    const state = run(
+      { ...ev('tool_started', { id: 'b', name: 'bash', input: { command: 'false' } }, 1), at: 1000 },
+      { ...ev('tool_finished', { id: 'b', status: 'failed', output: 'exit code: 1' }, 2), at: 3500 }
+    );
+    expect(state.items[0]).toMatchObject({ status: 'failed', elapsedMs: 2500 });
+  });
 });

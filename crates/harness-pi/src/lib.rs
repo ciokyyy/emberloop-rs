@@ -80,6 +80,7 @@ impl PiHarness {
             thought_level: wiring.thought_level.filter(|level| !level.is_empty()),
             client_name: "emberloop",
             label: "pi",
+            forward_thoughts: false,
             resume: wiring.resume_token,
         };
         start(launch, session_id).await

@@ -39,14 +39,8 @@
   const current = $derived(sessions.find((session) => session.id === selected) ?? null);
   const projectOf = $derived(projects.find((project) => project.id === current?.projectId) ?? null);
   const working = $derived(feed.status === 'working');
-  const usagePct = $derived(
-    feed.usage ? Math.min(100, Math.round((feed.usage.used / feed.usage.window) * 100)) : 0
-  );
-  const usageLabel = $derived(
-    feed.usage
-      ? `${Math.round(feed.usage.used / 1000)}k / ${Math.round(feed.usage.window / 1_000_000)}M`
-      : ''
-  );
+  const currentModel = $derived(models.find((model) => model.id === current?.model) ?? null);
+  const contextSize = $derived(feed.usage?.window || currentModel?.context_window || 0);
   const statusWord: Record<SessionStatus, string> = {
     idle: 'Idle',
     working: 'Working',
@@ -160,7 +154,7 @@
     const title = window.prompt('Rename session', session.title)?.trim();
     if (!title || title === session.title) return;
     try {
-      const updated = await api.updateSession(session.id, title);
+      const updated = await api.updateSession(session.id, { title });
       sessions = sessions.map((item) => (item.id === session.id ? updated : item));
     } catch (cause) {
       fail(cause);
@@ -194,6 +188,16 @@
     await api.prompt(selected, text, images);
     feed = { ...feed, status: 'working' };
     statuses = { ...statuses, [selected]: 'working' };
+  }
+
+  async function setThoughtLevel(level: string) {
+    if (!selected || !level) return;
+    try {
+      const updated = await api.updateSession(selected, { thoughtLevel: level });
+      sessions = sessions.map((item) => (item.id === updated.id ? updated : item));
+    } catch (cause) {
+      fail(cause);
+    }
   }
 
   async function cancel() {
@@ -272,13 +276,6 @@
       </div>
       {#if view === 'session' && current}
         <span class="chip hide-sm font-mono">{current.model}</span>
-        <div
-          class="hide-sm flex items-center gap-2 text-[12px] text-fg-3"
-          title="Last request input tokens over the window"
-        >
-          <div class="meter"><i style={`width:${usagePct}%`}></i></div>
-          <span class="tabular-nums">{usageLabel}</span>
-        </div>
         <span class="flex items-center gap-1.5 text-[13px]">
           <span class={`dot ${statusDot[feed.status]} ${working ? 'pulse' : ''}`}></span>
           {statusWord[feed.status]}
@@ -312,6 +309,11 @@
       <Feed {feed} />
       <Composer
         working={working}
+        contextUsed={feed.usage?.used ?? 0}
+        {contextSize}
+        efforts={currentModel?.efforts ?? []}
+        thoughtLevel={current.thoughtLevel ?? ''}
+        onthought={setThoughtLevel}
         onsubmit={sendPrompt}
         oncancel={cancel}
       />

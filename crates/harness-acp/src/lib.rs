@@ -34,6 +34,8 @@ pub struct AcpLaunch {
     pub client_name: &'static str,
     /// Names the agent in error messages.
     pub label: &'static str,
+    /// False when the proxy already publishes the agent's reasoning from the model wire.
+    pub forward_thoughts: bool,
     /// The agent's id for a conversation from an earlier run. The driver loads
     /// it, without replaying its history, and falls back to a new one.
     pub resume: Option<String>,
@@ -74,6 +76,7 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
         thought_level,
         client_name,
         resume,
+        forward_thoughts,
         ..
     } = launch;
     // The agent replays a loaded conversation as notifications; those are
@@ -92,8 +95,12 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
                         if replaying.load(Ordering::SeqCst) {
                             return Ok(());
                         }
-                        if let Some(event) = notification_event(notification.update) {
-                            let _ = event_sink.send(event);
+                        match notification_event(notification.update) {
+                            Some(HarnessEvent::ThoughtChunk(_)) if !forward_thoughts => {}
+                            Some(event) => {
+                                let _ = event_sink.send(event);
+                            }
+                            None => {}
                         }
                         Ok(())
                     }

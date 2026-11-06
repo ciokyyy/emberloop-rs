@@ -10,6 +10,7 @@ export interface Session {
   title: string;
   ponytailLevel: string;
   model: string;
+  thoughtLevel?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -58,6 +59,7 @@ export type EventKind =
   | 'status'
   | 'prompt'
   | 'assistant_chunk'
+  | 'thinking_chunk'
   | 'tool_started'
   | 'tool_finished'
   | 'steer_queued'

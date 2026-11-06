@@ -3,16 +3,29 @@
   import { MAX_IMAGES, pickImages, type ImageAttachment, type RejectReason } from '$lib/images';
   import { collapse, fadeAt, flip, flipAnimation, flipReady, rise, slideDown } from '$lib/motion';
   import { cn } from '$lib/utils';
-  import Button from './ui/button.svelte';
+  import ContextRing from './ContextRing.svelte';
+  import Icon from './Icon.svelte';
 
   let {
     working = false,
     disabled = false,
+    contextUsed = 0,
+    contextSize = 0,
+    model = '',
+    efforts = [],
+    thoughtLevel = '',
+    onthought,
     onsubmit,
     oncancel
   }: {
     working?: boolean;
     disabled?: boolean;
+    contextUsed?: number;
+    contextSize?: number;
+    model?: string;
+    efforts?: string[];
+    thoughtLevel?: string;
+    onthought?: (level: string) => Promise<void> | void;
     onsubmit: (text: string, files: File[]) => Promise<void> | void;
     oncancel: () => Promise<void> | void;
   } = $props();
@@ -163,9 +176,27 @@
         {onpaste}
       ></textarea>
 
-      <div class="flex items-center gap-2 px-1 pt-1">
-        {#if !working}
-        <Button onclick={() => picker?.click()} aria-label="Attach image">+ Image</Button>
+      <div class="flex min-w-0 flex-wrap items-center gap-1.5 px-1 pt-1">
+        <ContextRing used={contextUsed} size={contextSize} />
+        {#if model}
+          <span class="hide-sm max-w-[200px] truncate font-mono text-[12px] text-fg-3" title={model}>{model}</span>
+        {/if}
+        {#if efforts.length && onthought}
+          <label class="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[12px] text-fg-2">
+            <Icon name="sparkles" size={12} class="text-tool-thinking" />
+            <span class="sr-only">Thinking level</span>
+            <select
+              class="cursor-pointer bg-transparent text-[12px] outline-none"
+              value={thoughtLevel}
+              aria-label="Thinking level"
+              onchange={(event) => void onthought(event.currentTarget.value)}
+            >
+              {#if !thoughtLevel}<option value="" disabled>effort</option>{/if}
+              {#each efforts as level (level)}<option value={level}>{level}</option>{/each}
+            </select>
+          </label>
+        {/if}
+        <span class="flex-1"></span>
         <input
           bind:this={picker}
           type="file"
@@ -177,15 +208,35 @@
             event.currentTarget.value = '';
           }}
         />
-        <span class="hide-sm text-[12px] text-fg-3">10 MB each · 5 per prompt</span>
+        {#if !working}
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="Attach image"
+            title="Attach image · 10 MB each · 5 per prompt"
+            onclick={() => picker?.click()}
+          ><Icon name="paperclip" size={16} /></button>
         {/if}
-        <span class="flex-1"></span>
         {#if working}
-          <span class="inline-flex" transition:fadeAt><Button onclick={() => void oncancel()} disabled={busy}>Stop</Button></span>
+          <button
+            type="button"
+            class="icon-btn text-status-failed"
+            aria-label="Stop"
+            title="Stop"
+            onclick={() => void oncancel()}
+            disabled={busy}
+            transition:fadeAt
+          ><Icon name="square" size={14} /></button>
         {/if}
-        <Button variant={working ? 'default' : 'primary'} onclick={() => void submit()} disabled={!canSend}>
-          {action === 'steer' ? 'Steer' : 'Send'}
-        </Button>
+        <button
+          type="button"
+          class="icon-btn bg-brand text-white hover:bg-brand-strong disabled:opacity-40"
+          aria-label={action === 'steer' ? 'Steer' : 'Send'}
+          title={action === 'steer' ? 'Steer (Enter)' : 'Send (Enter)'}
+          data-mode={action}
+          onclick={() => void submit()}
+          disabled={!canSend}
+        ><Icon name="arrow-up" size={16} /></button>
       </div>
     </div>
 

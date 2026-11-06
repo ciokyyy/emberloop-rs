@@ -50,6 +50,7 @@ impl AgyHarness {
             // clients, so the harness announces itself as `zed`.
             client_name: "zed",
             label: "agy",
+            forward_thoughts: true,
             resume: wiring.resume_token.clone(),
         }
     }

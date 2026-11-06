@@ -1055,6 +1055,16 @@ impl SseState {
         if let Some(usage) = meter::extract_usage(event) {
             self.usage = Some(usage);
         }
+        if !self.proxy_round && self.wire != WireKind::Google {
+            if let Some(text) = meter::thinking_delta(&payload) {
+                self.proxy.inner.events.publish(SessionEvent::new(
+                    &self.session_id,
+                    0,
+                    EventKind::ThinkingChunk,
+                    json!({ "text": text }),
+                ));
+            }
+        }
         if self.proxy_round && is_stream_end(&payload) {
             return Ok(None);
         }

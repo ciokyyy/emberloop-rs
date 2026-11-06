@@ -2,13 +2,13 @@
   import type { FeedState } from '$lib/feed';
   import { renderMarkdown } from '$lib/markdown';
   import { fadeAt, rise, slideUp } from '$lib/motion';
-  import ToolRow from './ToolRow.svelte';
+  import { segments } from '$lib/toolRuns';
+  import ToolFeed from './ToolFeed.svelte';
 
   let { feed }: { feed: FeedState } = $props();
 
   let scroller: HTMLDivElement;
   let stick = $state(true);
-  let open = $state<Record<string, boolean>>({});
 
   const routeLabel = (route?: string) =>
     route === 'injected' ? 'injected' : route === 'idle' ? 'sent at idle' : 'queued';
@@ -25,7 +25,7 @@
     first = false;
   });
 
-  const toggle = (id: string) => (open = { ...open, [id]: !open[id] });
+  const segs = $derived(segments(feed.items));
 
   function onscroll() {
     const el = scroller;
@@ -52,7 +52,13 @@
 <div class="relative min-h-0 flex-1">
   <div bind:this={scroller} {onscroll} class="h-full overflow-y-auto px-4 py-4">
     <div class="mx-auto flex max-w-[760px] flex-col gap-1">
-      {#each feed.items as item (item.id)}
+      {#each segs as seg (seg.type === 'item' ? seg.item.id : seg.id)}
+        {#if seg.type === 'tools'}
+          <div in:rise|global={{ skip: instant.has(seg.id) }}>
+            <ToolFeed runs={seg.runs} />
+          </div>
+        {:else}
+        {@const item = seg.item}
         {#if item.kind === 'user'}
           <div class="my-1.5 self-end" in:slideUp|global={{ skip: instant.has(item.id) }}>
             <div class="max-w-[85vw] rounded-2xl bg-surface-3 px-4 py-2.5 sm:max-w-[85%]">
@@ -70,10 +76,6 @@
           <div class="md my-1.5 max-w-[92%] text-[15px]" in:rise|global={{ skip: instant.has(item.id) }}>
             {@html renderMarkdown(item.text ?? '')}
             {#if item.live}<span class="pulse text-fg-3">▍</span>{/if}
-          </div>
-        {:else if item.kind === 'tool'}
-          <div in:rise|global={{ skip: instant.has(item.id) }}>
-            <ToolRow {item} open={!!open[item.id]} ontoggle={() => toggle(item.id)} />
           </div>
         {:else if item.kind === 'compression'}
           <div
@@ -111,6 +113,7 @@
             style="background:#2a2222;color:#ffb3ad"
             in:rise|global={{ skip: instant.has(item.id) }}
           >{item.text}</div>
+        {/if}
         {/if}
       {/each}
       {#if feed.items.length === 0}

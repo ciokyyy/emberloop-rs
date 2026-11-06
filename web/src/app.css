@@ -65,6 +65,10 @@
   --tool-grep: #c792ea;
   --tool-misc: #9b9ba1;
   --tool-compress: #9d8cff;
+  --tool-web: #56d4dd;
+  --tool-agent: #b392f0;
+  --tool-thinking: #c3a6ff;
+  --tool-failed-tint: #2a2222;
   /* Motion scale from the Go app: one easing, three durations. motion.ts reads them. */
   --dur-instant: 100ms;
   --dur-standard: 180ms;
@@ -120,6 +124,25 @@
 
   .sel {
     background: var(--surface-3);
+  }
+
+  .icon-btn {
+    display: inline-grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 999px;
+    color: var(--fg-2);
+    border: 0;
+    background: transparent;
+  }
+
+  .icon-btn:hover:not(:disabled) {
+    background: var(--surface-3);
+  }
+
+  .icon-btn:disabled {
+    cursor: not-allowed;
   }
 
   .chip {
@@ -375,3 +398,56 @@
     cursor: not-allowed;
     opacity: 0.45;
   }
+
+/* Tool output: diff rows, token colours (lib/highlight.ts) and the line-number gutter. */
+.diff-add {
+  background-color: #182a20;
+  color: #34d399;
+}
+.diff-del {
+  background-color: #2d1a1a;
+  color: #f87171;
+}
+.diff-hunk {
+  background-color: #1c2433;
+  color: #93c5fd;
+}
+.tk-kw { color: #c4b5fd; }
+.tk-str { color: #6ee7b7; }
+.tk-num { color: #fcd34d; }
+.tk-comment { color: #93c5fd; font-style: italic; }
+.tk-fn { color: #93c5fd; }
+.tk-key { color: #93c5fd; }
+.tk-lit { color: #fcd34d; }
+.tk-path { color: #93c5fd; }
+.tk-flag { color: #fcd34d; }
+.tk-op { color: #8e8e93; }
+.tk-hunk { color: #93c5fd; }
+.tk-dim { color: #6e6e73; }
+.tk-err { color: #f87171; }
+.tk-warn { color: #fcd34d; }
+.tk-ok { color: #34d399; }
+.tk-bold { font-weight: 600; }
+.tk-add-sign { color: #34d399; font-weight: 600; }
+.tk-del-sign { color: #f87171; font-weight: 600; }
+.tool-gutter {
+  min-width: 2ch;
+  text-align: right;
+  color: var(--fg-4);
+  opacity: 0.7;
+  user-select: none;
+}
+.running-dot {
+  animation: running-dot 900ms infinite ease-in-out;
+}
+@keyframes running-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+}

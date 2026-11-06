@@ -54,10 +54,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ projectId, title, ponytailLevel, model })
     }),
-  updateSession: (id: string, title: string) =>
+  updateSession: (id: string, patch: { title?: string; thoughtLevel?: string }) =>
     request<Session>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      body: JSON.stringify({ title })
+      body: JSON.stringify(patch)
     }),
   deleteSession: (id: string) =>
     request<Session>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),

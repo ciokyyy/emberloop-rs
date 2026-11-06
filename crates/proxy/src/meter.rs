@@ -93,9 +93,38 @@ fn number(value: &Value, key: &str) -> u64 {
     value.get(key).and_then(Value::as_u64).unwrap_or(0)
 }
 
+/// The reasoning text one OpenAI chat, Anthropic or Responses stream payload carries.
+/// Pi's ACP bridge does not forward it, so the proxy is the one place that sees it.
+pub fn thinking_delta(payload: &Value) -> Option<String> {
+    let text = payload
+        .pointer("/choices/0/delta/reasoning_content")
+        .or_else(|| payload.pointer("/choices/0/delta/reasoning"))
+        .or_else(|| payload.pointer("/delta/thinking"))
+        .or_else(|| {
+            let kind = payload.get("type").and_then(Value::as_str)?;
+            (kind == "response.reasoning_summary_text.delta" || kind == "response.reasoning_text.delta")
+                .then(|| payload.get("delta"))
+                .flatten()
+        })?
+        .as_str()?;
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_reasoning_text_from_each_streaming_wire() {
+        let chat = serde_json::json!({"choices":[{"delta":{"reasoning_content":"hmm"}}]});
+        assert_eq!(thinking_delta(&chat).as_deref(), Some("hmm"));
+        let anthropic = serde_json::json!({"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"so"}});
+        assert_eq!(thinking_delta(&anthropic).as_deref(), Some("so"));
+        let responses = serde_json::json!({"type":"response.reasoning_summary_text.delta","delta":"ok"});
+        assert_eq!(thinking_delta(&responses).as_deref(), Some("ok"));
+        let plain = serde_json::json!({"choices":[{"delta":{"content":"hi","reasoning_content":""}}]});
+        assert_eq!(thinking_delta(&plain), None);
+    }
 
     #[test]
     fn reads_gemini_usage_from_the_last_sse_chunk() {

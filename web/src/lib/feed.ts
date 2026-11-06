@@ -1,12 +1,24 @@
 import type { SessionEvent, SessionStatus, SteerRoute } from './api/types';
 
+export type ToolStatus = 'running' | 'completed' | 'failed';
+
 export interface FeedItem {
   id: string;
-  kind: 'user' | 'assistant' | 'tool' | 'compression' | 'steer' | 'notice' | 'error';
+  kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'compression' | 'steer' | 'notice' | 'error';
   text?: string;
   live?: boolean;
   imagesCount?: number;
+  /** Short tool name without the MCP prefix (`read`, `bash`). */
   tool?: string;
+  /** Raw tool name as the harness sent it; the tool feed derives its family from it. */
+  name?: string;
+  /** Tool arguments as a JSON string. */
+  input?: string;
+  output?: string;
+  status?: ToolStatus;
+  display?: Record<string, unknown>;
+  startedAt?: number;
+  elapsedMs?: number;
   summary?: string;
   meta?: string;
   body?: string;
@@ -31,10 +43,11 @@ const text = (value: unknown): string => (typeof value === 'string' ? value : ''
 const number = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 const route = (value: unknown): SteerRoute | undefined =>
   value === 'pending' || value === 'injected' || value === 'idle' ? value : undefined;
+const isLive = (item?: FeedItem) => !!item && (item.kind === 'assistant' || item.kind === 'thinking') && !!item.live;
 
 function closeLive(items: FeedItem[]): FeedItem[] {
   const last = items.at(-1);
-  if (!last || last.kind !== 'assistant' || !last.live) return items;
+  if (!last || !isLive(last)) return items;
   return [...items.slice(0, -1), { ...last, live: false }];
 }
 
@@ -50,6 +63,27 @@ function toolName(data: Record<string, unknown>): string {
   return text(data.name ?? data.tool).replace(/^(?:mcp__)?el_+/, '');
 }
 
+function toolInputText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object' && Object.keys(value).length > 0) return JSON.stringify(value);
+  return '';
+}
+
+/** A tool result arrives as plain text (pi) or as `{ text, content[] }` (agy). */
+export function outputText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === 'string') return record.text;
+  if (Array.isArray(record.content)) {
+    return record.content
+      .map((part) => (part && typeof part === 'object' ? text((part as Record<string, unknown>).text) : ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
 function toolSummary(data: Record<string, unknown>): string {
   const input = (data.input ?? {}) as Record<string, unknown>;
   return text(data.summary ?? data.path ?? input.command ?? input.path ?? input.pattern);
@@ -59,36 +93,98 @@ function toolId(data: Record<string, unknown>): string {
   return text(data.id ?? data.callId ?? data.toolCallId);
 }
 
+function displayOf(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+}
+
+function statusFromFinish(data: Record<string, unknown>): ToolStatus {
+  const status = text(data.status).toLowerCase();
+  return status === 'failed' || status === 'error' ? 'failed' : 'completed';
+}
+
+/** The harness repeats `tool_started` as the arguments stream in; the row keeps the fullest copy. */
+function startTool(items: FeedItem[], event: SessionEvent): FeedItem[] {
+  const data = event.data;
+  const id = toolId(data);
+  const input = toolInputText(data.input);
+  const name = text(data.name ?? data.tool);
+  const index = id ? items.findLastIndex((item) => item.kind === 'tool' && item.id === id) : -1;
+  if (index !== -1) {
+    const next = [...items];
+    const row = next[index];
+    next[index] = {
+      ...row,
+      name: name || row.name,
+      tool: toolName(data) || row.tool,
+      input: input || row.input,
+      summary: toolSummary(data) || row.summary,
+      display: displayOf(data.display) ?? row.display
+    };
+    return next;
+  }
+  return [
+    ...closeLive(items),
+    {
+      id: id || nextId('tool'),
+      kind: 'tool',
+      tool: toolName(data),
+      name,
+      input,
+      summary: toolSummary(data),
+      meta: text(data.meta),
+      body: text(data.body),
+      display: displayOf(data.display),
+      status: 'running',
+      startedAt: event.at,
+      finished: false
+    }
+  ];
+}
+
 function finishTool(items: FeedItem[], event: SessionEvent): FeedItem[] {
   const id = toolId(event.data);
-  const name = toolName(event.data);
+  const tool = toolName(event.data);
   const index = items.findLastIndex(
-    (item) =>
-      item.kind === 'tool' &&
-      !item.finished &&
-      (id ? item.id === id : item.tool === name)
+    (item) => item.kind === 'tool' && !item.finished && (id ? item.id === id : item.tool === tool)
   );
-  const body = text(event.data.output ?? event.data.body ?? event.data.diff);
+  const output = outputText(event.data.output ?? event.data.body ?? event.data.diff);
   const meta = text(event.data.meta);
+  const status = statusFromFinish(event.data);
+  const display = displayOf(event.data.display);
+  const input = toolInputText(event.data.input);
   if (index === -1) {
     return [
       ...items,
       {
         id: id || nextId('tool'),
         kind: 'tool',
-        tool: name,
-        summary: toolSummary(event.data) || name,
+        tool,
+        name: text(event.data.name ?? event.data.tool),
+        input,
+        summary: toolSummary(event.data) || tool,
         meta,
-        body,
+        body: output,
+        output,
+        display,
+        status,
         finished: true
       }
     ];
   }
   const next = [...items];
+  const row = next[index];
   next[index] = {
-    ...next[index],
-    meta: meta || next[index].meta,
-    body: body || next[index].body,
+    ...row,
+    name: text(event.data.name) || row.name,
+    tool: tool || row.tool,
+    input: input || row.input,
+    summary: row.summary || toolSummary(event.data),
+    meta: meta || row.meta,
+    body: output || row.body,
+    output: output || row.output,
+    display: display ?? row.display,
+    status,
+    elapsedMs: row.startedAt && event.at ? Math.max(0, event.at - row.startedAt) : row.elapsedMs,
     finished: true
   };
   return next;
@@ -116,11 +212,27 @@ function deliver(items: FeedItem[], event: SessionEvent, kind: 'steer' | 'notice
   return next;
 }
 
+function appendChunk(state: FeedState, kind: 'assistant' | 'thinking', chunk: string): FeedState {
+  const last = state.items.at(-1);
+  if (last?.kind === kind && last.live) {
+    return {
+      ...state,
+      items: [...state.items.slice(0, -1), { ...last, text: (last.text ?? '') + chunk }]
+    };
+  }
+  return {
+    ...state,
+    items: [...closeLive(state.items), { id: nextId(kind), kind, text: chunk, live: true }]
+  };
+}
+
 export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
   const data = event.data ?? {};
   switch (event.kind) {
-    case 'status':
-      return { ...state, status: statusOf(data.state ?? data.status) };
+    case 'status': {
+      const status = statusOf(data.state ?? data.status);
+      return { ...state, status, items: status === 'working' ? state.items : closeLive(state.items) };
+    }
 
     case 'prompt':
       return {
@@ -136,37 +248,14 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
         ]
       };
 
-    case 'assistant_chunk': {
-      const chunk = text(data.text);
-      const last = state.items.at(-1);
-      if (last?.kind === 'assistant' && last.live) {
-        return {
-          ...state,
-          items: [...state.items.slice(0, -1), { ...last, text: (last.text ?? '') + chunk }]
-        };
-      }
-      return {
-        ...state,
-        items: [...state.items, { id: nextId('assistant'), kind: 'assistant', text: chunk, live: true }]
-      };
-    }
+    case 'assistant_chunk':
+      return appendChunk(state, 'assistant', text(data.text));
+
+    case 'thinking_chunk':
+      return appendChunk(state, 'thinking', text(data.text));
 
     case 'tool_started':
-      return {
-        ...state,
-        items: [
-          ...closeLive(state.items),
-          {
-            id: toolId(data) || nextId('tool'),
-            kind: 'tool',
-            tool: toolName(data),
-            summary: toolSummary(data),
-            meta: text(data.meta),
-            body: text(data.body),
-            finished: false
-          }
-        ]
-      };
+      return { ...state, items: startTool(state.items, event) };
 
     case 'tool_finished':
       return { ...state, items: closeLive(finishTool(state.items, event)) };
@@ -213,7 +302,7 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
         ...state,
         usage: {
           used: number(data.inputTokens ?? data.used ?? data.tokens),
-          window: number(data.contextWindow ?? data.window) || 1_000_000
+          window: number(data.contextWindow ?? data.window) || state.usage?.window || 0
         }
       };
 
