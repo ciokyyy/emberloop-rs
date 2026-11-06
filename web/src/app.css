@@ -321,6 +321,46 @@
     color: var(--status-working);
   }
 
+  /* A wide table scrolls sideways inside the frame instead of squeezing its columns thin. The
+     table keeps its content width, so a phone shows a real table sliding under the card's edge. */
+  .md-table {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin: 0.75em 0;
+  }
+
+  .md table {
+    border-collapse: separate;
+    border-spacing: 0;
+    width: max-content;
+    min-width: 100%;
+  }
+
+  .md th,
+  .md td {
+    padding: 0.45em 0.9em;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+
+  .md th + th,
+  .md td + td {
+    border-left: 1px solid var(--border);
+  }
+
+  .md tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .md th {
+    background: var(--surface-2);
+    font-weight: 600;
+  }
+
   .pulse {
     animation: pulse 1.2s ease-in-out infinite;
   }

@@ -25,6 +25,11 @@ fn event(seq: u64) -> SessionEvent {
     SessionEvent::new("s1", seq, EventKind::Status, serde_json::json!({}))
 }
 
+/// A Notice is a block of its own, so a window of N blocks holds N of them.
+fn block_event() -> SessionEvent {
+    SessionEvent::new("s1", 0, EventKind::Notice, serde_json::json!({}))
+}
+
 async fn seqs(body: Body, count: usize) -> Vec<u64> {
     let mut stream = body.into_data_stream();
     let mut text = String::new();
@@ -57,7 +62,10 @@ async fn replay_then_live_has_no_gap_and_no_duplicate() {
     let response = session_events_handler(
         state.clone(),
         "s1".into(),
-        Query(EventsQuery { after: Some(1) }),
+        Query(EventsQuery {
+            after: Some(1),
+            limit: None,
+        }),
     )
     .await
     .into_response();
@@ -85,7 +93,10 @@ async fn an_unsequenced_event_is_stored_and_delivered_with_its_number() {
     let response = session_events_handler(
         state.clone(),
         "s1".into(),
-        Query(EventsQuery { after: Some(0) }),
+        Query(EventsQuery {
+            after: Some(0),
+            limit: None,
+        }),
     )
     .await
     .into_response();
@@ -96,4 +107,72 @@ async fn an_unsequenced_event_is_stored_and_delivered_with_its_number() {
     assert!(delivered[0] > 0, "{delivered:?}");
     let stored = state.get_event_log("s1").await.unwrap();
     assert_eq!(stored.replay(None).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_first_load_asks_for_the_tail_window_only() {
+    let dir = tempdir().unwrap();
+    let state = state(&dir).await;
+    let log = state.get_event_log("s1").await.unwrap();
+    for _ in 0..6 {
+        log.append(block_event()).await.unwrap();
+    }
+    let response = session_events_handler(
+        state.clone(),
+        "s1".into(),
+        Query(EventsQuery {
+            after: None,
+            limit: Some(2),
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(seqs(response.into_body(), 2).await, vec![5, 6]);
+}
+
+#[tokio::test]
+async fn a_first_load_that_says_after_zero_still_gets_the_tail_window() {
+    let dir = tempdir().unwrap();
+    let state = state(&dir).await;
+    let log = state.get_event_log("s1").await.unwrap();
+    for _ in 0..6 {
+        log.append(block_event()).await.unwrap();
+    }
+    let response = session_events_handler(
+        state.clone(),
+        "s1".into(),
+        Query(EventsQuery {
+            after: Some(0),
+            limit: Some(2),
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(seqs(response.into_body(), 2).await, vec![5, 6]);
+}
+
+#[tokio::test]
+async fn a_history_page_walks_backwards_from_a_seq() {
+    let dir = tempdir().unwrap();
+    let state = state(&dir).await;
+    let log = state.get_event_log("s1").await.unwrap();
+    for _ in 0..6 {
+        log.append(block_event()).await.unwrap();
+    }
+
+    let page = api::sse::session_history_handler(
+        axum::extract::State(state.clone()),
+        axum::extract::Path("s1".to_string()),
+        Query(api::sse::HistoryQuery {
+            before: Some(4),
+            limit: Some(2),
+        }),
+    )
+    .await;
+    assert_eq!(
+        page.0.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        vec![2, 3]
+    );
 }

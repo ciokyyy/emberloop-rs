@@ -23,6 +23,7 @@ const FAMILIES = {
   find: ['find', 'search_graph', 'trace_path', 'get_file_outline', 'get_architecture', 'get_code_snippet', 'outline'],
   git: ['git'],
   check: ['check'],
+  todo: ['todo', 'todos', 'todo_write', 'todowrite'],
   background: ['background'],
   ctx_search: ['ctx_search', 'ctxsearch', 'context'],
   websearch: ['websearch', 'web_search', 'websearch_deepseek'],
@@ -69,15 +70,23 @@ function fallbackFamily(bare: any) {
   return 'other';
 }
 
+// bareName drops the transport prefix, so a head reads `bash`, not `mcp__el__bash`.
+export function bareName(name: any = '') {
+  const raw = String(name ?? '').trim();
+  return raw.replace(/^mcp__[a-z0-9_-]+__/i, '').replace(/^el_+/i, '') || raw;
+}
+
+// shortTool trims a tool name to a few characters for the Working indicator.
+export function shortTool(name: any = '', max = 14) {
+  const text = String(name ?? '').trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 // family maps a raw tool name to the one vocabulary the head and the chips
 // read. An MCP prefix, a server suffix and claude's CamelCase all collapse;
 // the agents tool resolves through its action.
 export function family(name: any = '', input: any = '') {
-  const raw = String(name ?? '').trim();
-  const bare = raw
-    .replace(/^mcp__[a-z0-9_-]+__/i, '')
-    .replace(/^el__/i, '')
-    .toLowerCase();
+  const bare = bareName(name).toLowerCase();
   if (bare === 'agents') {
     const { json } = toolInput(input);
     const action = String(json?.action ?? '').trim().toLowerCase();

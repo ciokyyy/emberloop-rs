@@ -532,7 +532,6 @@ _SPECS = {{
     "bash": {{"sig": "bash(command, background, timeout)", "desc": "Run a shell command in the project root."}},
     "background": {{"sig": "background(action, id, offset, timeout)", "desc": "Manage background commands."}},
     "find": {{"sig": "find(query, grep_keywords, limit, mode, path)", "desc": "Semantic/lexical code finder with modes."}},
-    "readurl": {{"sig": "readurl(url, limit, offset)", "desc": "Read a web URL as Markdown or text."}},
     "websearch": {{"sig": "websearch(query, count, domains, fresh, freshness, provider)", "desc": "Search the web."}},
 }}
 
@@ -588,7 +587,6 @@ def write(**kwargs): return _call("write", kwargs)
 def bash(**kwargs): return _call("bash", kwargs)
 def background(**kwargs): return _call("background", kwargs)
 def find(**kwargs): return _call("find", kwargs)
-def readurl(**kwargs): return _call("readurl", kwargs)
 def websearch(**kwargs): return _call("websearch", kwargs)
 
 def parallel(calls, max_workers=4):

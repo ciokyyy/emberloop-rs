@@ -1,1 +1,1 @@
-Read a file. `path` is resolved inside the Project root; `offset` starts at line 1; `limit` caps the lines. Plain text only, 2 MiB cap, numbered lines.
+Read a file or a URL. `path` is resolved inside the Project root; an `http://`, `https://` or `www.` target is fetched as Markdown instead of read from disk. `offset` starts at line 1; `limit` caps the lines. Plain text only, 2 MiB cap, numbered lines.

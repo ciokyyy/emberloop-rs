@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use clap::{Parser, Subcommand};
 use emberloop_core::context::{Context, ContextError, Plugin};
-use emberloop_core::events::EventBus;
+use emberloop_core::events::{EventBus, EventKind, SessionEvent};
 use harness::HarnessWiring;
 use harness_agy::AgyHarness;
 use harness_pi::PiHarness;
@@ -28,6 +28,7 @@ use tools::{McpServer, ToolConfig, Toolbox};
 pub mod login;
 pub mod runner;
 pub mod tooldisplay;
+pub mod update;
 
 pub fn is_pi_model(model: Option<&str>) -> bool {
     model.is_some_and(|model| model.starts_with("opencode-go/"))
@@ -235,6 +236,21 @@ pub enum Command {
         #[arg(long)]
         spill: PathBuf,
     },
+    /// Install the newest release under `releases/` and switch `current` to it.
+    Update {
+        /// Release manifest; defaults to EMBERLOOP_UPDATE_URL or the GitHub release.
+        #[arg(long)]
+        manifest: Option<String>,
+        /// Session to resume once the new binary starts.
+        #[arg(long)]
+        session: Option<String>,
+        /// Report the version available without installing it.
+        #[arg(long)]
+        check: bool,
+        /// Point `current` at the release before it instead of fetching one.
+        #[arg(long)]
+        rollback: bool,
+    },
 }
 
 pub struct Daemon {
@@ -247,6 +263,8 @@ pub struct Daemon {
     pub proxy_state: ProxyState,
     harness: Arc<dyn harness::Harness>,
     _watcher: PromptWatcher,
+    /// The Session to prompt once the listener is up after an update.
+    resume: Option<(Arc<runner::SessionRunner>, String, String)>,
 }
 
 impl Daemon {
@@ -300,6 +318,8 @@ impl Daemon {
         )
         .with_models(models);
         app_state.models.spawn_refresher();
+
+        let updated = announce_update(&app_state, &events, &data_root).await;
         let mut proxy_config = ProxyConfig::new(random_secret());
         if let Some(upstream) = &config.upstream {
             proxy_config = proxy_config.with_upstream(upstream.clone());
@@ -339,6 +359,14 @@ impl Daemon {
             Arc::clone(&app_state.event_logs),
             Some(config.config_root.join("accounts/agy/default")),
         ));
+        let resume = updated.and_then(|pending| {
+            let session = pending.session.clone()?;
+            Some((
+                Arc::clone(&runner),
+                session,
+                update::resume_prompt(&pending),
+            ))
+        });
         app_state = app_state.with_driver(runner).with_provider_login(login);
         api::persist::spawn_persister(app_state.clone());
 
@@ -354,6 +382,7 @@ impl Daemon {
             proxy_state,
             harness,
             _watcher: watcher,
+            resume,
         })
     }
 
@@ -415,7 +444,10 @@ impl Daemon {
             return Ok(None);
         };
         let token = self.token_for(session_id);
-        let proxy_url = format!("http://{}:{}/p/{token}", self.config.host, self.config.port);
+        let proxy_url = format!(
+            "http://{}:{}/proxy/{token}",
+            self.config.host, self.config.port
+        );
         let spill = self.data_root.session_spill_dir(session_id);
         let mcp_command = daemon_exe().map(|exe| {
             vec![
@@ -443,6 +475,14 @@ impl Daemon {
         let app = self.router();
         let listener = listen(&self.config).await?;
         warn_if_remote(&self.config);
+        if let Some((runner, session, prompt)) = self.resume.clone() {
+            tokio::spawn(async move {
+                use api::driver::SessionDriver;
+                if let Err(error) = runner.wake(&session, &prompt).await {
+                    tracing::warn!(%error, %session, "could not re-prompt the Session after the update");
+                }
+            });
+        }
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())
             .await?;
@@ -559,7 +599,10 @@ fn random_secret() -> Vec<u8> {
 
 async fn static_asset(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
-    if path.starts_with("api/") || path.starts_with("p/") {
+    // `api/` is never part of the app: an unknown API path is a 404, not the shell. Every other path
+    // falls back to the shell, which is how a deep link like `/p/<project>/s/<session>` survives a
+    // refresh.
+    if path.starts_with("api/") {
         return StatusCode::NOT_FOUND.into_response();
     }
     let requested = if path.is_empty() { "index.html" } else { path };
@@ -596,6 +639,130 @@ fn content_type(path: &str) -> &'static str {
         Some("woff") => "font/woff",
         _ => "application/octet-stream",
     }
+}
+
+/// announce_update reads the marker a swap left behind and says so once, on the Session that asked
+/// for it: the harness resume token in meta.json is what carries the conversation across.
+async fn announce_update(
+    app_state: &AppState,
+    events: &EventBus,
+    data_root: &DataRoot,
+) -> Option<update::PendingUpdate> {
+    let pending = update::take_pending(data_root.root())?;
+    tracing::info!(from = %pending.from, to = %pending.to, session = ?pending.session, "binary updated");
+    if let Some(ref session_id) = pending.session {
+        store_resent_notice(app_state, events, session_id, &pending).await;
+    }
+    Some(pending)
+}
+
+/// The notice is a normal Session event, so it lands in the transcript like any other and survives
+/// a reload: the app shows the update where the conversation continues.
+async fn store_resent_notice(
+    app_state: &AppState,
+    events: &EventBus,
+    session_id: &str,
+    pending: &update::PendingUpdate,
+) {
+    let stored = match app_state.get_event_log(session_id).await {
+        Ok(log) => log
+            .append(update_notice(session_id, pending))
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    match stored {
+        Ok(stored) => events.publish(stored),
+        Err(error) => tracing::warn!(%error, %session_id, "update notice not stored"),
+    }
+}
+
+fn update_notice(session_id: &str, pending: &update::PendingUpdate) -> SessionEvent {
+    SessionEvent::new(
+        session_id.to_string(),
+        0,
+        EventKind::Notice,
+        pending.notice(),
+    )
+}
+
+/// What `emberloop update` was asked to do.
+#[derive(Debug, Clone)]
+pub struct UpdateRequest {
+    pub manifest_url: String,
+    pub session: Option<String>,
+    pub check: bool,
+    pub rollback: bool,
+    pub data_root: PathBuf,
+}
+
+/// run_update installs the newest release under `releases/` and switches `current` to it. Inside
+/// a Session it only queues the request and tells the model to go idle: the daemon installs,
+/// restarts and re-prompts that Session once nothing is running.
+pub async fn run_update(request: UpdateRequest) -> anyhow::Result<()> {
+    let root = update::install_root();
+    let launcher = update::launcher_path();
+    if request.rollback {
+        let version = update::rollback(&root)?;
+        println!("rolled back to {version}; restart the daemon to run it");
+        return Ok(());
+    }
+    let latest = update::fetch(&request.manifest_url).await?;
+    if !update::is_newer(&latest.version, update::VERSION) {
+        println!("emberloop {} is up to date", update::VERSION);
+        return Ok(());
+    }
+    let artifact = latest.artifact().ok_or_else(|| {
+        anyhow::anyhow!(
+            "release {} has no artifact for {}",
+            latest.version,
+            update::target()
+        )
+    })?;
+    if request.check {
+        println!(
+            "{} -> {} available: {}",
+            update::VERSION,
+            latest.version,
+            artifact.url
+        );
+        return Ok(());
+    }
+    let inside = update::in_session(
+        std::env::var_os("EMBERLOOP_SESSION_DIR")
+            .map(PathBuf::from)
+            .as_deref(),
+    );
+    if let Some(found) = &inside {
+        let queued = update::InstallRequest {
+            to: latest.version.clone(),
+            artifact: artifact.clone(),
+            session: request.session.or(Some(found.id.clone())),
+        };
+        update::write_request(&found.data_root, &queued)?;
+        println!(
+            "{}",
+            update::installed_message(update::VERSION, &latest.version, true)
+        );
+        return Ok(());
+    }
+    update::install(artifact, &latest.version, &root).await?;
+    update::activate(&root, &latest.version)?;
+    update::link_launcher(&launcher, &root)?;
+    update::prune(&root, 3)?;
+    update::write_pending(
+        &request.data_root,
+        &update::PendingUpdate {
+            from: update::VERSION.to_string(),
+            to: latest.version.clone(),
+            session: request.session,
+        },
+    )?;
+    println!(
+        "{}",
+        update::installed_message(update::VERSION, &latest.version, false)
+    );
+    Ok(())
 }
 
 #[cfg(test)]

@@ -31,6 +31,13 @@ describe('motionParams', () => {
     expect(easing(0.5)).toBeGreaterThan(0.5);
   });
 
+  it('reads a token the minifier rewrote in seconds', () => {
+    root.setProperty('--dur-standard', '.18s');
+    root.setProperty('--dur-emphasis', '.32s');
+    expect(motionParams('standard').duration).toBe(180);
+    expect(motionParams('emphasis').duration).toBe(320);
+  });
+
   it('is zero under reduced motion, also when turned on after the first read', () => {
     setTokens();
     expect(motionParams('standard').duration).toBe(180);

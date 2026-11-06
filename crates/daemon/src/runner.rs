@@ -25,7 +25,7 @@ pub struct SessionRunner {
     proxy_base: String,
     logs: Arc<RwLock<HashMap<String, EventLog>>>,
     account_home: Option<std::path::PathBuf>,
-    handles: Mutex<HashMap<String, Arc<Handle>>>,
+    handles: Arc<Mutex<HashMap<String, Arc<Handle>>>>,
 }
 
 fn log_failure(error: Option<impl std::fmt::Display>, what: &str) {
@@ -64,7 +64,7 @@ impl SessionRunner {
             proxy_base,
             logs,
             account_home,
-            handles: Mutex::new(HashMap::new()),
+            handles: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -87,7 +87,7 @@ impl SessionRunner {
         });
         HarnessWiring {
             proxy_url: format!(
-                "{}/p/{}",
+                "{}/proxy/{}",
                 self.proxy_base.trim_end_matches('/'),
                 self.proxy.token_for(session_id)
             ),
@@ -174,6 +174,7 @@ impl SessionRunner {
             self.data_root.clone(),
             self.steers.clone(),
             project.root.clone(),
+            Arc::clone(&self.handles),
         ));
         Ok(handle)
     }
@@ -292,6 +293,7 @@ async fn pump(
     data_root: DataRoot,
     steers: SteerQueues,
     project_root: std::path::PathBuf,
+    handles: Arc<Mutex<HashMap<String, Arc<Handle>>>>,
 ) {
     let mut stream = handle.session.events();
     let mut tracker = ToolTracker::default();
@@ -319,6 +321,7 @@ async fn pump(
         }
         if turn_over {
             drain_notices(&data_root, &steers, &session_id).await;
+            apply_pending_update(&data_root, &handles, &events, &session_id).await;
             let waker = SessionWaker {
                 handle: Arc::clone(&handle),
                 session_id: session_id.clone(),
@@ -458,4 +461,45 @@ async fn drain_notices(data_root: &DataRoot, steers: &SteerQueues, session_id: &
             queue.enqueue(SteerKind::Notice, message).await;
         }
     }
+}
+
+/// Every turn end checks for an update a model asked for. It runs only when no Session has a turn
+/// running, so the restart never cuts a model off; the last Session to go idle triggers it.
+async fn apply_pending_update(
+    data_root: &DataRoot,
+    handles: &Mutex<HashMap<String, Arc<Handle>>>,
+    events: &EventBus,
+    session_id: &str,
+) {
+    if crate::update::read_request(data_root.root()).is_none() {
+        return;
+    }
+    if handles
+        .lock()
+        .await
+        .values()
+        .any(|handle| handle.queue.is_turn_active())
+    {
+        return;
+    }
+    let root = crate::update::install_root();
+    match crate::update::apply_request(&root, data_root.root()).await {
+        Ok(Some(_)) => restart_into(&root),
+        Ok(None) => {}
+        Err(error) => events.publish(SessionEvent::new(
+            session_id,
+            0,
+            EventKind::Error,
+            serde_json::json!({ "message": format!("update failed: {error}") }),
+        )),
+    }
+}
+
+fn restart_into(root: &std::path::Path) {
+    log_failure(
+        crate::update::link_launcher(&crate::update::launcher_path(), root).err(),
+        "launcher not linked",
+    );
+    let error = crate::update::reexec(root);
+    tracing::error!(%error, "restart into the new build failed");
 }

@@ -198,6 +198,10 @@ impl SteerQueue {
         self.turn_active.store(active, Ordering::SeqCst);
     }
 
+    pub fn is_turn_active(&self) -> bool {
+        self.turn_active.load(Ordering::SeqCst)
+    }
+
     pub async fn end_request(&self) {
         let _gate = self.gate.lock().await;
         self.in_flight.store(false, Ordering::SeqCst);

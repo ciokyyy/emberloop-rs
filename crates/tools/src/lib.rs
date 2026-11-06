@@ -15,6 +15,7 @@ pub mod read;
 pub mod readurl;
 pub mod seen;
 pub mod tag;
+pub mod todo;
 pub mod websearch;
 pub mod write;
 use std::io;
@@ -172,7 +173,7 @@ impl Toolbox {
                     read::run(self, args)
                 }
             }
-            "readurl" => readurl::run(self, args).await,
+            "todo" => todo::run(self, args),
             "grep" => grep::run(self, args),
             "git" => git::run(self, args).await,
             "check" => check::run(self, args).await,

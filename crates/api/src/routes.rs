@@ -772,6 +772,14 @@ pub fn build_router(state: AppState) -> Router {
                 },
             ),
         )
+        .route(
+            "/api/sessions/{id}/history",
+            get(crate::sse::session_history_handler),
+        )
+        .route(
+            "/api/version",
+            get(|| async { Json(serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })) }),
+        )
         .route("/api/settings", get(get_settings).put(update_settings))
         .route("/api/models", get(list_models))
         .route("/api/models/refresh", post(refresh_models))

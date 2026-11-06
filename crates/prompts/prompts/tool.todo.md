@@ -1,0 +1,1 @@
+Replace the plan for this turn. `todos` is the whole ordered list; each entry has `content` and an optional `status` of `pending`, `in_progress` or `completed` (default `pending`). Rewrite the list each time so the checklist always matches what is left; an empty list clears it.

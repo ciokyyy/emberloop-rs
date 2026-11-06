@@ -1,3 +1,4 @@
+use crate::blocks::BlockWindow;
 use emberloop_core::events::SessionEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -189,9 +190,21 @@ impl EventLog {
         Ok(events)
     }
 
-    /// Reads only as many newest segments as the window needs.
-    pub async fn tail(&self, limit: usize) -> Result<Vec<SessionEvent>, EventLogError> {
-        if limit == 0 {
+    /// The newest `blocks` blocks of the feed (see `blocks.rs`), oldest event first. Reads only as
+    /// many newest segments as the window needs.
+    pub async fn tail(&self, blocks: usize) -> Result<Vec<SessionEvent>, EventLogError> {
+        self.page(u64::MAX, blocks).await
+    }
+
+    /// page returns the newest `blocks` blocks older than `before`, oldest event first: the page
+    /// behind the tail window, read from the newest segment backwards so its cost scales with the
+    /// page, not with the Session's age.
+    pub async fn page(
+        &self,
+        before: u64,
+        blocks: usize,
+    ) -> Result<Vec<SessionEvent>, EventLogError> {
+        if blocks == 0 {
             return Ok(Vec::new());
         }
         let mut names = {
@@ -202,7 +215,8 @@ impl EventLog {
                 .map(|segment| segment.name.clone())
                 .collect::<Vec<_>>()
         };
-        let mut events = VecDeque::with_capacity(limit);
+        let mut window = BlockWindow::new(blocks);
+        let mut events = VecDeque::new();
         while let Some(name) = names.pop() {
             let text = tokio::fs::read_to_string(self.dir.join(name)).await?;
             let mut segment_events = text
@@ -211,10 +225,13 @@ impl EventLog {
                 .filter_map(|line| serde_json::from_str::<SessionEvent>(line).ok())
                 .collect::<VecDeque<_>>();
             while let Some(event) = segment_events.pop_back() {
-                events.push_front(event);
-                if events.len() == limit {
+                if event.seq >= before {
+                    continue;
+                }
+                if !window.admit(&event) {
                     return Ok(events.into_iter().collect());
                 }
+                events.push_front(event);
             }
         }
         Ok(events.into_iter().collect())

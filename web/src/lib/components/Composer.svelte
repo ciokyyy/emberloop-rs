@@ -239,11 +239,5 @@
         ><Icon name="arrow-up" size={16} /></button>
       </div>
     </div>
-
-    <div class="mt-1.5 px-1 text-[12px] text-fg-3">
-      {working
-        ? 'Working. A steer is injected at the next request, or sent as a prompt if the turn ends first.'
-        : ''}
-    </div>
   </div>
 </div>

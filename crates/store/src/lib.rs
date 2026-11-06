@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 pub mod archive;
 pub mod blobs;
+mod blocks;
 pub mod coalesce;
 pub mod data_root;
 pub mod event_log;

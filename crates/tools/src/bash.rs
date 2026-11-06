@@ -53,6 +53,9 @@ pub(crate) async fn foreground(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    if let Some(session_dir) = toolbox.spill_dir().parent() {
+        cmd.env("EMBERLOOP_SESSION_DIR", session_dir);
+    }
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = cmd.spawn()?;

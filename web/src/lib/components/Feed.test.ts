@@ -36,3 +36,33 @@ describe('Feed motion', () => {
     expect(animate).not.toHaveBeenCalled();
   });
 });
+
+describe('queued steer', () => {
+  const at = (view: { container: HTMLElement }, text: string) => view.container.textContent!.indexOf(text);
+  const items = (route: 'pending' | 'injected') =>
+    [
+      { id: 'a', kind: 'assistant', text: 'first' },
+      { id: 's', kind: 'steer', text: 'queued words', route },
+      { id: 'b', kind: 'assistant', text: 'last' }
+    ] as FeedItem[];
+
+  it('waits at the bottom of the feed until it is delivered', async () => {
+    const view = render(Feed, { feed: state(items('pending')) });
+    expect(at(view, 'queued words')).toBeGreaterThan(at(view, 'last'));
+    await view.rerender({ feed: state(items('injected')) });
+    expect(at(view, 'queued words')).toBeGreaterThan(at(view, 'first'));
+    expect(at(view, 'queued words')).toBeLessThan(at(view, 'last'));
+  });
+});
+
+describe('paging', () => {
+  it('offers an older page only while there is one, and asks for it', async () => {
+    const onloadmore = vi.fn(async () => {});
+    const view = render(Feed, { feed: state([msg('a')]), hasMore: false, onloadmore });
+    expect(view.queryByTestId('load-earlier')).toBeNull();
+
+    await view.rerender({ feed: state([msg('a')]), hasMore: true, onloadmore });
+    await view.getByTestId('load-earlier').click();
+    expect(onloadmore).toHaveBeenCalledTimes(1);
+  });
+});

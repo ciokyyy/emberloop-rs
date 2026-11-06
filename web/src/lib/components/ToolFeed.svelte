@@ -5,7 +5,7 @@
   import { collapse } from '$lib/motion';
   import { compactFeed } from '$lib/compactFeed';
   import ToolBody from './ToolBody.svelte';
-  import { primaryArg } from '$lib/toolfeed';
+  import { bareName, primaryArg } from '$lib/toolfeed';
   import type { ToolRun } from '$lib/toolRuns';
   import { highlightShell } from '$lib/highlight';
   let { runs, options = {} }: { runs: ToolRun[]; options?: Record<string, unknown> } = $props();
@@ -174,7 +174,7 @@
 
       {#if isRowExpanded(`group-${idx}-child-${cIdx}`, false)}
         <div transition:collapse|global class="expanded-box min-w-0 max-w-full overflow-x-auto [overflow-wrap:anywhere] bg-[#1c1c1e] border border-[#2c2c2e] rounded-lg p-2.5 my-1 font-mono text-[11.5px] text-[var(--fg-1)]">
-          <div class="text-[var(--fg-3)] mb-1 select-text">$ {primaryArg(child.run?.name, child.run?.input) || child.run?.name}</div>
+          <div class="text-[var(--fg-3)] mb-1 select-text">$ {primaryArg(child.run?.name, child.run?.input) || bareName(child.run?.name)}</div>
           <ToolBody text={child.run?.output || '(no output)'} path={child.target} />
         </div>
       {/if}
@@ -497,7 +497,7 @@
 {#snippet execChild(child: any)}
   <div class="child-row border-l-2 border-[var(--border)] pl-2 py-0.5 text-xs">
     <div class="flex items-center gap-1.5 text-[var(--fg-2)] font-mono">
-      <span class="font-semibold text-[var(--fg-3)]">{child.name}</span>
+      <span class="font-semibold text-[var(--fg-3)]">{bareName(child.name)}</span>
       {#if child.overlap}
         <span class="px-1 py-0.2 rounded text-[10px] bg-[var(--surface-3)] text-muted-foreground">parallel</span>
       {/if}

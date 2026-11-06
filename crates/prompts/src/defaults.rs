@@ -15,6 +15,6 @@ pub const TOOL_BACKGROUND: &str = include_str!("../prompts/tool.background.md");
 pub const TOOL_GREP: &str = include_str!("../prompts/tool.grep.md");
 pub const TOOL_WRITE: &str = include_str!("../prompts/tool.write.md");
 pub const TOOL_FIND: &str = include_str!("../prompts/tool.find.md");
-pub const TOOL_READURL: &str = include_str!("../prompts/tool.readurl.md");
 pub const TOOL_WEBSEARCH: &str = include_str!("../prompts/tool.websearch.md");
 pub const TOOL_EXECUTE: &str = include_str!("../prompts/tool.execute.md");
+pub const TOOL_TODO: &str = include_str!("../prompts/tool.todo.md");

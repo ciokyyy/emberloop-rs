@@ -12,6 +12,22 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_cli(&cli);
     match command {
         Some(Command::Mcp { root, spill }) => emberloop_daemon::run_mcp(root, spill).await,
+        Some(Command::Update {
+            manifest,
+            session,
+            check,
+            rollback,
+        }) => {
+            emberloop_daemon::run_update(emberloop_daemon::UpdateRequest {
+                manifest_url: manifest
+                    .unwrap_or_else(emberloop_daemon::update::default_manifest_url),
+                session,
+                check,
+                rollback,
+                data_root: config.data_root.clone(),
+            })
+            .await
+        }
         None => emberloop_daemon::Daemon::open(config).await?.serve().await,
     }
 }

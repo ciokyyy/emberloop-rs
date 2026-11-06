@@ -21,7 +21,7 @@ export function runOf(item: FeedItem): ToolRun {
     return { name: 'thinking', input: '', output: item.text ?? '', status: 'completed', elapsedMs: 0, thinking: true };
   }
   return {
-    name: item.name || item.tool || '',
+    name: item.tool || item.name || '',
     input: item.input ?? '',
     output: item.output ?? item.body ?? '',
     status: item.status ?? (item.finished ? 'completed' : 'running'),

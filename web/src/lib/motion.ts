@@ -49,8 +49,16 @@ export function prefersReducedMotion(): boolean {
 const token = (name: string) =>
   typeof document === 'undefined' ? '' : getComputedStyle(document.documentElement).getPropertyValue(name);
 
+// Lightningcss minifies `180ms` to `.18s`, so the unit is read, not assumed.
+function durationMs(value: string) {
+  const n = Number.parseFloat(value);
+  if (!Number.isFinite(n)) return 0;
+  const unit = value.trim();
+  return unit.endsWith('ms') ? n : unit.endsWith('s') ? n * 1000 : n;
+}
+
 export function motionParams(step: Step = 'standard') {
-  const ms = Number.parseFloat(token(DURATION_TOKENS[step]));
+  const ms = durationMs(token(DURATION_TOKENS[step]));
   const duration = prefersReducedMotion() || !(ms > 0) ? 0 : ms;
   return { duration, easing: cubicBezier(token('--ease-smooth')) };
 }

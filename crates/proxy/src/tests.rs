@@ -258,7 +258,7 @@ async fn send(state: &ProxyState, token: &str, path: &str, body: Value) -> (Stat
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/p/{token}/{path}"))
+                .uri(format!("/proxy/{token}/{path}"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body.to_string()))
                 .unwrap(),
@@ -664,7 +664,7 @@ async fn client_disconnect_drops_the_upstream_stream() {
     let request = Request::builder()
         .method("POST")
         .uri(format!(
-            "/p/{}/v1internal:streamGenerateContent",
+            "/proxy/{}/v1internal:streamGenerateContent",
             fixture.token
         ))
         .header(header::CONTENT_TYPE, "application/json")
@@ -874,7 +874,7 @@ async fn pi_chat_requests_inject_prompts_tools_and_steers_and_are_metered() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/p/{}/v1/chat/completions", fixture.token))
+                .uri(format!("/proxy/{}/v1/chat/completions", fixture.token))
                 .header(header::AUTHORIZATION, "Bearer sk-pi")
                 .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
                 .unwrap(),
@@ -993,7 +993,7 @@ async fn pi_anthropic_and_responses_wires_inject_prompts_tools_steers_and_compre
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/p/{}/v1/v1/messages", fixture.token))
+                .uri(format!("/proxy/{}/v1/v1/messages", fixture.token))
                 .body(Body::from(serde_json::to_vec(&anthropic_req).unwrap()))
                 .unwrap(),
         )
@@ -1046,7 +1046,7 @@ async fn pi_anthropic_and_responses_wires_inject_prompts_tools_steers_and_compre
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/p/{}/v1/responses", fixture.token))
+                .uri(format!("/proxy/{}/v1/responses", fixture.token))
                 .body(Body::from(serde_json::to_vec(&responses_req).unwrap()))
                 .unwrap(),
         )
@@ -1133,7 +1133,7 @@ async fn openai_chat_streaming_proxy_tool_is_swallowed_and_followed_up() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/p/{}/v1/chat/completions", fixture.token))
+                .uri(format!("/proxy/{}/v1/chat/completions", fixture.token))
                 .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
                 .unwrap(),
         )
@@ -1216,7 +1216,7 @@ async fn anthropic_streaming_proxy_tool_is_swallowed_and_followed_up() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/p/{}/v1/v1/messages", fixture.token))
+                .uri(format!("/proxy/{}/v1/v1/messages", fixture.token))
                 .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
                 .unwrap(),
         )

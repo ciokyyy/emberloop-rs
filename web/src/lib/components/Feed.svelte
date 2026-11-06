@@ -1,40 +1,98 @@
 <script lang="ts">
-  import type { FeedState } from '$lib/feed';
+  import { tick } from 'svelte';
+  import { get } from 'svelte/store';
+  import { createVirtualizer } from '@tanstack/svelte-virtual';
+  import type { FeedItem, FeedState } from '$lib/feed';
   import { renderMarkdown } from '$lib/markdown';
   import { fadeAt, rise, slideUp } from '$lib/motion';
   import { segments } from '$lib/toolRuns';
   import ToolFeed from './ToolFeed.svelte';
 
-  let { feed }: { feed: FeedState } = $props();
-
+  let {
+    feed,
+    hasMore = false,
+    loadingMore = false,
+    onloadmore = null
+  }: {
+    feed: FeedState;
+    hasMore?: boolean;
+    loadingMore?: boolean;
+    onloadmore?: (() => Promise<void>) | null;
+  } = $props();
   let scroller: HTMLDivElement;
   let stick = $state(true);
 
   const routeLabel = (route?: string) =>
     route === 'injected' ? 'injected' : route === 'idle' ? 'sent at idle' : 'queued';
 
-  // The first render and a history that lands in one update (a Session switch) appear at once; only
-  // items that stream in animate. Plain sets: the effect runs before the DOM update.
+  // Only an arrival animates. A row the virtual window remounts on the way back up has been on
+  // screen before, so `arrived` holds just the items this update added; plain sets, because the
+  // effect runs before the DOM update that reads them.
   const known = new Set<string>();
-  const instant = new Set<string>();
+  let arrived = $state<Set<string>>(new Set());
   let first = true;
   $effect.pre(() => {
     const fresh = feed.items.filter((item) => !known.has(item.id));
-    if (first || fresh.length > 2) fresh.forEach((item) => instant.add(item.id));
+    // The first render and a history that lands in one update (a Session switch or an older page)
+    // appear at once; only items that stream in animate.
+    arrived = first || fresh.length > 2 ? new Set() : new Set(fresh.map((item) => item.id));
     fresh.forEach((item) => known.add(item.id));
     first = false;
   });
 
-  const segs = $derived(segments(feed.items));
+  // A queued steer waits at the bottom of the feed, out of the run it is about to join; the delivery
+  // event drops it back into its own place in the log.
+  const pendingSteer = (item: FeedItem) => item.kind === 'steer' && item.route === 'pending';
+  const pinned = $derived(feed.items.filter(pendingSteer));
+  const segs = $derived(segments(feed.items.filter((item) => !pendingSteer(item))));
+
+  // Rows are absolutely placed by the virtualizer, so only the visible window is in the DOM and a
+  // Session with thousands of blocks scrolls like a short one.
+  const virtualizer = createVirtualizer({
+    count: 0,
+    getScrollElement: () => scroller,
+    estimateSize: () => 110,
+    overscan: 6,
+    getItemKey: (index: number) => {
+      const seg = segs[index];
+      return seg ? (seg.type === 'item' ? seg.item.id : seg.id) : index;
+    }
+  });
+
+  // setOptions writes the virtualizer store, so it is read unsubscribed here: subscribing in the
+  // same effect would re-run it on its own write.
+  $effect(() => {
+    get(virtualizer).setOptions({ count: segs.length });
+  });
 
   function onscroll() {
     const el = scroller;
     stick = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   }
 
+  /** Register a mounted row with the virtualizer so its real height is recorded, and drop it on
+   *  unmount. An action, because a row element is what the API wants, not a bindable. */
+  const measureRow = (node: HTMLElement) => {
+    const instance = get(virtualizer);
+    instance.measureElement(node);
+    return { destroy: () => instance.measureElement(null) };
+  };
+
   function toTail() {
     stick = true;
     scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  // A page arrives above the viewport, so the height that grew is added to scrollTop: the row that
+  // was under the eye stays under the eye instead of the feed jumping to the top.
+  async function loadEarlier() {
+    const el = scroller;
+    if (!el || !onloadmore) return;
+    stick = false;
+    const before = el.scrollHeight;
+    await onloadmore();
+    await tick();
+    el.scrollTop += el.scrollHeight - before;
   }
 
   $effect(() => {
@@ -43,85 +101,51 @@
     feed.items.at(-1)?.text;
     if (stick && scroller) {
       queueMicrotask(() => {
-        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+        if (stick && scroller) scroller.scrollTop = scroller.scrollHeight;
       });
     }
   });
 </script>
 
 <div class="relative min-h-0 flex-1">
-  <div bind:this={scroller} {onscroll} class="h-full overflow-y-auto px-4 py-4">
-    <div class="mx-auto flex max-w-[760px] flex-col gap-1">
-      {#each segs as seg (seg.type === 'item' ? seg.item.id : seg.id)}
-        {#if seg.type === 'tools'}
-          <div in:rise|global={{ skip: instant.has(seg.id) }}>
-            <ToolFeed runs={seg.runs} />
-          </div>
-        {:else}
-        {@const item = seg.item}
-        {#if item.kind === 'user'}
-          <div class="my-1.5 self-end" in:slideUp|global={{ skip: instant.has(item.id) }}>
-            <div class="max-w-[85vw] rounded-2xl bg-surface-3 px-4 py-2.5 sm:max-w-[85%]">
-              <p class="whitespace-pre-wrap">{item.text}</p>
-              {#if item.imagesCount}
-                <div class="mt-2 flex gap-2">
-                  <div
-                    class="grid h-16 w-16 place-items-center rounded-lg border border-border bg-surface-1 px-1 text-center text-[11px] text-fg-3"
-                  >{item.imagesCount} image{item.imagesCount === 1 ? '' : 's'}</div>
-                </div>
-              {/if}
-            </div>
-          </div>
-        {:else if item.kind === 'assistant'}
-          <div class="md my-1.5 max-w-[92%] text-[15px]" in:rise|global={{ skip: instant.has(item.id) }}>
-            {@html renderMarkdown(item.text ?? '')}
-            {#if item.live}<span class="pulse text-fg-3">▍</span>{/if}
-          </div>
-        {:else if item.kind === 'compression'}
-          <div
-            class="my-2 flex items-center gap-2.5 rounded-xl border border-border bg-surface-1 px-3 py-2 text-[13px] text-fg-2"
-            in:rise|global={{ skip: instant.has(item.id) }}
-          >
-            <span class="glyph text-tool-compress">⇲</span>
-            <span>{item.text}</span>
-          </div>
-        {:else if item.kind === 'steer'}
-          <div class="my-1.5 self-end text-right" in:slideUp|global={{ skip: instant.has(item.id) }}>
-            <div class="inline-block max-w-[85%] rounded-2xl bg-surface-3 px-4 py-2 text-left">
-              {item.text}
-            </div>
-            <div class="mt-0.5 text-[12px] text-fg-3">
-              Steer ·
-              <span class={item.route === 'pending' ? 'text-status-needs' : 'text-status-done'}>
-                {routeLabel(item.route)}
-              </span>
-            </div>
-          </div>
-        {:else if item.kind === 'notice'}
-          <div
-            class="my-1.5 flex items-center gap-2 rounded-xl border border-border bg-surface-1 px-3 py-2 text-[13px]"
-            in:fadeAt|global={{ skip: instant.has(item.id) }}
-          >
-            <span class="min-w-0 flex-1">{item.text}</span>
-            <span
-              class={`chip shrink-0 whitespace-nowrap ${item.route === 'pending' ? 'text-status-needs' : 'text-status-done'}`}
-            >{routeLabel(item.route)}</span>
-          </div>
-        {:else if item.kind === 'error'}
-          <div
-            class="my-2 rounded-xl border border-status-failed px-3 py-2 text-[13px]"
-            style="background:#2a2222;color:#ffb3ad"
-            in:rise|global={{ skip: instant.has(item.id) }}
-          >{item.text}</div>
-        {/if}
-        {/if}
+  {#if hasMore}
+    <button
+      class="btn absolute top-2 left-1/2 z-10 -translate-x-1/2 text-[12px] shadow-lg"
+      onclick={() => void loadEarlier()}
+      disabled={loadingMore}
+      data-testid="load-earlier"
+    >
+      {loadingMore ? 'Loading…' : 'Load earlier'}
+    </button>
+  {/if}
+
+  <div
+    bind:this={scroller}
+    {onscroll}
+    data-testid="feed-scroller"
+    class="h-full overflow-y-auto px-4 py-4"
+  >
+    <div class="relative mx-auto max-w-[760px]" style="height:{$virtualizer.getTotalSize()}px">
+      {#each $virtualizer.getVirtualItems() as row (row.key)}
+        <div
+          class="flex flex-col pb-0.5"
+          data-index={row.index}
+          use:measureRow
+          style="position:absolute;top:0;left:0;width:100%;transform:translateY({row.start}px)"
+        >
+          {@render segRow(segs[row.index])}
+        </div>
       {/each}
-      {#if feed.items.length === 0}
-        <p class="py-10 text-center text-[13px] text-fg-3">
-          No messages yet. Send a prompt to start the Session.
-        </p>
-      {/if}
     </div>
+
+    {#each pinned as item (item.id)}
+      {@render steerBubble(item)}
+    {/each}
+    {#if feed.items.length === 0}
+      <p class="py-10 text-center text-[13px] text-fg-3">
+        No messages yet. Send a prompt to start the Session.
+      </p>
+    {/if}
   </div>
 
   {#if !stick}
@@ -133,4 +157,77 @@
       Jump to latest ↓
     </button>
   {/if}
+
+{#snippet segRow(seg: ReturnType<typeof segments>[number])}
+  {#if seg.type === 'tools'}
+    <div in:rise|global={{ skip: !arrived.has(seg.id) }}>
+      <ToolFeed runs={seg.runs} />
+    </div>
+  {:else}
+    {@const item = seg.item}
+    {#if item.kind === 'user'}
+      <div class="my-1.5 self-end" in:slideUp|global={{ skip: !arrived.has(item.id) }}>
+        <div class="max-w-[85vw] rounded-2xl bg-surface-3 px-4 py-2.5 sm:max-w-[85%]">
+          <p class="whitespace-pre-wrap">{item.text}</p>
+          {#if item.imagesCount}
+            <div class="mt-2 flex gap-2">
+              <div
+                class="grid h-16 w-16 place-items-center rounded-lg border border-border bg-surface-1 px-1 text-center text-[11px] text-fg-3"
+              >{item.imagesCount} image{item.imagesCount === 1 ? '' : 's'}</div>
+            </div>
+          {/if}
+        </div>
+      </div>
+    {:else if item.kind === 'assistant'}
+      <div
+        class="md my-1.5 max-w-[92%] text-[15px]"
+        in:rise|global={{ skip: !arrived.has(item.id) }}
+      >
+        {@html renderMarkdown(item.text ?? '')}
+        {#if item.live}<span class="pulse text-fg-3">▍</span>{/if}
+      </div>
+    {:else if item.kind === 'compression'}
+      <div
+        class="my-2 flex items-center gap-2.5 rounded-xl border border-border bg-surface-1 px-3 py-2 text-[13px] text-fg-2"
+        in:rise|global={{ skip: !arrived.has(item.id) }}
+      >
+        <span class="glyph text-tool-compress">⇲</span>
+        <span>{item.text}</span>
+      </div>
+    {:else if item.kind === 'steer'}
+      {@render steerBubble(item)}
+    {:else if item.kind === 'notice'}
+      <div
+        class="my-1.5 flex items-center gap-2 rounded-xl border border-border bg-surface-1 px-3 py-2 text-[13px]"
+        in:fadeAt|global={{ skip: !arrived.has(item.id) }}
+      >
+        <span class="min-w-0 flex-1">{item.text}</span>
+        <span
+          class={`chip shrink-0 whitespace-nowrap ${item.route === 'pending' ? 'text-status-needs' : 'text-status-done'}`}
+        >{routeLabel(item.route)}</span>
+      </div>
+    {:else if item.kind === 'error'}
+      <div
+        class="my-2 rounded-xl border border-status-failed px-3 py-2 text-[13px]"
+        style="background:#2a2222;color:#ffb3ad"
+        in:rise|global={{ skip: !arrived.has(item.id) }}
+      >{item.text}</div>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet steerBubble(item: FeedItem)}
+  <div class="my-1.5 self-end text-right" in:slideUp|global={{ skip: !arrived.has(item.id) }}>
+    <div class="inline-block max-w-[85%] rounded-2xl bg-surface-3 px-4 py-2 text-left">
+      {item.text}
+    </div>
+    <div class="mt-0.5 text-[12px] text-fg-3">
+      Steer ·
+      <span class={item.route === 'pending' ? 'text-status-needs' : 'text-status-done'}>
+        {routeLabel(item.route)}
+      </span>
+    </div>
+  </div>
+{/snippet}
+
 </div>

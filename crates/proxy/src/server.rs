@@ -238,7 +238,7 @@ fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, ProxyError> {
 pub fn router(state: ProxyState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/p/{token}/{*rest}", any(handler))
+        .route("/proxy/{token}/{*rest}", any(handler))
         .with_state(state)
 }
 

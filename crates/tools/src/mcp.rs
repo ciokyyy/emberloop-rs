@@ -177,16 +177,25 @@ fn tool_specs() -> Vec<Value> {
             }
         },
         {
-            "name": "readurl",
-            "description": "Fetch a web URL as Markdown or plain text through a tiered reader.",
+            "name": "todo",
+            "description": "Replace the plan for this turn: an ordered checklist of what is left, in progress and done. Rewrite the whole list each time.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string"},
-                    "offset": {"type": "integer"},
-                    "limit": {"type": "integer"}
+                    "todos": {
+                        "type": "array",
+                        "description": "The whole list, in the order it should be read.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string"},
+                                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}
+                            },
+                            "required": ["content"]
+                        }
+                    }
                 },
-                "required": ["url"]
+                "required": ["todos"]
             }
         },
         {

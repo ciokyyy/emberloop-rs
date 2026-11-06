@@ -153,7 +153,7 @@ async fn acceptance_2_proxy_rejects_unsigned_and_tampered_tokens() {
     let (status, _) = request(
         &app,
         Method::POST,
-        "/p/not-a-token/v1internal:generateContent",
+        "/proxy/not-a-token/v1internal:generateContent",
         Some(generation_body("hi")),
     )
     .await;
@@ -163,7 +163,7 @@ async fn acceptance_2_proxy_rejects_unsigned_and_tampered_tokens() {
     let (status, _) = request(
         &app,
         Method::POST,
-        &format!("/p/{token}x/v1internal:generateContent"),
+        &format!("/proxy/{token}x/v1internal:generateContent"),
         Some(generation_body("hi")),
     )
     .await;
@@ -172,7 +172,7 @@ async fn acceptance_2_proxy_rejects_unsigned_and_tampered_tokens() {
     let (status, _) = request(
         &app,
         Method::POST,
-        &format!("/p/{token}/v1internal:generateContent"),
+        &format!("/proxy/{token}/v1internal:generateContent"),
         Some(generation_body("hi")),
     )
     .await;
@@ -193,7 +193,7 @@ async fn acceptance_7_prompt_pins_survive_a_config_edit_but_new_sessions_see_it(
     let (status, _) = request(
         &app,
         Method::POST,
-        &format!("/p/{token}/v1internal:generateContent"),
+        &format!("/proxy/{token}/v1internal:generateContent"),
         Some(generation_body("before")),
     )
     .await;
@@ -207,7 +207,7 @@ async fn acceptance_7_prompt_pins_survive_a_config_edit_but_new_sessions_see_it(
     let (status, _) = request(
         &app,
         Method::POST,
-        &format!("/p/{token}/v1internal:generateContent"),
+        &format!("/proxy/{token}/v1internal:generateContent"),
         Some(generation_body("after")),
     )
     .await;
@@ -225,7 +225,7 @@ async fn acceptance_7_prompt_pins_survive_a_config_edit_but_new_sessions_see_it(
     let (status, _) = request(
         &app,
         Method::POST,
-        &format!("/p/{new_token}/v1internal:generateContent"),
+        &format!("/proxy/{new_token}/v1internal:generateContent"),
         Some(generation_body("new")),
     )
     .await;
@@ -333,6 +333,20 @@ async fn spa_routes_fall_back_to_the_embedded_index() {
     assert!(String::from_utf8_lossy(&body).contains("<html"));
 
     let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/project-1/s/session-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("<html"));
+
+    let response = app
         .oneshot(
             Request::builder()
                 .uri("/api/does-not-exist")
@@ -376,7 +390,7 @@ async fn harness_wiring_carries_a_signed_proxy_url_and_mcp_command() {
         .await
         .unwrap()
         .unwrap();
-    assert!(wiring.proxy_url.contains("/p/"), "{}", wiring.proxy_url);
+    assert!(wiring.proxy_url.contains("/proxy/"), "{}", wiring.proxy_url);
     assert!(wiring
         .proxy_url
         .contains(&env.daemon.token_for(&session_id)));

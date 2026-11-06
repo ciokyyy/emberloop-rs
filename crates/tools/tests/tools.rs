@@ -376,6 +376,22 @@ fn bash_merges_output_and_reports_exit_code() {
 }
 
 #[test]
+fn bash_tells_its_command_which_session_it_runs_in() {
+    let fixture = setup();
+    let output = call(
+        &fixture,
+        "bash",
+        json!({"command": "printf %s \"$EMBERLOOP_SESSION_DIR\""}),
+    )
+    .expect("bash");
+    let session_dir = fixture.toolbox.spill_dir().parent().unwrap();
+    assert!(
+        output.contains(&session_dir.display().to_string()),
+        "{output}"
+    );
+}
+
+#[test]
 fn bash_timeout_kills_process_group() {
     let fixture = setup();
     let started = std::time::Instant::now();
@@ -483,7 +499,7 @@ fn mcp_serves_tools_and_errors() {
             "background",
             "write",
             "find",
-            "readurl",
+            "todo",
             "websearch",
             "git",
             "check",

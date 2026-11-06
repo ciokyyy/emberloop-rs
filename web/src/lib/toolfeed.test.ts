@@ -1,15 +1,33 @@
 import { describe, it, expect } from 'vitest';
 import {
   CHIP_LIMIT,
+  bareName,
   bodyKind,
   bodyLabel,
   family,
   paramChips,
   primaryArg,
   resultMeta,
+  shortTool,
   visibleChips,
   writtenContent,
 } from './toolfeed';
+
+describe('bareName', () => {
+  it('drops the MCP and agy prefixes, and leaves a plain name alone', () => {
+    expect(bareName('mcp__el__bash')).toBe('bash');
+    expect(bareName('mcp__graph__search_graph')).toBe('search_graph');
+    expect(bareName('el_read')).toBe('read');
+    expect(bareName('Bash')).toBe('Bash');
+    expect(bareName('')).toBe('');
+  });
+
+  it('shortens a name for the Working indicator', () => {
+    expect(shortTool('read')).toBe('read');
+    expect(shortTool('get_architecture')).toBe('get_architect…');
+    expect(shortTool('  ')).toBe('');
+  });
+});
 
 const j = (value: unknown) => JSON.stringify(value);
 

@@ -5,6 +5,7 @@ import { runOf, segments } from './toolRuns';
 const tool = (id: string, extra: Partial<FeedItem> = {}): FeedItem => ({
   id,
   kind: 'tool',
+  tool: 'read',
   name: 'mcp__el__read',
   input: '{"path":"a.rs"}',
   output: 'x',
@@ -26,12 +27,12 @@ describe('segments', () => {
     const out = segments(items);
     expect(out.map((s) => s.type)).toEqual(['item', 'tools', 'item', 'tools']);
     const block = out[1];
-    expect(block.type === 'tools' && block.runs.map((r) => r.name)).toEqual(['thinking', 'mcp__el__read', 'mcp__el__read']);
+    expect(block.type === 'tools' && block.runs.map((r) => r.name)).toEqual(['thinking', 'read', 'read']);
     expect(block.type === 'tools' && block.running).toBe(true);
   });
 
   it('maps a tool item to a run and marks thinking', () => {
-    expect(runOf(tool('t', { elapsedMs: 1200 }))).toMatchObject({ name: 'mcp__el__read', elapsedMs: 1200, status: 'completed' });
+    expect(runOf(tool('t', { elapsedMs: 1200 }))).toMatchObject({ name: 'read', elapsedMs: 1200, status: 'completed' });
     expect(runOf({ id: 'x', kind: 'thinking', text: 'why' })).toMatchObject({ thinking: true, output: 'why' });
   });
 });

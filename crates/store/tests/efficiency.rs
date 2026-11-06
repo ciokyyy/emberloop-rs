@@ -15,6 +15,15 @@ fn event(seq: u64, text: &str) -> SessionEvent {
     )
 }
 
+fn notice(seq: u64, text: &str) -> SessionEvent {
+    SessionEvent::new(
+        "ses_1",
+        seq,
+        EventKind::Notice,
+        serde_json::json!({"text": text}),
+    )
+}
+
 fn meta(id: &str, updated_at: u64) -> SessionMeta {
     SessionMeta {
         id: id.into(),
@@ -49,7 +58,7 @@ async fn tail_seeks_the_last_segment_and_never_parses_the_old_one() {
         .await
         .unwrap();
     for seq in 1..=40 {
-        log.append(event(seq, &"x".repeat(40))).await.unwrap();
+        log.append(notice(seq, &"x".repeat(40))).await.unwrap();
     }
     drop(log);
 

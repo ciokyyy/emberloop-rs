@@ -7,6 +7,7 @@ import type {
   PromptInfo,
   PromptText,
   Session,
+  SessionEvent,
   Settings
 } from './types';
 
@@ -117,9 +118,16 @@ export const api = {
       body: JSON.stringify({ text })
     }),
   deletePrompt: (id: string) =>
-    request<PromptInfo>(`/api/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    request<PromptInfo>(`/api/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  // history is one page older than `before`, oldest first: the client walks back from the tail
+  // window one page at a time, so a refresh never pays for the whole Session.
+  history: (id: string, before: number, limit = 8) =>
+    request<SessionEvent[]>(
+      `/api/sessions/${encodeURIComponent(id)}/history?before=${before}&limit=${limit}`
+    )
 };
 
-export function eventsUrl(sessionId: string, after = 0): string {
-  return `${base}/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`;
+export function eventsUrl(sessionId: string, after = 0, limit = 0): string {
+  const window = limit > 0 ? `&limit=${limit}` : '';
+  return `${base}/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}${window}`;
 }
