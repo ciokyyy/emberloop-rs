@@ -19,3 +19,9 @@ describe('contextMeter', () => {
     expect(formatTokens(950)).toBe('950');
   });
 });
+
+it('uses the chosen model window rather than the previous model’s response window', async () => {
+  const { chosenWindow } = await import('./contextMeter');
+  expect(chosenWindow(32768, 1000000)).toBe(32768);
+  expect(chosenWindow(0, 200000)).toBe(200000);
+});

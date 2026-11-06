@@ -16,6 +16,15 @@ pub trait SessionDriver: Send + Sync {
     async fn wake(&self, session_id: &str, text: &str) -> Result<(), String>;
     /// Start the Session without sending a prompt, so it can take a steer.
     async fn connect(&self, session_id: &str) -> Result<(), String>;
+    /// Apply a model and effort on an idle conversation. Failures must reach the caller.
+    async fn configure_model(
+        &self,
+        _session_id: &str,
+        _model: &str,
+        _effort: Option<&str>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     /// Update the thinking effort (`thought_level`) on a live Session if running.
     async fn set_thought_level(&self, _session_id: &str, _level: &str) -> Result<(), String> {
         Ok(())

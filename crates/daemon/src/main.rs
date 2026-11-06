@@ -11,7 +11,9 @@ async fn main() -> anyhow::Result<()> {
     let command = cli.command.clone();
     let config = Config::from_cli(&cli);
     match command {
-        Some(Command::Mcp { root, spill }) => emberloop_daemon::run_mcp(root, spill).await,
+        Some(Command::Mcp { root, spill }) => {
+            emberloop_daemon::run_mcp(root, spill, config.config_root.clone()).await
+        }
         Some(Command::Update {
             manifest,
             session,

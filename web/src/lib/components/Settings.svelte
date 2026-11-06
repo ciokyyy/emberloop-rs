@@ -35,6 +35,18 @@
     </div>
 
     <section class="flex flex-col gap-3">
+      <h3 class="text-[1.0625rem] font-semibold">Session titles</h3>
+      <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
+        <label class="flex items-center justify-between gap-4">
+          Generate titles automatically
+          <Switch label="Generate titles automatically" checked={settings.title_generation} onchange={(title_generation) => onsave({ ...settings, title_generation })} />
+        </label>
+        <ModelPicker label="Title model" models={[{ id: 'openrouter/openrouter/free', label: 'OpenRouter Free', provider: 'openrouter', source: 'pi', kind: 'chat', efforts: [], image_input: false, context_window: 0, stale: false, updated_at: 0 }, ...models.filter((model) => model.source === 'pi' && model.id !== 'openrouter/openrouter/free')]} value={settings.title_model} onchange={(title_model) => onsave({ ...settings, title_model })} />
+        <p class="text-[13px] text-fg-3">Uses saved provider credentials. Retries until saved. Manual titles stay unchanged.</p>
+      </div>
+    </section>
+
+    <section class="flex flex-col gap-3">
       <h3 class="text-[1.0625rem] font-semibold">Proxy</h3>
       <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
         <div class="flex items-center justify-between gap-4">

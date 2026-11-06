@@ -230,6 +230,7 @@ async fn fixture_config(
     let upstream = AxumRouter::new()
         .route("/v1internal:generateContent", post(fake_upstream))
         .route("/v1internal:streamGenerateContent", post(fake_upstream))
+        .layer(axum::extract::DefaultBodyLimit::max(128 * 1024 * 1024))
         .with_state(fake.clone());
     tokio::spawn(async move {
         axum::serve(listener, upstream).await.unwrap();
@@ -384,6 +385,9 @@ async fn injects_tools_prompts_and_meters_usage() {
     assert_eq!(event.data["outputTokens"], 7);
     // The meter carries the window the catalogue knows for the Session's model.
     assert_eq!(event.data["contextWindow"], 1_000_000);
+    assert!(event.data["breakdown"]["system"].as_u64().unwrap() > 0);
+    assert!(event.data["breakdown"]["toolDefinitions"].as_u64().unwrap() > 0);
+    assert!(event.data["breakdown"]["compression"].as_u64().unwrap() > 0);
 
     let meta = fixture.sessions.get("ses_1").await.unwrap();
     assert!(!meta.prompt_hashes.is_empty());
@@ -1345,7 +1349,7 @@ async fn openai_streaming_publishes_usage_even_when_the_client_stops_reading() {
         };
         let body = if round == 0 {
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_u1\",\"type\":\"function\",\"function\":{\"name\":\"compress\",\"arguments\":\"{\\\"start\\\":0,\\\"end\\\":1,\\\"summary\\\":\\\"folded intro\\\"}\"}}]}}]}\n\n\
-             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":55,\"completion_tokens\":2}}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":77,\"completion_tokens\":3}}\n\n\
              data: [DONE]\n\n"
                 .to_string()
         } else {
@@ -1399,11 +1403,17 @@ async fn openai_streaming_publishes_usage_even_when_the_client_stops_reading() {
     }
     drop(stream);
     let mut tokens = Vec::new();
+    let mut compressed = 0;
     while let Ok(event) = events.try_recv() {
         if event.kind == EventKind::Usage {
             tokens.push(event.data["inputTokens"].as_u64().unwrap());
+            compressed = event.data["breakdown"]["compression"].as_u64().unwrap();
         }
     }
+    assert!(
+        compressed > 0,
+        "the follow-up must refresh its breakdown even with identical provider usage"
+    );
     assert_eq!(tokens.last(), Some(&77), "usage events: {tokens:?}");
 }
 
@@ -2180,4 +2190,237 @@ async fn a_fold_survives_the_next_request_that_carries_the_raw_result_again() {
         "the folded turns are still in the request: {}",
         &again[..again.len().min(800)]
     );
+}
+
+#[tokio::test]
+async fn large_image_requests_reach_upstream_and_are_not_counted_as_text_tokens() {
+    let fixture = fixture().await;
+    fixture.fake.calls.store(1, Ordering::SeqCst);
+    let mut events = fixture.events.subscribe();
+    let contents = json!([{ "role":"user", "parts":[
+        {"text":"describe this"},
+        {"inlineData":{"mimeType":"image/png", "data":"A".repeat(3 * 1024 * 1024)}}
+    ]}]);
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(contents),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let event = events.try_recv().unwrap();
+    assert_eq!(event.kind, EventKind::Usage);
+    assert_eq!(event.data["breakdown"]["imageCount"], 1);
+    assert!(event.data["breakdown"]["estimatedTokens"].as_u64().unwrap() < 10000);
+}
+
+#[test]
+fn the_proxy_body_limit_fits_five_maximum_size_image_attachments() {
+    let encoded_images = 5 * (10 * 1024 * 1024usize).div_ceil(3) * 4;
+    assert!(MAX_BODY_BYTES >= encoded_images + 1024 * 1024);
+}
+
+/// Codex's OAuth wire must cross the same signed proxy as key providers: no live credentials.
+#[tokio::test]
+async fn codex_oauth_responses_publish_context_usage_and_deliver_mid_turn_steering() {
+    type Seen = Arc<Mutex<Vec<(HeaderMap, Value)>>>;
+    let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+    async fn codex(AxumState(seen): AxumState<Seen>, headers: HeaderMap, body: Bytes) -> Response {
+        // pi sends its own content-type; a second one makes upstream answer
+        // `{"detail":"Unsupported content type"}`.
+        assert_eq!(headers.get_all(header::CONTENT_TYPE).iter().count(), 1);
+        assert_eq!(headers[header::CONTENT_TYPE], "application/json");
+        assert_eq!(headers[header::CONTENT_ENCODING], "zstd");
+        let decoded = zstd::stream::decode_all(body.as_ref()).unwrap();
+        let body: Value = serde_json::from_slice(&decoded).unwrap();
+        seen.lock().unwrap().push((headers, body));
+        Response::builder().header(header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_codex\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":42000,\"output_tokens\":10,\"input_tokens_details\":{\"cached_tokens\":40000}}}}\n\n"))
+            .unwrap()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = AxumRouter::new()
+        .route("/backend-api/codex/responses", post(codex))
+        .with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_provider_origin(format!("http://{addr}"))
+    })
+    .await;
+    let mut events = fixture.events.subscribe();
+    fixture
+        .steers
+        .queue("ses_1")
+        .enqueue(
+            emberloop_core::steer::SteerKind::Steer,
+            "steer: stop editing and explain",
+        )
+        .await;
+    let body = json!({"model":"gpt-6-luna", "stream":true,"store":false, "instructions":"Original instructions", "input":[
+        {"role":"user","content":[{"type":"input_text","text":"inspect this"}]},
+        {"type":"function_call","id":"fc_item_1","call_id":"call_read","name":"read","arguments":"{}"},
+        {"type":"function_call_output","call_id":"call_read","output":"source code"}
+    ]});
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/proxy/{}/x/openai-codex/backend-api/codex/responses",
+                    fixture.token
+                ))
+                .header(header::AUTHORIZATION, "Bearer fake-oauth-access")
+                .header("chatgpt-account-id", "fake-account")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CONTENT_ENCODING, "zstd")
+                .body(Body::from(
+                    zstd::stream::encode_all(body.to_string().as_bytes(), 1).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("response.completed"));
+    let captured = seen.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0].0[header::AUTHORIZATION],
+        "Bearer fake-oauth-access"
+    );
+    assert_eq!(captured[0].0["chatgpt-account-id"], "fake-account");
+    assert!(captured[0].1["input"]
+        .to_string()
+        .contains("steer: stop editing and explain"));
+    assert!(captured[0].1["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("Original instructions"));
+    assert!(captured[0].1["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("Emberloop proxy policy"));
+    let mut used = false;
+    let mut delivered = false;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == EventKind::Usage {
+            assert_eq!(event.data["inputTokens"], 42000);
+            assert_eq!(event.data["cachedTokens"], 40000);
+            assert!(event.data["breakdown"]["system"].as_u64().unwrap() > 0);
+            used = true;
+        }
+        if event.kind == EventKind::SteerDelivered {
+            delivered = true;
+        }
+    }
+    assert!(
+        used && delivered,
+        "Codex must report both usage and steer delivery"
+    );
+}
+
+#[tokio::test]
+async fn codex_zstd_compression_is_executed_in_proxy_and_followed_up_with_folded_context() {
+    type Seen = Arc<Mutex<Vec<Value>>>;
+    let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+    async fn upstream(
+        AxumState(seen): AxumState<Seen>,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> Response {
+        assert_eq!(headers[header::CONTENT_ENCODING], "zstd");
+        let body: Value =
+            serde_json::from_slice(&zstd::stream::decode_all(body.as_ref()).unwrap()).unwrap();
+        let round = {
+            let mut seen = seen.lock().unwrap();
+            let n = seen.len();
+            seen.push(body);
+            n
+        };
+        let events = if round == 0 {
+            let args = r#"{"start":0,"end":2,"summary":"folded codex context"}"#;
+            vec![
+                json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_fold","call_id":"call_fold","name":"compress","arguments":""}}),
+                json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":args}),
+                json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_fold","call_id":"call_fold","name":"compress","arguments":args}}),
+                json!({"type":"response.completed","response":{"id":"resp_fold","status":"completed","output":[],"usage":{"input_tokens":42000,"output_tokens":100}}}),
+            ]
+        } else {
+            vec![
+                json!({"type":"response.output_text.delta","delta":"done after codex compression"}),
+                json!({"type":"response.completed","response":{"id":"resp_final","status":"completed","output":[],"usage":{"input_tokens":9000,"output_tokens":10}}}),
+            ]
+        };
+        let stream = events
+            .iter()
+            .map(|v| format!("event: {}\ndata: {v}\n\n", v["type"].as_str().unwrap()))
+            .collect::<String>();
+        Response::builder()
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(stream))
+            .unwrap()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = AxumRouter::new()
+        .route("/backend-api/codex/responses", post(upstream))
+        .with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |c| {
+        c.with_provider_origin(format!("http://{addr}"))
+    })
+    .await;
+    fixture.settings.write().await.preserve_recent_messages = 0;
+    let mut events = fixture.events.subscribe();
+    let request = json!({"model":"gpt-6.1-sol","stream":true,"input":[
+        {"role":"user","content":"old question"}, {"role":"assistant","content":"old answer"}, {"role":"user","content":"continue"}
+    ]});
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/proxy/{}/x/openai-codex/backend-api/codex/responses",
+                    fixture.token
+                ))
+                .header(header::CONTENT_ENCODING, "zstd")
+                .body(Body::from(
+                    zstd::stream::encode_all(request.to_string().as_bytes(), 1).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("done after codex compression"), "{text}");
+    assert!(
+        !text.contains("call_fold"),
+        "proxy tool calls must not reach the harness"
+    );
+    let captured = seen.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    let folded = captured[1]["input"].to_string();
+    assert!(folded.contains("folded codex context"));
+    assert!(!folded.contains("old question"));
+    let mut final_input = 0;
+    let mut compressed = false;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == EventKind::Compression {
+            compressed = true;
+        }
+        if event.kind == EventKind::Usage {
+            final_input = event.data["inputTokens"].as_u64().unwrap();
+        }
+    }
+    assert!(compressed);
+    assert_eq!(final_input, 9000);
 }

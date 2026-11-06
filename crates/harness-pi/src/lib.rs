@@ -1,12 +1,13 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+pub mod catalogue;
 use agent_client_protocol::v1::schema::McpServer;
 use agent_client_protocol::AcpAgentConfig;
 use async_trait::async_trait;
-use emberloop_core::providers::{key_provider, KEY_PROVIDERS};
+use emberloop_core::providers::{key_provider, KEY_PROVIDERS, OAUTH_PROVIDERS};
 use harness::{Harness, HarnessError, HarnessSession, HarnessWiring};
 use harness_acp::{start, AcpLaunch, AcpSession};
 use std::collections::BTreeMap;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// pi's built-in OpenCode Go catalogue; its wires are routed by path suffix, not by `x/<id>`.
@@ -176,11 +177,16 @@ fn write_session_files(
     std::fs::create_dir_all(&agent)?;
     std::fs::create_dir_all(cwd)?;
     let models_path = agent.join("models.json");
-    if keys.is_empty() {
-        let _ = std::fs::remove_file(&models_path);
-    } else {
-        write_private(&models_path, &models_config(wiring, keys).to_string())?;
-    }
+    write_private(&models_path, &models_config(wiring, keys).to_string())?;
+    let settings_path = agent.join("settings.json");
+    let mut settings: serde_json::Value = std::fs::read(&settings_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    // The model-wire proxy sees full requests over HTTP/SSE, not cached WebSocket deltas.
+    settings["transport"] = serde_json::json!("sse");
+    write_private(&settings_path, &settings.to_string())?;
     if let Some(auth) = auth {
         match std::fs::read(auth) {
             Ok(bytes) => write_private_bytes(&agent.join("auth.json"), &bytes)?,
@@ -197,7 +203,7 @@ fn write_session_files(
 /// pi appends `/chat/completions` etc. to the base; the proxy routes on that suffix.
 fn models_config(wiring: &HarnessWiring, keys: &BTreeMap<String, String>) -> serde_json::Value {
     let proxy = wiring.proxy_url.trim_end_matches('/');
-    let providers: serde_json::Map<_, _> = keys
+    let mut providers: serde_json::Map<_, _> = keys
         .iter()
         .map(|(id, key)| {
             let base_url = match KEY_PROVIDERS.iter().find(|provider| provider.id == id) {
@@ -210,6 +216,12 @@ fn models_config(wiring: &HarnessWiring, keys: &BTreeMap<String, String>) -> ser
             )
         })
         .collect();
+    for provider in OAUTH_PROVIDERS {
+        providers.insert(
+            provider.id.to_string(),
+            serde_json::json!({"baseUrl": provider.proxied_base_url(proxy)}),
+        );
+    }
     serde_json::json!({ "providers": providers })
 }
 
@@ -236,11 +248,12 @@ fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
 
 fn write_private_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(path)?
-        .write_all(contents)
+        .open(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(contents)
 }

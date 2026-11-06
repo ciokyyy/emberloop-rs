@@ -14,6 +14,8 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(default)]
 pub struct Settings {
+    pub title_generation: bool,
+    pub title_model: String,
     pub proxy_compression: bool,
     pub ponytail_default_level: String,
     pub todo_reminders: bool,
@@ -43,6 +45,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            title_generation: true,
+            title_model: "openrouter/openrouter/free".into(),
             proxy_compression: true,
             ponytail_default_level: "full".to_string(),
             todo_reminders: true,

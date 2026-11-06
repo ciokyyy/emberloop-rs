@@ -275,7 +275,16 @@ async fn acceptance_8_background_process_is_adopted_after_restart() {
         .to_string();
     drop(toolbox);
 
+    // Tool descriptions come from the Prompt Store, not the hardcoded specs.
     let config = env.daemon.config().clone();
+    std::fs::create_dir_all(config.config_root.join("prompts")).unwrap();
+    std::fs::write(
+        config
+            .config_root
+            .join("prompts/tool.execute.description.md"),
+        "OVERRIDE-EXECUTE-DESCRIPTION",
+    )
+    .unwrap();
     let restarted = Daemon::open(config).await.unwrap();
     let toolbox = restarted.toolbox_for(&session_id).await.unwrap().unwrap();
     let listed = toolbox
@@ -312,8 +321,16 @@ async fn acceptance_8_background_process_is_adopted_after_restart() {
         .collect();
     assert!(names.contains(&"read".to_string()), "{names:?}");
     assert!(names.contains(&"background".to_string()), "{names:?}");
+    let execute = mcp
+        .tools()
+        .into_iter()
+        .find(|tool| tool.name == "execute")
+        .unwrap();
+    assert_eq!(
+        execute.description.as_deref(),
+        Some("OVERRIDE-EXECUTE-DESCRIPTION")
+    );
 }
-
 #[tokio::test]
 async fn spa_routes_fall_back_to_the_embedded_index() {
     let env = harness(None).await;
@@ -408,7 +425,17 @@ async fn pi_sessions_and_catalogue_run_on_the_pi_harness_without_an_agy_account(
     let script = "#!/bin/sh\n\
         while IFS= read -r line; do\n\
           id=$(printf '%s' \"$line\" | sed -n 's/^{\"jsonrpc\":\"2.0\",\"id\":\\([^,}]*\\).*/\\1/p')\n\
+          rpcid=$(printf '%s' \"$line\" | sed -n 's/.*\"id\":\\(\"[^\"]*\"\\).*/\\1/p')\n\
           case \"$line\" in\n\
+            *\"get_available_models\"*)\n\
+              printf '{\"id\":%s,\"success\":true,\"data\":{\"models\":[{\"id\":\"glm-5\",\"provider\":\"opencode-go\",\"name\":\"GLM-5\",\"reasoning\":true,\"input\":[\"text\",\"image\"],\"contextWindow\":200000}]}}\\n' \"$rpcid\"\n\
+              ;;\n\
+            *\"get_available_thinking_levels\"*)\n\
+              printf '{\"id\":%s,\"success\":true,\"data\":{\"levels\":[\"low\",\"high\"]}}\\n' \"$rpcid\"\n\
+              ;;\n\
+            *\"set_model\"*)\n\
+              printf '{\"id\":%s,\"success\":true,\"data\":{}}\\n' \"$rpcid\"\n\
+              ;;\n\
             *\"initialize\"*)\n\
               printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}\\n' \"$id\"\n\
               ;;\n\

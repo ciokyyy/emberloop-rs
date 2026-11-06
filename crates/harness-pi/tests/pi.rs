@@ -153,7 +153,23 @@ async fn an_auth_file_lets_a_codex_session_start_without_an_opencode_key() {
     wiring.model = Some("openai-codex/gpt-6-luna".into());
     let _session = harness.spawn("s1", wiring).await.unwrap();
     let copied = dir.path().join("pi/s1/.pi/agent/auth.json");
-    assert!(!dir.path().join("pi/s1/.pi/agent/models.json").exists());
+    let models: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join("pi/s1/.pi/agent/models.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        models["providers"]["openai-codex"]["baseUrl"],
+        "http://127.0.0.1:9/p/tok/x/openai-codex/backend-api"
+    );
+    assert!(models["providers"]["openai-codex"].get("apiKey").is_none());
+    let settings: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join("pi/s1/.pi/agent/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        settings["transport"], "sse",
+        "the HTTP proxy needs full-context SSE, not a cached WebSocket"
+    );
     let saved: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(copied).unwrap()).unwrap();
     assert_eq!(saved["openai-codex"]["access"], "at");
@@ -191,7 +207,12 @@ async fn every_saved_key_provider_gets_a_proxied_entry_and_its_models_need_its_k
         "http://127.0.0.1:9/p/tok/x/groq/openai/v1"
     );
     assert_eq!(providers["opencode-go"]["apiKey"], "sk-go");
-    assert_eq!(providers.len(), 2, "unknown and empty keys write no entry");
+    assert_eq!(
+        providers.len(),
+        3,
+        "two saved keys plus the credential-free OAuth endpoint"
+    );
+    assert!(providers["openai-codex"].get("apiKey").is_none());
 
     let mut cerebras = wiring();
     cerebras.model = Some("cerebras/gpt-oss-120b".into());
@@ -240,4 +261,89 @@ fn grouped_options_flatten_and_other_options_are_ignored() {
         [("a/x".to_string(), "X".to_string())]
     );
     assert!(harness_pi::model_options(&serde_json::Value::Null).is_empty());
+}
+
+#[tokio::test]
+async fn catalogue_reads_model_specific_efforts_images_and_windows_from_pi() {
+    let dir = tempfile::tempdir().unwrap();
+    let entries = harness(dir.path(), true).catalogue().await.unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].efforts, ["off", "high", "max"]);
+    assert!(entries[0].image_input);
+    assert_eq!(entries[0].context_window, 200000);
+    assert!(entries[1].efforts.is_empty());
+    assert!(!entries[1].image_input);
+    assert_eq!(entries[1].context_window, 32768);
+}
+
+#[tokio::test]
+async fn live_model_changes_are_acknowledged_and_preserve_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = harness(dir.path(), true)
+        .spawn("s1", wiring())
+        .await
+        .unwrap();
+    session
+        .configure_model("opencode-go/kimi-k2", Some("high"))
+        .await
+        .unwrap();
+    let mut events = session.events();
+    session.send("hi", Vec::new()).await.unwrap();
+    while let Some(event) = events.next().await {
+        if let HarnessEvent::AssistantChunk(text) = event {
+            let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert!(report["picked"].as_str().unwrap().contains("high"));
+            assert_eq!(session.resume_token().as_deref(), Some("pi-1"));
+            return;
+        }
+    }
+    panic!("no report");
+}
+
+#[tokio::test]
+async fn metadata_does_not_offer_disconnected_providers() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(harness(dir.path(), false)
+        .catalogue()
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_reopened_home_replaces_direct_oauth_routing_and_retains_other_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = dir.path().join("pi/s1/.pi/agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::write(
+        agent.join("settings.json"),
+        r#"{"transport":"websocket","defaultThinkingLevel":"high"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        agent.join("models.json"),
+        r#"{"providers":{"openai-codex":{"baseUrl":"https://chatgpt.com/backend-api"}}}"#,
+    )
+    .unwrap();
+    let mut wiring = wiring();
+    wiring.proxy_url = "http://127.0.0.1:9/proxy/new-token".into();
+    let _session = harness(dir.path(), true).spawn("s1", wiring).await.unwrap();
+    let models: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(agent.join("models.json")).unwrap()).unwrap();
+    assert_eq!(
+        models["providers"]["openai-codex"]["baseUrl"],
+        "http://127.0.0.1:9/proxy/new-token/x/openai-codex/backend-api"
+    );
+    let settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(agent.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["transport"], "sse");
+    assert_eq!(settings["defaultThinkingLevel"], "high");
+    assert_eq!(
+        std::fs::metadata(agent.join("settings.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
 }

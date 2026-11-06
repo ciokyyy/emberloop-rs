@@ -15,7 +15,7 @@ use harness::{EventStream, HarnessError, HarnessEvent, HarnessSession, PromptIma
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tracing::debug;
@@ -47,6 +47,7 @@ enum Command {
     Resume(String),
     Forget(String),
     SetThoughtLevel(String),
+    Configure(String, Option<String>, oneshot::Sender<Result<(), String>>),
 }
 
 pub struct AcpSession {
@@ -242,6 +243,16 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
                                     .block_task()
                                     .await?;
                             }
+                            Command::Configure(model, effort, reply) => {
+                                let result = configure(
+                                    &connection,
+                                    &session_id.to_string(),
+                                    &model,
+                                    effort.as_deref(),
+                                )
+                                .await;
+                                let _ = reply.send(result);
+                            }
                             Command::SetThoughtLevel(level) => {
                                 let _ = connection
                                     .send_request(SetSessionConfigOptionRequest::new(
@@ -302,6 +313,28 @@ async fn try_load(
     replaying.store(false, Ordering::SeqCst);
     let response = loaded.ok()?;
     Some(serde_json::to_value(&response.config_options).unwrap_or_default())
+}
+
+async fn configure(
+    connection: &ConnectionTo<Agent>,
+    session: &str,
+    model: &str,
+    effort: Option<&str>,
+) -> Result<(), String> {
+    for (id, value) in [("model", Some(model)), ("thought_level", effort)] {
+        if let Some(value) = value {
+            connection
+                .send_request(SetSessionConfigOptionRequest::new(
+                    session.to_string(),
+                    id,
+                    SessionConfigOptionValue::value_id(value.to_string()),
+                ))
+                .block_task()
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn initialize_request(client_name: &str) -> InitializeRequest {
@@ -476,6 +509,22 @@ impl HarnessSession for AcpSession {
         self.commands
             .send(Command::Forget(resume_token.to_string()))
             .map_err(|_| HarnessError::Process("ACP connection closed".into()))
+    }
+
+    async fn configure_model(&self, model: &str, effort: Option<&str>) -> Result<(), HarnessError> {
+        let (reply, received) = oneshot::channel();
+        self.commands
+            .send(Command::Configure(
+                model.to_string(),
+                effort.map(str::to_string),
+                reply,
+            ))
+            .map_err(|_| HarnessError::Process("ACP connection closed".into()))?;
+        tokio::time::timeout(std::time::Duration::from_secs(10), received)
+            .await
+            .map_err(|_| HarnessError::Protocol("model change timed out".into()))?
+            .map_err(|_| HarnessError::Process("ACP connection closed".into()))?
+            .map_err(HarnessError::Protocol)
     }
 
     async fn set_thought_level(&self, level: &str) -> Result<(), HarnessError> {

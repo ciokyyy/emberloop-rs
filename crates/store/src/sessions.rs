@@ -144,15 +144,20 @@ impl SessionsStore {
     /// Writes metadata atomically and refreshes the in-memory copy. It does not
     /// recreate the event directory, so an archived Session stays archived.
     pub async fn save(&self, meta: &SessionMeta) -> Result<(), SessionStoreError> {
+        let mut map = self.sessions.write().await;
+        let mut meta = meta.clone();
+        // Stale harness or archive metadata must not undo a generated or manual title.
+        if meta.title.is_empty() || meta.title == "New Session" {
+            if let Some(current) = map.get(&meta.id) {
+                meta.title.clone_from(&current.title);
+            }
+        }
         let meta_file = self.data_root.session_meta_file(&meta.id);
-        let json = serde_json::to_string_pretty(meta)?;
+        let json = serde_json::to_string_pretty(&meta)?;
         let tmp_path = format!("{}.tmp.{}", meta_file.display(), std::process::id());
         tokio::fs::write(&tmp_path, json).await?;
         tokio::fs::rename(&tmp_path, &meta_file).await?;
-        self.sessions
-            .write()
-            .await
-            .insert(meta.id.clone(), meta.clone());
+        map.insert(meta.id.clone(), meta);
         Ok(())
     }
 
@@ -190,6 +195,29 @@ impl SessionsStore {
         tokio::fs::rename(&tmp_path, &meta_file).await?;
 
         Ok(updated)
+    }
+
+    /// Commit a generated title only while the Session still has its default title.
+    pub async fn set_generated_title(
+        &self,
+        id: &str,
+        title: &str,
+    ) -> Result<Option<SessionMeta>, SessionStoreError> {
+        let mut map = self.sessions.write().await;
+        let Some(meta) = map
+            .get(id)
+            .filter(|meta| meta.title.is_empty() || meta.title == "New Session")
+        else {
+            return Ok(None);
+        };
+        let mut updated = meta.clone();
+        updated.title = title.to_string();
+        let path = self.data_root.session_meta_file(id);
+        let tmp = path.with_extension("title.tmp");
+        tokio::fs::write(&tmp, serde_json::to_string_pretty(&updated)?).await?;
+        tokio::fs::rename(tmp, path).await?;
+        map.insert(id.to_string(), updated.clone());
+        Ok(Some(updated))
     }
 
     pub async fn update_thought_level(
@@ -290,5 +318,49 @@ mod tests {
         store2.delete("ses_1").await.unwrap();
         assert!(store2.get("ses_1").await.is_none());
         assert!(!data_root.session_dir("ses_1").exists());
+    }
+}
+
+#[cfg(test)]
+mod generated_title_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn generated_title_never_overwrites_a_manual_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionsStore::load(DataRoot::new(dir.path()))
+            .await
+            .unwrap();
+        let meta = SessionMeta {
+            id: "test".into(),
+            title: "New Session".into(),
+            ..Default::default()
+        };
+        store.insert(meta.clone()).await.unwrap();
+        store.update_title("test", "Mine").await.unwrap();
+        assert!(store
+            .set_generated_title("test", "Generated")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(store.get("test").await.unwrap().title, "Mine");
+        store.update_title("test", "New Session").await.unwrap();
+        assert!(store
+            .set_generated_title("test", "Generated")
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(store.get("test").await.unwrap().title, "Generated");
+        store.save(&meta).await.unwrap();
+        assert_eq!(store.get("test").await.unwrap().title, "Generated");
+        let reloaded = SessionsStore::load(DataRoot::new(dir.path()))
+            .await
+            .unwrap();
+        assert_eq!(reloaded.get("test").await.unwrap().title, "Generated");
+        assert!(store
+            .set_generated_title("missing", "No")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

@@ -25,3 +25,8 @@ export function formatTokens(count: number): string {
   if (count >= 1000) return `${Math.round(count / 1000)}k`;
   return String(count);
 }
+
+/** A model change takes effect before the next usage response arrives. */
+export function chosenWindow(modelWindow = 0, responseWindow = 0): number {
+  return modelWindow || responseWindow || 0;
+}

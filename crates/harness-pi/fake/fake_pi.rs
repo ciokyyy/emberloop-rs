@@ -17,6 +17,10 @@ fn read_home(file: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args().any(|arg| arg == "rpc") {
+        fake_rpc();
+        return Ok(());
+    }
     let cwd = Arc::new(Mutex::new(String::new()));
     let picked = Arc::new(Mutex::new(String::new()));
     let (cwd_new, picked_set, cwd_prompt, picked_prompt) =
@@ -95,4 +99,32 @@ async fn main() -> Result<()> {
         )
         .connect_to(Stdio::new())
         .await
+}
+
+fn fake_rpc() {
+    use std::io::{BufRead, Write};
+    let mut picked = String::new();
+    for line in std::io::stdin().lock().lines() {
+        let command: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+        let data = match command["type"].as_str().unwrap() {
+            "get_available_models" => serde_json::json!({"models":[
+                {"id":"glm-5","name":"GLM 5","provider":"opencode-go","reasoning":true,"input":["text","image"],"contextWindow":200000},
+                {"id":"kimi-k2","name":"Kimi K2","provider":"opencode-go","reasoning":false,"input":["text"],"contextWindow":32768}
+            ]}),
+            "set_model" => {
+                picked = command["modelId"].as_str().unwrap().to_string();
+                serde_json::json!({})
+            }
+            "get_available_thinking_levels" => {
+                assert_eq!(picked, "glm-5");
+                serde_json::json!({"levels":["off","high","max"]})
+            }
+            other => panic!("unknown RPC {other}"),
+        };
+        println!(
+            "{}",
+            serde_json::json!({"type":"response","id":command["id"],"success":true,"data":data})
+        );
+        std::io::stdout().flush().unwrap();
+    }
 }

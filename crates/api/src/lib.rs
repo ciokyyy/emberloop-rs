@@ -4,6 +4,7 @@ pub mod models;
 pub mod persist;
 pub mod providers;
 pub mod routes;
+mod session_setup;
 pub mod sse;
 pub mod state;
 

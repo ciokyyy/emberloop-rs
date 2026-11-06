@@ -2,6 +2,7 @@
 //! Daemon composition root: stores, prompts, API, proxy, tools and the agy
 //! harness. The binary in `main.rs` is a thin CLI over this module.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -28,9 +29,11 @@ use tools::{McpServer, ToolConfig, Toolbox};
 pub mod codex;
 pub mod login;
 pub mod runner;
+mod titles;
 pub mod todo_reminder;
 pub mod tooldisplay;
 pub mod update;
+mod usage;
 
 pub fn is_pi_model(model: Option<&str>) -> bool {
     model
@@ -95,29 +98,22 @@ impl api::models::Source for PiSource {
     async fn fetch(&self) -> Result<Vec<api::models::ModelEntry>, api::models::CatalogueError> {
         let models = self
             .harness
-            .models()
+            .catalogue()
             .await
             .map_err(|error| api::models::CatalogueError::new(error.to_string()))?;
         Ok(models
             .into_iter()
-            .map(|(id, label)| {
-                let provider = id
-                    .split_once('/')
-                    .map_or("pi", |(provider, _)| provider)
-                    .to_string();
-                let prefix = format!("{provider}: ");
-                api::models::ModelEntry {
-                    id,
-                    provider,
-                    label: label.strip_prefix(&prefix).unwrap_or(&label).to_string(),
-                    kind: "chat".to_string(),
-                    efforts: vec!["low".into(), "medium".into(), "high".into()],
-                    image_input: true,
-                    context_window: 1_000_000,
-                    source: "pi".to_string(),
-                    stale: false,
-                    updated_at: 0,
-                }
+            .map(|model| api::models::ModelEntry {
+                id: model.id,
+                provider: model.provider,
+                label: model.label,
+                kind: "chat".to_string(),
+                efforts: model.efforts,
+                image_input: model.image_input,
+                context_window: model.context_window,
+                source: "pi".to_string(),
+                stale: false,
+                updated_at: 0,
             })
             .collect())
     }
@@ -360,23 +356,32 @@ impl Daemon {
         );
         let login = Arc::new(
             login::AgyLogin::new(accounts_dir, agy_bin)
-                .with_keys(keys_file)
-                .with_pi_auth(pi_auth),
+                .with_keys(keys_file.clone())
+                .with_pi_auth(pi_auth.clone()),
         );
         let proxy_base = format!("http://{}:{}", config.host, config.port);
-        let runner = Arc::new(runner::SessionRunner::new(
-            harness.clone(),
-            sessions.clone(),
-            projects.clone(),
-            data_root.clone(),
-            Arc::clone(&events),
-            app_state.steers.clone(),
-            proxy_state.clone(),
-            proxy_base,
-            Arc::clone(&app_state.event_logs),
-            Some(config.config_root.join("accounts/agy/default")),
-            Arc::clone(&app_state.settings),
-        ));
+        let runner = Arc::new(
+            runner::SessionRunner::new(
+                harness.clone(),
+                sessions.clone(),
+                projects.clone(),
+                data_root.clone(),
+                Arc::clone(&events),
+                app_state.steers.clone(),
+                proxy_state.clone(),
+                proxy_base,
+                Arc::clone(&app_state.event_logs),
+                Some(config.config_root.join("accounts/agy/default")),
+                Arc::clone(&app_state.settings),
+            )
+            .with_titles(titles::Titles::new(
+                sessions.clone(),
+                Arc::clone(&app_state.settings),
+                Arc::clone(&events),
+                keys_file,
+                pi_auth,
+            )),
+        );
         let resume = updated.and_then(|pending| {
             let session = pending.session.clone()?;
             Some((
@@ -451,7 +456,9 @@ impl Daemon {
         let Some(toolbox) = self.toolbox_for(session_id).await? else {
             return Ok(None);
         };
-        Ok(Some(McpServer::new(Arc::new(toolbox))))
+        Ok(Some(
+            McpServer::new(Arc::new(toolbox)).with_descriptions(tool_descriptions(&self.prompts)),
+        ))
     }
 
     pub async fn harness_wiring(&self, session_id: &str) -> anyhow::Result<Option<HarnessWiring>> {
@@ -556,10 +563,24 @@ fn warn_if_remote(config: &Config) {
     }
 }
 
-pub async fn run_mcp(root: PathBuf, spill: PathBuf) -> anyhow::Result<()> {
+/// Tool names the Prompt Store carries a description for: `tool.<name>.description`.
+pub fn tool_descriptions(prompts: &PromptStore) -> HashMap<String, String> {
+    prompts::PROMPT_IDS
+        .iter()
+        .filter_map(|id| {
+            let name = id.strip_prefix("tool.")?.strip_suffix(".description")?;
+            let text = prompts.text(id)?;
+            Some((name.to_string(), text))
+        })
+        .filter(|(_, text)| !text.trim().is_empty())
+        .collect()
+}
+
+pub async fn run_mcp(root: PathBuf, spill: PathBuf, config_root: PathBuf) -> anyhow::Result<()> {
+    let descriptions = tool_descriptions(&PromptStore::new(config_root.join("prompts")));
     let toolbox = Toolbox::new(ToolConfig::new(root, spill))?;
     toolbox.flush_notices().await?;
-    Arc::new(McpServer::new(Arc::new(toolbox)))
+    Arc::new(McpServer::new(Arc::new(toolbox)).with_descriptions(descriptions))
         .serve_stdio()
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))

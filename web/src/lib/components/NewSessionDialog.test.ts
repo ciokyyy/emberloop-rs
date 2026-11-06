@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/svelte';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/svelte';
+import { describe, expect, it, vi } from 'vitest';
 import NewSessionDialog from './NewSessionDialog.svelte';
 
 const props = { projects: [], models: [], defaultLevel: 'full', oncreate: async () => {} };
@@ -12,4 +12,18 @@ describe('NewSessionDialog', () => {
     render(NewSessionDialog, { ...props, open: true });
     expect(await screen.findByText('Create')).toBeTruthy();
   });
+});
+
+
+it('includes reasoning effort in the new Session and updates its choices per model', async () => {
+  const oncreate = vi.fn();
+  render(NewSessionDialog, { ...props, open: true, projects: [{ id: 'p', name: 'P', root: '/p' }], models: [
+    { id: 'a', label: 'A', provider: 'pi', kind: 'chat', efforts: ['high'], image_input: true, context_window: 1000, source: 'pi', stale: false, updated_at: 0 },
+    { id: 'b', label: 'B', provider: 'pi', kind: 'chat', efforts: ['max'], image_input: false, context_window: 1000, source: 'pi', stale: false, updated_at: 0 }
+  ], oncreate });
+  await fireEvent.click(screen.getByRole('button', { name: 'Show model options' }));
+  await fireEvent.pointerUp(screen.getByRole('option', { name: /B ·/ }));
+  await fireEvent.change(screen.getByLabelText('Reasoning effort'), { target: { value: 'max' } });
+  await fireEvent.click(screen.getByText('Create'));
+  expect(oncreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'b', thoughtLevel: 'max' }));
 });

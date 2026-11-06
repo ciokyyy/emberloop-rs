@@ -29,6 +29,8 @@ export interface Model {
 }
 
 export interface Settings {
+  title_generation: boolean;
+  title_model: string;
   proxy_compression: boolean;
   ponytail_default_level: string;
   todo_reminders: boolean;
@@ -69,6 +71,7 @@ export type SessionStatus = 'idle' | 'working' | 'failed' | 'paused';
 export type SteerRoute = 'pending' | 'injected' | 'idle' | 'cap';
 
 export type EventKind =
+  | 'session_title'
   | 'status'
   | 'prompt'
   | 'assistant_chunk'
@@ -121,4 +124,23 @@ export interface LoginView {
   error?: string;
   tier?: string;
   accountId?: string;
+}
+
+/** Estimated text tokens in the final outgoing request; image bytes are never tokenized as text. */
+export interface ContextBreakdown {
+  system: number;
+  toolDefinitions: number;
+  toolCalls: number;
+  toolResults: number;
+  compression: number;
+  conversation: number;
+  images: number;
+  imageCount: number;
+  estimatedTokens: number;
+}
+
+export interface UsageView {
+  windows: { label: string; usedPercent: number; resetsAt: string | null }[];
+  balance: { currency: string; remaining: number } | null;
+  error: string | null;
 }

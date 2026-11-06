@@ -54,4 +54,4 @@ Index paths are repo-relative. Every doc below is listed here or in the child it
 
 - `specs/AGENTS.md` — the specs and the UI mock: phase 1 (agy, Sessions, core tools, one proxy), its tickets and acceptance run
 - `crates/AGENTS.md` — Cargo workspace crates implementation
-- `web/AGENTS.md` — SvelteKit SPA: Projects sidebar, Session feed, composer, Settings
+- `web/AGENTS.md` — SvelteKit SPA: Projects sidebar, Session feed, image composer, model/context dialog, Settings

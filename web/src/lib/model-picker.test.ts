@@ -40,12 +40,13 @@ describe('ModelPicker', () => {
       onchange
     });
 
-    const select = getByLabelText('Model') as HTMLSelectElement;
-    expect(select.value).toBe('gemini-3.8-flash');
+    const select = getByLabelText('Model') as HTMLInputElement;
+    expect(select.value).toBe('Gemini 3.8 Flash');
+    await fireEvent.click(getByRole('button', { name: 'Show model options' }));
     expect(getByRole('option', { name: /Gemini 3.8 Flash · 1M/ })).toBeTruthy();
     expect(getByRole('option', { name: /Gemini 2.5 Pro · 1M · stale/ })).toBeTruthy();
 
-    await fireEvent.change(select, { target: { value: 'gemini-2.5-pro' } });
+    await fireEvent.pointerUp(getByRole('option', { name: /Gemini 2.5 Pro/ }));
     expect(onchange).toHaveBeenCalledWith('gemini-2.5-pro');
   });
 });
@@ -60,13 +61,41 @@ describe('NewSessionDialog model picker', () => {
       oncreate
     });
 
-    const select = getByLabelText('Model') as HTMLSelectElement;
-    expect(select.value).toBe('gemini-3.8-flash');
-    await fireEvent.change(select, { target: { value: 'gemini-2.5-pro' } });
+    const select = getByLabelText('Model') as HTMLInputElement;
+    expect(select.value).toBe('Gemini 3.8 Flash');
+    await fireEvent.click(getByRole('button', { name: 'Show model options' }));
+    await fireEvent.pointerUp(getByRole('option', { name: /Gemini 2.5 Pro/ }));
     await fireEvent.click(getByRole('button', { name: 'Create' }));
 
     expect(oncreate).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: 'proj_1', model: 'gemini-2.5-pro' })
     );
   });
+});
+
+it('filters models by label/provider without dropping the current selection', async () => {
+  const view = render(ModelPicker, { models, value: 'gemini-3.8-flash', searchable: true });
+  await fireEvent.input(view.getByRole('combobox', { name: 'Model' }), { target: { value: 'missing' } });
+  expect(view.queryByRole('option', { name: /Gemini 2.5 Pro/ })).toBeNull();
+  expect(view.getByRole('combobox')).toHaveProperty('value', 'missing');
+  await fireEvent.input(view.getByRole('combobox', { name: 'Model' }), { target: { value: 'agy' } });
+  expect(view.getByRole('option', { name: /Gemini 2.5 Pro/ })).toBeTruthy();
+});
+
+it('searches model names and groups matches by harness and provider', async () => {
+  const { getByRole, queryByRole, getByText } = render(ModelPicker, { models, searchable: true });
+  const input = getByRole('combobox', { name: 'Model' });
+  await fireEvent.input(input, { target: { value: 'flash' } });
+  expect(getByRole('option', { name: /Gemini 3.8 Flash/ })).toBeTruthy();
+  expect(queryByRole('option', { name: /Gemini 2.5 Pro/ })).toBeNull();
+  expect(getByText('Antigravity · agy')).toBeTruthy();
+});
+
+it('keeps the selected model when its option is selected again', async () => {
+  const onchange = vi.fn();
+  const view = render(ModelPicker, { models, value: 'gemini-3.8-flash', onchange });
+  await fireEvent.click(view.getByRole('button', { name: 'Show model options' }));
+  await fireEvent.pointerUp(view.getByRole('option', { name: /Gemini 3.8 Flash/ }));
+  expect(view.getByRole('combobox')).toHaveProperty('value', 'Gemini 3.8 Flash');
+  expect(onchange).not.toHaveBeenCalledWith('');
 });

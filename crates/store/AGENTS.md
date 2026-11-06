@@ -29,3 +29,7 @@ bytes, renames the temp archive and only then removes the hot directory. A
 restore decompresses into `events/`, keeps the archive and records `restoredAt`
 and `restoredSeq`. The next sweep after the grace either deletes the stale
 archive for a resumed Session or removes the hot copy for a viewed one.
+
+## Generated titles
+
+`SessionsStore::set_generated_title` holds the metadata lock through atomic persistence and commits only when the current title is empty or `New Session`. Missing or manually renamed Sessions return `None`. `save` serializes writes and preserves an existing title when stale metadata still has a default title; explicit title resets use `update_title`.

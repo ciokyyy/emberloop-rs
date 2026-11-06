@@ -24,6 +24,7 @@
       root?: string;
       ponytailLevel: string;
       model?: string;
+      thoughtLevel?: string;
     }) => Promise<void> | void;
   } = $props();
 
@@ -31,6 +32,9 @@
   let root = $state('');
   let level = $state('full');
   let model = $state('');
+  let effort = $state('');
+  const efforts = $derived(models.find((entry) => entry.id === model)?.efforts ?? []);
+  $effect(() => { if (!efforts.includes(effort)) effort = efforts[0] ?? ''; });
   let error = $state('');
   let busy = $state(false);
 
@@ -64,7 +68,8 @@
         projectId: targetProject,
         root: root.trim() || undefined,
         ponytailLevel: level,
-        model: model || undefined
+        model: model || undefined,
+        thoughtLevel: effort || undefined
       });
       open = false;
     } catch (cause) {
@@ -113,7 +118,15 @@
           <input class="field font-mono" bind:value={root} placeholder="/home/you/Projects/name" />
         </label>
 
-        <ModelPicker {models} bind:value={model} />
+        <ModelPicker searchable {models} bind:value={model} />
+        {#if efforts.length}
+          <label class="flex flex-col gap-1.5 text-[12px] text-fg-3">
+            Reasoning effort
+            <select class="field" bind:value={effort}>
+              {#each efforts as option (option)}<option value={option}>{option}</option>{/each}
+            </select>
+          </label>
+        {/if}
 
         <div class="flex flex-col gap-1.5 text-[13px] text-fg-3">
           Ponytail level

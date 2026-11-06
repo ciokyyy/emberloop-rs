@@ -12,6 +12,36 @@ use utoipa::ToSchema;
 
 use crate::state::AppState;
 
+/// Read-only quota data. Credentials never leave the daemon.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageView {
+    pub windows: Vec<UsageWindow>,
+    pub balance: Option<UsageBalance>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageWindow {
+    pub label: String,
+    pub used_percent: f64,
+    pub resets_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBalance {
+    pub currency: String,
+    pub remaining: f64,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct UsageQuery {
+    #[serde(default)]
+    pub refresh: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountView {
@@ -131,6 +161,9 @@ impl IntoResponse for LoginError {
 
 #[async_trait]
 pub trait ProviderLogin: Send + Sync {
+    async fn usage(&self, _provider: &str, _refresh: bool) -> Result<UsageView, LoginError> {
+        Err(LoginError::unavailable("usage reporting is unavailable"))
+    }
     async fn providers(&self) -> Vec<ProviderView>;
     async fn start(&self, label: &str) -> Result<LoginView, LoginError>;
     async fn status(&self, id: &str) -> Option<LoginView>;
@@ -163,6 +196,20 @@ fn login(state: &AppState) -> Result<&std::sync::Arc<dyn ProviderLogin>, LoginEr
         .provider_login
         .as_ref()
         .ok_or_else(|| LoginError::unavailable("the daemon has no provider login"))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/providers/{provider}/usage",
+    params(("provider" = String, Path), ("refresh" = Option<bool>, Query)),
+    responses((status = 200, body = UsageView), (status = 503, description = "usage unavailable"))
+)]
+pub async fn provider_usage(
+    State(state): State<AppState>,
+    Path(provider): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<UsageQuery>,
+) -> Result<Json<UsageView>, LoginError> {
+    Ok(Json(login(&state)?.usage(&provider, query.refresh).await?))
 }
 
 #[utoipa::path(
@@ -351,6 +398,7 @@ pub async fn cancel_codex_login(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/providers", get(list_providers))
+        .route("/api/providers/{provider}/usage", get(provider_usage))
         .route("/api/providers/agy/login", post(start_agy_login))
         .route(
             "/api/providers/agy/login/{id}",

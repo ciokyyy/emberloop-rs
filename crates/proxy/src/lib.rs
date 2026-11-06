@@ -3,7 +3,9 @@
 //! injection, stored splices, and the native billion-context backend.
 
 pub mod compressor;
+pub mod context;
 pub mod ctx;
+mod encoding;
 pub mod meter;
 pub mod nudge;
 pub mod server;

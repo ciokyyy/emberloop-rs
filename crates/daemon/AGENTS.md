@@ -7,8 +7,10 @@ Composition root and binary for the whole system.
 - `Daemon::open` loads `DataRoot`, `ProjectsStore`, `SessionsStore`, a `PromptStore` rooted at `<config root>/prompts`, and starts the prompt watcher. The proxy and API share one `EventBus` and one `Settings` lock, so a Settings save reaches the next proxy request; the API gets the config-root prompt store through `AppState::with_prompts`, and `Daemon::open` starts the model catalogue refresher at boot.
 - `router` merges the REST/OpenAPI router and the proxy router, then serves `web/build` through `rust-embed`. Unknown `/api` paths stay 404; every other path falls back to `index.html`, so an app deep link such as `/p/<project>/s/<session>` survives a refresh.
 - `toolbox_for` and `mcp_server_for` build a Session's tools from its Project root and spill dir. `run_mcp` serves those tools over MCP stdio for the `mcp` subcommand, which `harness_wiring` puts in `HarnessWiring.mcp_command` along with a signed `/proxy/<token>` proxy URL.
-- `HarnessPlugin` wires both `AgyHarness` (`EMBERLOOP_AGY_BIN` or `<data root>/agy-acp/1.4.5/agy_acp_server.par`) and `PiHarness` (`EMBERLOOP_PI_BIN` or `<data root>/pi/v0.12.11/pi`), routing `opencode-go/*`, `openai-codex/*` and registry-provider models (`emberloop_core::providers`) to `PiHarness` and others to `AgyHarness`; `PiSource` feeds pi's models into `ModelCatalogue`, and `AgyLogin::with_keys` manages `<config root>/keys.json` (`providers()` lists every registry provider with `auth: key`).
+- `HarnessPlugin` wires both `AgyHarness` (`EMBERLOOP_AGY_BIN` or `<data root>/agy-acp/1.4.5/agy_acp_server.par`) and `PiHarness` (`EMBERLOOP_PI_BIN` or `<data root>/pi/v0.12.11/pi`), routing `opencode-go/*`, `openai-codex/*` and registry-provider models (`emberloop_core::providers`) to `PiHarness` and others to `AgyHarness`; `PiSource` feeds pi’s offline RPC metadata (per-model efforts, image support and context windows) into `ModelCatalogue`, the pi HOME rewrites signed OAuth endpoints and pins full-context SSE on each connect, and `AgyLogin::with_keys` manages `<config root>/keys.json` (`providers()` lists every registry provider with `auth: key`).
 - `serve` binds the configured host, serves until SIGINT or SIGTERM, and the watcher stops when the daemon drops.
+
+Model settings go through `SessionRunner::configure_model`: working turns are refused, a harness-family change requires a new Session, and a live same-harness change awaits ACP acknowledgment. A refusal attempts to restore the prior model/effort and leaves API metadata unchanged. A Session not yet connected uses the saved settings on its next spawn.
 
 ## Versioning and update
 
@@ -21,3 +23,11 @@ Composition root and binary for the whole system.
 ## Child DOX Index
 
 (none)
+
+## Titles and provider usage
+
+`titles.rs` uses the pinned pi-rust `pi-ai` SDK directly with no tools or harness process. It resolves saved keys and pi OAuth credentials, defaults to `openrouter/openrouter/free`, and retries generation or persistence indefinitely with 2–60 second backoff. Jobs are deduplicated per Session and stop on deletion, manual rename or disabled generation. Successful commits publish `session_title`; a failed title request never fails the chat turn. Pending jobs are process-local and start on a user prompt.
+
+`usage.rs` reads ChatGPT subscription windows, Antigravity quota buckets, OpenCode Go windows, OpenRouter credits and DeepSeek balances. `AgyLogin` caches each provider response for 60 seconds; explicit refresh bypasses the cache. Credentials stay in the daemon. Antigravity exchanges its refresh token at the fixed Google token endpoint without writing credentials. Provider errors are redacted, JSON responses are capped at 1 MiB, and other cards remain available.
+
+`pi-ai` is pinned to `ciokyyy/pi-rust` commit `0dd48c646cac3fc321151f7b474495630bfa53be`, based on upstream `v0.12.11`, with `ruzstd 0.9.1` and SDK Rust minimum 1.87. This fixes `RUSTSEC-2026-0344` without an advisory exemption. Switch back to an upstream release once it includes the dependency fix.

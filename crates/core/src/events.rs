@@ -6,6 +6,7 @@ use tokio::sync::broadcast;
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     Status,
+    SessionTitle,
     Prompt,
     AssistantChunk,
     ThinkingChunk,

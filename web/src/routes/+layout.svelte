@@ -13,6 +13,7 @@
     Settings as SettingsDto
   } from '$lib/api/types';
   import { fadeAt, slideDown } from '$lib/motion';
+  import SessionDialog from '$lib/components/SessionDialog.svelte';
   import Composer from '$lib/components/Composer.svelte';
   import Feed from '$lib/components/Feed.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
@@ -23,6 +24,7 @@
   import Sidebar from '$lib/components/Sidebar.svelte';
   import WorkingIndicator from '$lib/components/WorkingIndicator.svelte';
   import { applyEvent, applySnapshot, emptyFeedState, type FeedState } from '$lib/feed';
+  import { chosenWindow } from '$lib/contextMeter';
   import { toPromptImage } from '$lib/images';
   import { newSessionProjects, sessionPath, viewOf, viewPath, type View } from '$lib/route';
 
@@ -30,7 +32,11 @@
   let projects = $state<Project[]>([]);
   let sessions = $state<Session[]>([]);
   let models = $state<Model[]>([]);
+  let detailsOpen = $state(false);
+  let detailsTab = $state<'model' | 'context'>('model');
   let settings = $state<SettingsDto>({
+    title_generation: true,
+    title_model: 'openrouter/openrouter/free',
     proxy_compression: true,
     ponytail_default_level: 'full',
     todo_reminders: true,
@@ -87,19 +93,8 @@
     return tail.tool || tail.name || '';
   });
   const currentModel = $derived(models.find((model) => model.id === current?.model) ?? null);
-  const contextSize = $derived(feed.usage?.window || currentModel?.context_window || 0);
-  const statusWord: Record<SessionStatus, string> = {
-    idle: 'Idle',
-    working: 'Working',
-    failed: 'Failed',
-    paused: 'Paused'
-  };
-  const statusDot: Record<SessionStatus, string> = {
-    idle: 'bg-status-done',
-    working: 'bg-status-working',
-    failed: 'bg-status-failed',
-    paused: 'bg-status-paused'
-  };
+  const contextSize = $derived(chosenWindow(currentModel?.context_window, feed.usage?.window));
+
 
   const fail = (cause: unknown) => (error = cause instanceof Error ? cause.message : String(cause));
 
@@ -160,6 +155,11 @@
       }
       const batch = pending;
       pending = [];
+      for (const event of batch) {
+        if (event.kind === 'session_title' && typeof event.data.title === 'string') {
+          sessions = sessions.map((session) => session.id === id ? { ...session, title: event.data.title as string } : session);
+        }
+      }
       log = [...log, ...batch];
       feed = batch.reduce(applyEvent, feed);
       statuses = { ...statuses, [id]: feed.status };
@@ -261,6 +261,7 @@
     root?: string;
     ponytailLevel: string;
     model?: string;
+    thoughtLevel?: string;
   }) {
     let projectId = input.projectId;
     if (input.root) {
@@ -274,7 +275,8 @@
       projectId,
       undefined,
       input.ponytailLevel,
-      input.model
+      input.model,
+      input.thoughtLevel
     );
     sessions = [created, ...sessions];
     await goto(sessionPath(projectId, created.id));
@@ -308,6 +310,7 @@
   async function sendPrompt(text: string, files: File[]) {
     if (!selected) throw new Error('Select a Session first.');
     if (working) {
+      if (files.length) throw new Error('Images cannot be sent while the Session is working.');
       await api.steer(selected, text);
       return;
     }
@@ -317,14 +320,10 @@
     statuses = { ...statuses, [selected]: 'working' };
   }
 
-  async function setThoughtLevel(level: string) {
-    if (!selected || !level) return;
-    try {
-      const updated = await api.updateSession(selected, { thoughtLevel: level });
-      sessions = sessions.map((item) => (item.id === updated.id ? updated : item));
-    } catch (cause) {
-      fail(cause);
-    }
+  async function applyModel(input: { model: string; thoughtLevel: string }) {
+    if (!selected) throw new Error('Select a Session first.');
+    const updated = await api.updateSession(selected, input);
+    sessions = sessions.map((item) => item.id === updated.id ? updated : item);
   }
 
   async function cancel() {
@@ -367,6 +366,7 @@
     <Sidebar
       projects={listed}
       {sessions}
+      {models}
       {statuses}
       selectedId={view === 'session' ? selected : null}
       settingsActive={view === 'settings'}
@@ -407,13 +407,7 @@
           {view === 'session' && projectOf ? `${projectOf.name} · ${projectOf.root}` : ''}
         </div>
       </div>
-      {#if view === 'session' && current}
-        <span class="chip hide-sm font-mono">{current.model}</span>
-        <span class="flex items-center gap-1.5 text-[13px]">
-          <span class={`dot ${statusDot[feed.status]} ${working ? 'pulse' : ''}`}></span>
-          {statusWord[feed.status]}
-        </span>
-      {/if}
+
     </header>
 
     {#if error}
@@ -455,15 +449,21 @@
       </div>
       {#key selected}
         <Composer
+          sessionId={selected ?? ''}
           working={working}
-          contextUsed={feed.usage?.used ?? 0}
+          contextUsed={feed.usage?.used ?? null}
           {contextSize}
-          efforts={currentModel?.efforts ?? []}
+          model={currentModel?.label ?? current.model}
+          imageInput={currentModel?.image_input ?? false}
           thoughtLevel={current.thoughtLevel ?? ''}
-          onthought={setThoughtLevel}
+          ondetails={(tab) => { detailsTab = tab; detailsOpen = true; }}
           onsubmit={sendPrompt}
           oncancel={cancel}
         />
+        <SessionDialog bind:open={detailsOpen} bind:tab={detailsTab} {models}
+          model={current.model} thoughtLevel={current.thoughtLevel ?? ''}
+          used={feed.usage?.used ?? null} size={contextSize} breakdown={feed.usage?.breakdown ?? null}
+          disabled={working} onapply={applyModel} />
       {/key}
     {:else}
       <div class="grid flex-1 place-items-center">

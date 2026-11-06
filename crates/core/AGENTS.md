@@ -6,7 +6,7 @@ Defines shared workspace foundational types:
 - `Context`: scoped services registry and cancellation token tree
 - `EventBus`: typed event publish/subscribe
 - `id`: unique identifier generation
-- `providers`: the API-key provider registry (id, name, pi's default `baseUrl`) shared by the proxy route, the pi harness and the Providers API
+- `providers`: the endpoint registry (`ProviderEndpoint`: id, name, pi’s default `baseUrl`). `KEY_PROVIDERS` / `key_provider` feed the key UI; `OAUTH_PROVIDERS` adds Codex at `https://chatgpt.com/backend-api`. `proxy_provider` resolves both kinds for signed proxy routing. The pi harness uses the same descriptors; OAuth endpoints never appear as API-key providers and the registry contains no credentials
 
 ## Steering
 
@@ -20,3 +20,7 @@ wake drains the whole queue as a single `"\n\n"`-joined prompt.
 ## Child DOX Index
 
 (none)
+
+## Title events
+
+`EventKind::SessionTitle` serializes as `session_title` with `{ "title": "..." }` data after metadata persistence. It changes neither turn status nor usage.

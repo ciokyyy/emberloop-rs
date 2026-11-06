@@ -7,7 +7,7 @@
       "name": "MIT OR Apache-2.0",
       "identifier": "MIT OR Apache-2.0"
     },
-    "version": "0.0.7"
+    "version": "0.0.10"
   },
   "paths": {
     "/api/models": {
@@ -650,6 +650,46 @@
         }
       }
     },
+    "/api/providers/{provider}/usage": {
+      "get": {
+        "tags": [
+          "crate::providers"
+        ],
+        "operationId": "provider_usage",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageView"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "usage unavailable"
+          }
+        }
+      }
+    },
     "/api/sessions": {
       "get": {
         "tags": [],
@@ -902,6 +942,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid title model"
           }
         }
       }
@@ -1365,6 +1408,14 @@
             "default": 2000,
             "minimum": 0
           },
+          "title_generation": {
+            "type": "boolean",
+            "default": true
+          },
+          "title_model": {
+            "type": "string",
+            "default": "openrouter/openrouter/free"
+          },
           "todo_auto_expand": {
             "type": "boolean",
             "default": true
@@ -1427,6 +1478,12 @@
       "UpdateSessionRequest": {
         "type": "object",
         "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "thoughtLevel": {
             "type": [
               "string",
@@ -1438,6 +1495,75 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "UsageBalance": {
+        "type": "object",
+        "required": [
+          "currency",
+          "remaining"
+        ],
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "remaining": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "UsageView": {
+        "type": "object",
+        "description": "Read-only quota data. Credentials never leave the daemon.",
+        "required": [
+          "windows"
+        ],
+        "properties": {
+          "balance": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UsageBalance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageWindow"
+            }
+          }
+        }
+      },
+      "UsageWindow": {
+        "type": "object",
+        "required": [
+          "label",
+          "usedPercent"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "resetsAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usedPercent": {
+            "type": "number",
+            "format": "double"
           }
         }
       }

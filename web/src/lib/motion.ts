@@ -41,7 +41,7 @@ function cubicBezier(value: string): (t: number) => number {
   };
 }
 
-export function prefersReducedMotion(): boolean {
+function prefersReducedMotion(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
   return Boolean(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 }

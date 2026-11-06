@@ -75,6 +75,16 @@ pub trait HarnessSession: Send + Sync {
     }
     /// Delete the harness's copy of this Session.
     async fn forget(&self, resume_token: &str) -> Result<(), HarnessError>;
+    /// Apply a model and optional effort on the same conversation, awaiting the agent's reply.
+    async fn configure_model(
+        &self,
+        _model: &str,
+        _effort: Option<&str>,
+    ) -> Result<(), HarnessError> {
+        Err(HarnessError::Protocol(
+            "live model changes are not supported".into(),
+        ))
+    }
     /// Update the thinking effort (`thought_level`) on a live Session.
     async fn set_thought_level(&self, _level: &str) -> Result<(), HarnessError> {
         Ok(())

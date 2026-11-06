@@ -228,6 +228,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/providers/{provider}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["provider_usage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions": {
         parameters: {
             query?: never;
@@ -484,6 +500,10 @@ export interface components {
              */
             tier3_trigger: number;
             /** @default true */
+            title_generation: boolean;
+            /** @default openrouter/openrouter/free */
+            title_model: string;
+            /** @default true */
             todo_auto_expand: boolean;
             /** @default true */
             todo_hide_when_done: boolean;
@@ -506,8 +526,26 @@ export interface components {
             text: string;
         };
         UpdateSessionRequest: {
+            model?: string | null;
             thoughtLevel?: string | null;
             title?: string | null;
+        };
+        UsageBalance: {
+            currency: string;
+            /** Format: double */
+            remaining: number;
+        };
+        /** @description Read-only quota data. Credentials never leave the daemon. */
+        UsageView: {
+            balance?: components["schemas"]["UsageBalance"] | null;
+            error?: string | null;
+            windows: components["schemas"]["UsageWindow"][];
+        };
+        UsageWindow: {
+            label: string;
+            resetsAt?: string | null;
+            /** Format: double */
+            usedPercent: number;
         };
     };
     responses: never;
@@ -1152,6 +1190,36 @@ export interface operations {
             };
         };
     };
+    provider_usage: {
+        parameters: {
+            query?: {
+                refresh?: boolean;
+            };
+            header?: never;
+            path: {
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageView"];
+                };
+            };
+            /** @description usage unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_sessions: {
         parameters: {
             query?: never;
@@ -1395,6 +1463,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Settings"];
                 };
+            };
+            /** @description Invalid title model */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

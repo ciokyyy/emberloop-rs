@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { resolveComposerAction, shouldSend } from '$lib/composer';
   import { MAX_IMAGES, pickImages, type ImageAttachment, type RejectReason } from '$lib/images';
   import { collapse, fadeAt, flip, flipAnimation, flipReady, rise, slideDown } from '$lib/motion';
@@ -7,30 +8,47 @@
   import Icon from './Icon.svelte';
 
   let {
+    sessionId = '',
     working = false,
     disabled = false,
-    contextUsed = 0,
+    contextUsed = null,
     contextSize = 0,
     model = '',
-    efforts = [],
     thoughtLevel = '',
-    onthought,
+    imageInput = true,
+    ondetails,
     onsubmit,
     oncancel
   }: {
+    sessionId?: string;
     working?: boolean;
     disabled?: boolean;
-    contextUsed?: number;
+    contextUsed?: number | null;
     contextSize?: number;
     model?: string;
-    efforts?: string[];
     thoughtLevel?: string;
-    onthought?: (level: string) => Promise<void> | void;
+    imageInput?: boolean;
+    ondetails?: (tab: 'model' | 'context') => void;
     onsubmit: (text: string, files: File[]) => Promise<void> | void;
     oncancel: () => Promise<void> | void;
   } = $props();
 
-  let text = $state('');
+  let text = $state(readDraft());
+
+  function readDraft() {
+    try { return sessionId ? localStorage.getItem(`emberloop-rs:draft:${sessionId}`) ?? '' : ''; }
+    catch { return ''; }
+  }
+
+  // shortcut: text drafts only, use IndexedDB if attachment persistence is needed.
+  $effect(() => {
+    if (!sessionId) return;
+    try {
+      const key = `emberloop-rs:draft:${sessionId}`;
+      if (text) localStorage.setItem(key, text);
+      else localStorage.removeItem(key);
+    } catch { errors = ['Draft could not be saved in this browser.']; }
+  });
   let attachments = $state<ImageAttachment<File>[]>([]);
   let errors = $state<string[]>([]);
   let busy = $state(false);
@@ -55,7 +73,13 @@
         ? 'is not a PNG, JPEG, WebP or GIF image.'
         : `was not attached (limit ${MAX_IMAGES}).`;
 
+  onDestroy(clearAttachments);
+
   function addFiles(files: Iterable<File>) {
+    if (!imageInput || working) {
+      errors = [working ? 'Images cannot be sent while the Session is working. Send them after the turn finishes.' : 'This model does not support images. Choose an image-capable model.'];
+      return;
+    }
     const result = pickImages(attachments, files);
     errors = result.rejected.map(({ name, reason }) => `${name} ${reasonText(reason)}`);
     attachments = [
@@ -77,6 +101,10 @@
 
   async function submit() {
     if (!canSend) return;
+    if (attachments.length && (working || !imageInput)) {
+      errors = [working ? 'Images cannot be sent while the Session is working. Send them after the turn finishes.' : 'This model does not support images. Remove attachments or choose another model.'];
+      return;
+    }
     busy = true;
     errors = [];
     try {
@@ -177,25 +205,12 @@
       ></textarea>
 
       <div class="flex min-w-0 flex-wrap items-center gap-1.5 px-1 pt-1">
-        <ContextRing used={contextUsed} size={contextSize} />
-        {#if model}
-          <span class="hide-sm max-w-[200px] truncate font-mono text-[12px] text-fg-3" title={model}>{model}</span>
-        {/if}
-        {#if efforts.length && onthought}
-          <label class="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[12px] text-fg-2">
-            <Icon name="sparkles" size={12} class="text-tool-thinking" />
-            <span class="sr-only">Thinking level</span>
-            <select
-              class="cursor-pointer bg-transparent text-[12px] outline-none"
-              value={thoughtLevel}
-              aria-label="Thinking level"
-              onchange={(event) => void onthought(event.currentTarget.value)}
-            >
-              {#if !thoughtLevel}<option value="" disabled>effort</option>{/if}
-              {#each efforts as level (level)}<option value={level}>{level}</option>{/each}
-            </select>
-          </label>
-        {/if}
+        <button type="button" class="inline-flex min-w-0 items-center gap-1 rounded-full hover:bg-surface-3" aria-label="Open context details" onclick={() => ondetails?.('context')}>
+          <ContextRing used={contextUsed} size={contextSize} />
+        </button>
+        <button type="button" class="max-w-[220px] truncate rounded-full px-2 py-1 text-[12px] text-fg-3 hover:bg-surface-3" aria-label="Choose model and reasoning effort" onclick={() => ondetails?.('model')}>
+          {model || 'Model'}{thoughtLevel ? ` · ${thoughtLevel}` : ''}
+        </button>
         <span class="flex-1"></span>
         <input
           bind:this={picker}
@@ -213,7 +228,8 @@
             type="button"
             class="icon-btn"
             aria-label="Attach image"
-            title="Attach image · 10 MB each · 5 per prompt"
+            title={imageInput ? "Attach image · 10 MB each · 5 per prompt" : "This model does not support images"}
+            disabled={disabled || !imageInput}
             onclick={() => picker?.click()}
           ><Icon name="paperclip" size={16} /></button>
         {/if}

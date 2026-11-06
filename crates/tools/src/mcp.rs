@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rmcp::model::{
@@ -13,27 +14,43 @@ use crate::Toolbox;
 /// MCP server over rmcp: advertises the workspace tools and dispatches calls.
 pub struct McpServer {
     toolbox: Arc<Toolbox>,
+    descriptions: Arc<HashMap<String, String>>,
 }
 
 impl Clone for McpServer {
     fn clone(&self) -> Self {
         Self {
             toolbox: Arc::clone(&self.toolbox),
+            descriptions: Arc::clone(&self.descriptions),
         }
     }
 }
 
 impl McpServer {
     pub fn new(toolbox: Arc<Toolbox>) -> Self {
-        Self { toolbox }
+        Self {
+            toolbox,
+            descriptions: Arc::new(HashMap::new()),
+        }
+    }
+
+    /// Tool descriptions rendered from the Prompt Store, keyed by tool name:
+    /// the web UI edits `tool.<name>.description` and this is where it lands.
+    pub fn with_descriptions(mut self, descriptions: HashMap<String, String>) -> Self {
+        self.descriptions = Arc::new(descriptions);
+        self
     }
 
     pub fn tools(&self) -> Vec<Tool> {
         tool_specs()
             .into_iter()
             .filter_map(|spec| {
-                let description = spec.get("description")?.as_str()?.to_string();
                 let name = spec.get("name")?.as_str()?.to_string();
+                let description = self
+                    .descriptions
+                    .get(&name)
+                    .cloned()
+                    .or_else(|| spec.get("description")?.as_str().map(str::to_string))?;
                 let schema: Map<String, Value> =
                     serde_json::from_value(spec.get("inputSchema")?.clone()).ok()?;
                 Some(Tool::new(name, description, Arc::new(schema)))

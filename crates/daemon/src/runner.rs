@@ -30,6 +30,7 @@ pub struct SessionRunner {
     handles: Arc<Mutex<HashMap<String, Arc<Handle>>>>,
     settings: Arc<RwLock<Settings>>,
     reminders: Arc<Mutex<HashMap<String, Cycle>>>,
+    titles: Option<crate::titles::Titles>,
 }
 
 fn log_failure(error: Option<impl std::fmt::Display>, what: &str) {
@@ -72,7 +73,13 @@ impl SessionRunner {
             handles: Arc::new(Mutex::new(HashMap::new())),
             settings,
             reminders: Arc::new(Mutex::new(HashMap::new())),
+            titles: None,
         }
+    }
+
+    pub(crate) fn with_titles(mut self, titles: crate::titles::Titles) -> Self {
+        self.titles = Some(titles);
+        self
     }
 
     fn wiring(
@@ -237,6 +244,9 @@ impl SessionDriver for SessionRunner {
                 data_base64: image.data_base64,
             })
             .collect();
+        if let Some(titles) = &self.titles {
+            titles.start(session_id, text).await;
+        }
         handle.queue.set_turn_active(true);
         let sent = handle.session.send(text, images).await;
         if sent.is_err() {
@@ -279,6 +289,37 @@ impl SessionDriver for SessionRunner {
 
     async fn connect(&self, session_id: &str) -> Result<(), String> {
         self.ensure(session_id).await.map(|_| ())
+    }
+
+    async fn configure_model(
+        &self,
+        session_id: &str,
+        model: &str,
+        effort: Option<&str>,
+    ) -> Result<(), String> {
+        let meta = self
+            .sessions
+            .get(session_id)
+            .await
+            .ok_or("Session not found")?;
+        if crate::is_pi_model(Some(&meta.model)) != crate::is_pi_model(Some(model)) {
+            return Err(
+                "This model uses a different harness. Create a new Session to use it.".into(),
+            );
+        }
+        if self.steers.queue(session_id).is_turn_active() {
+            return Err("Wait for the current turn to finish".into());
+        }
+        if let Some(handle) = self.handle(session_id).await {
+            if let Err(error) = handle.session.configure_model(model, effort).await {
+                let _ = handle
+                    .session
+                    .configure_model(&meta.model, meta.thought_level.as_deref())
+                    .await;
+                return Err(error.to_string());
+            }
+        }
+        Ok(())
     }
 
     async fn set_thought_level(&self, session_id: &str, level: &str) -> Result<(), String> {

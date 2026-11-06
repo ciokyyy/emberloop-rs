@@ -123,6 +123,7 @@ pub struct AgyLogin {
     active: Mutex<Option<Arc<ActiveLogin>>>,
     http: reqwest::Client,
     codex: CodexLogin,
+    usage_cache: Mutex<HashMap<String, (std::time::Instant, api::providers::UsageView)>>,
 }
 
 impl AgyLogin {
@@ -139,6 +140,7 @@ impl AgyLogin {
             active: Mutex::new(None),
             http,
             codex: CodexLogin::new(PathBuf::new()),
+            usage_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -227,6 +229,7 @@ impl AgyLogin {
 
     fn runner(&self) -> AgyLogin {
         AgyLogin {
+            usage_cache: Mutex::new(HashMap::new()),
             accounts_dir: self.accounts_dir.clone(),
             bin: self.bin.clone(),
             keys_file: self.keys_file.clone(),
@@ -328,6 +331,40 @@ fn tier_of(result: &serde_json::Value) -> String {
 
 #[async_trait]
 impl ProviderLogin for AgyLogin {
+    async fn usage(
+        &self,
+        provider: &str,
+        refresh: bool,
+    ) -> Result<api::providers::UsageView, LoginError> {
+        if !refresh {
+            if let Some((at, value)) = self.usage_cache.lock().await.get(provider) {
+                if at.elapsed().as_secs() < 60 {
+                    return Ok(value.clone());
+                }
+            }
+        }
+        let view = match crate::usage::fetch(
+            &self.http,
+            provider,
+            self.keys_file.as_deref(),
+            self.codex.auth_path(),
+            &self.home(),
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(message) => api::providers::UsageView {
+                error: Some(message),
+                ..Default::default()
+            },
+        };
+        self.usage_cache.lock().await.insert(
+            provider.to_owned(),
+            (std::time::Instant::now(), view.clone()),
+        );
+        Ok(view)
+    }
+
     async fn providers(&self) -> Vec<ProviderView> {
         let accounts: Vec<AccountView> = self
             .read_accounts()

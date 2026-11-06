@@ -1,4 +1,5 @@
-import type { SessionEvent, SessionStatus, SteerRoute } from './api/types';
+import { readBreakdown } from './contextBreakdown';
+import type { ContextBreakdown, SessionEvent, SessionStatus, SteerRoute } from './api/types';
 
 export type ToolStatus = 'running' | 'completed' | 'failed';
 
@@ -39,7 +40,7 @@ export interface TodoItem {
 export interface FeedState {
   items: FeedItem[];
   status: SessionStatus;
-  usage: { used: number; window: number } | null;
+  usage: { used: number; window: number; breakdown?: ContextBreakdown | null } | null;
   todos: TodoItem[];
 }
 
@@ -83,7 +84,7 @@ function toolInputText(value: unknown): string {
 }
 
 /** A tool result arrives as plain text (pi) or as `{ text, content[] }` (agy). */
-export function outputText(value: unknown): string {
+function outputText(value: unknown): string {
   if (typeof value === 'string') return value;
   if (!value || typeof value !== 'object') return '';
   const record = value as Record<string, unknown>;
@@ -260,7 +261,8 @@ export function applySnapshot(state: FeedState, snapshot: Snapshot): FeedState {
       ...next,
       usage: {
         used: number(snapshot.usage.inputTokens ?? snapshot.usage.used ?? snapshot.usage.tokens),
-        window: number(snapshot.usage.contextWindow ?? snapshot.usage.window) || next.usage?.window || 0
+        window: number(snapshot.usage.contextWindow ?? snapshot.usage.window) || next.usage?.window || 0,
+        ...(snapshot.usage.breakdown ? { breakdown: readBreakdown(snapshot.usage.breakdown) } : {})
       }
     };
   }
@@ -378,7 +380,8 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
         ...state,
         usage: {
           used: number(data.inputTokens ?? data.used ?? data.tokens),
-          window: number(data.contextWindow ?? data.window) || state.usage?.window || 0
+          window: number(data.contextWindow ?? data.window) || state.usage?.window || 0,
+          ...(data.breakdown ? { breakdown: readBreakdown(data.breakdown) } : {})
         }
       };
 

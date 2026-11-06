@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Project, Session, SessionStatus } from '$lib/api/types';
+  import type { Model, Project, Session, SessionStatus } from '$lib/api/types';
   import { timeAgo } from '$lib/time';
   import { fade } from 'svelte/transition';
   import { flip, flipAnimation, flipReady, motionParams, rowEnter, slide } from '$lib/motion';
@@ -8,6 +8,7 @@
 
   let {
     projects,
+    models = [],
     sessions,
     statuses,
     selectedId,
@@ -24,6 +25,7 @@
     onusage
   }: {
     projects: Project[];
+    models?: Model[];
     sessions: Session[];
     statuses: Record<string, SessionStatus>;
     selectedId: string | null;
@@ -41,12 +43,6 @@
     onusage: () => void;
   } = $props();
 
-  const dotClass: Record<SessionStatus, string> = {
-    idle: 'bg-status-done',
-    working: 'bg-status-working',
-    failed: 'bg-status-failed',
-    paused: 'bg-status-paused'
-  };
   const statusWord: Record<SessionStatus, string> = {
     idle: 'Idle',
     working: 'Working',
@@ -58,7 +54,7 @@
 
 <div class="flex h-full flex-col border-r border-border bg-sidebar">
   <div class="flex items-center justify-between px-4 pt-4 pb-3">
-    <div class="font-semibold tracking-tight">Emberloop <span class="chip ml-1">rust</span></div>
+    <div class="font-semibold tracking-tight">Emberloop</div>
   </div>
   <div class="flex gap-2 px-3 pb-2">
     <Button variant="primary" class="flex-1" onclick={onnew}>New session</Button>
@@ -79,6 +75,7 @@
         </div>
         {#each list as session (session.id)}
           {@const status = statusOf(session.id)}
+          {@const harness = models.find((model) => model.id === session.model)?.source ?? (session.model.includes('/') ? 'pi' : 'agy')}
           <div
             class={cn('row group flex items-center gap-1 px-1', selectedId === session.id && 'sel')}
             use:flipReady
@@ -92,8 +89,9 @@
               onclick={() => onselect(session.id)}
             >
               <span
-                class={cn('dot', dotClass[status], status === 'working' && 'pulse')}
-                title={statusWord[status]}
+                class={cn('h-7 w-[3px] shrink-0 rounded-full', status === 'working' && 'pulse')}
+                style:background={harness === 'claude' ? '#d6a87b' : harness === 'pi' ? '#ce614a' : '#5b9ac6'}
+                title={`${harness === 'claude' ? 'Claude' : harness === 'pi' ? 'pi-rs' : 'Antigravity'} · ${statusWord[status]}`}
               ></span>
               <span class="min-w-0 flex-1">
                 <span class="block truncate text-[14px]">{session.title}</span>

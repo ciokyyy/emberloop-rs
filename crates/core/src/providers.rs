@@ -1,20 +1,19 @@
-//! The API-key providers pi-rust bundles (`pi` v0.12.11 provider table), by id.
+//! Fixed provider endpoints shared by harness configuration and proxy routing.
 //!
-//! A key provider is a plain HTTP API with a bearer or `x-api-key` key. The proxy forwards
-//! its traffic: pi's `baseUrl` becomes `<proxy>/x/<id><path of base_url>` and the proxy puts the
-//! upstream origin back, so the key never leaves `models.json`. Providers whose base URL needs
-//! an account or region (Bedrock, Azure, Vertex, Cloudflare) and the Google wire are left out.
+//! `KEY_PROVIDERS` lists the API-key providers pi-rust bundles. `OAUTH_PROVIDERS` adds
+//! subscription endpoints that must also cross the proxy, but are never advertised as
+//! key providers. Credentials are resolved by the harness, not this registry.
 
-/// One API-key provider.
+/// One provider endpoint; the registry determines its authentication kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KeyProvider {
+pub struct ProviderEndpoint {
     pub id: &'static str,
     pub name: &'static str,
     /// pi's default `baseUrl` for the provider, as in its bundled catalogue.
     pub base_url: &'static str,
 }
 
-impl KeyProvider {
+impl ProviderEndpoint {
     /// `(origin, path)` of `base_url`, e.g. `("https://api.groq.com", "/openai/v1")`.
     pub fn split(&self) -> (&'static str, &'static str) {
         let rest = self
@@ -40,8 +39,8 @@ impl KeyProvider {
 
 macro_rules! providers {
     ($(($id:literal, $name:literal, $base:literal)),+ $(,)?) => {
-        pub const KEY_PROVIDERS: &[KeyProvider] = &[
-            $(KeyProvider { id: $id, name: $name, base_url: $base }),+
+        pub const KEY_PROVIDERS: &[ProviderEndpoint] = &[
+            $(ProviderEndpoint { id: $id, name: $name, base_url: $base }),+
         ];
     };
 }
@@ -130,7 +129,18 @@ providers![
     ),
 ];
 
-pub fn key_provider(id: &str) -> Option<&'static KeyProvider> {
+/// OAuth endpoints are proxied, but must never appear in the API-key provider list.
+pub const OAUTH_PROVIDERS: &[ProviderEndpoint] = &[ProviderEndpoint {
+    id: "openai-codex",
+    name: "ChatGPT",
+    base_url: "https://chatgpt.com/backend-api",
+}];
+
+pub fn proxy_provider(id: &str) -> Option<&'static ProviderEndpoint> {
+    key_provider(id).or_else(|| OAUTH_PROVIDERS.iter().find(|provider| provider.id == id))
+}
+
+pub fn key_provider(id: &str) -> Option<&'static ProviderEndpoint> {
     KEY_PROVIDERS.iter().find(|provider| provider.id == id)
 }
 
@@ -168,5 +178,15 @@ mod tests {
             "http://127.0.0.1:1/p/tok/x/groq/openai/v1"
         );
         assert!(key_provider("opencode-go").is_none());
+    }
+    #[test]
+    fn codex_oauth_has_a_proxy_target_but_is_not_an_api_key_provider() {
+        let endpoint = proxy_provider("openai-codex").unwrap();
+        assert_eq!(endpoint.split(), ("https://chatgpt.com", "/backend-api"));
+        assert_eq!(
+            endpoint.proxied_base_url("http://127.0.0.1:1/proxy/tok"),
+            "http://127.0.0.1:1/proxy/tok/x/openai-codex/backend-api"
+        );
+        assert!(key_provider("openai-codex").is_none());
     }
 }

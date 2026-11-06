@@ -40,7 +40,7 @@ const ROUND_TIMEOUT: Duration = Duration::from_secs(120);
 #[cfg(test)]
 const ROUND_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_TOOL_ROUNDS: usize = 8;
-const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_BODY_BYTES: usize = 128 * 1024 * 1024;
 pub(crate) const PROXY_TOOLS: &[&str] = &["compress", "decompress", "search_context", "acp_status"];
 
 type ByteStream = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
@@ -101,6 +101,8 @@ pub enum ProxyError {
     Json(#[from] serde_json::Error),
     #[error("upstream error: {0}")]
     Upstream(#[from] reqwest::Error),
+    #[error("{0}")]
+    Encoding(#[from] crate::encoding::Error),
     #[error("request body too large")]
     BodyTooLarge,
     #[error("request has no conversation contents")]
@@ -317,7 +319,7 @@ async fn dispatch(
         .map_err(|_| ProxyError::BodyTooLarge)?;
 
     let config = &state.inner.config;
-    let (base, path, wire) = match key_provider_route(config, &rest)? {
+    let (base, path, wire) = match provider_route(config, &rest)? {
         Some((origin, path)) => {
             let wire = WireKind::from_rest(&path).map(|(wire, _)| wire);
             (origin, path, wire)
@@ -331,6 +333,10 @@ async fn dispatch(
     let Some(wire) = wire else {
         return forward_plain(&state, &method, &base, &path, uri.query(), &headers, body).await;
     };
+    let encoding = headers
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok());
+    let body = crate::encoding::decode(encoding, body, MAX_BODY_BYTES)?;
     handle_generation(
         &state,
         &session_id,
@@ -345,7 +351,7 @@ async fn dispatch(
 }
 
 /// `x/<provider>/<path>` -> the provider's origin and `<path>`; `None` for any other route.
-fn key_provider_route(
+fn provider_route(
     config: &ProxyConfig,
     rest: &str,
 ) -> Result<Option<(String, String)>, ProxyError> {
@@ -353,7 +359,7 @@ fn key_provider_route(
         return Ok(None);
     };
     let (id, path) = tail.split_once('/').unwrap_or((tail, ""));
-    let provider = emberloop_core::providers::key_provider(id)
+    let provider = emberloop_core::providers::proxy_provider(id)
         .ok_or_else(|| ProxyError::UnknownProvider(id.to_string()))?;
     let origin = config
         .provider_origin
@@ -555,7 +561,7 @@ async fn buffered_generation(
     let Some((status, content_type, bytes)) = final_response else {
         return Err(ProxyError::ToolRoundLimit);
     };
-    publish_usage(state, session_id, &runtime, &bytes).await;
+    publish_usage(state, session_id, &runtime, &bytes, wire, &request).await;
     Ok(response_with(status, content_type.as_deref(), bytes))
 }
 
@@ -1399,6 +1405,10 @@ async fn send_stream(
     body: &Value,
 ) -> Result<reqwest::Response, ProxyError> {
     let bytes = serde_json::to_vec(body)?;
+    let encoding = headers
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok());
+    let bytes = crate::encoding::encode(encoding, bytes)?;
     let mut request = client.post(url);
     request = with_headers(request, headers);
     let request = request.header(header::CONTENT_TYPE, "application/json");
@@ -1423,12 +1433,15 @@ async fn send_generation(
     Ok((status, content_type, bytes))
 }
 
+/// Copy the client headers onto a generation request, minus the ones the proxy
+/// sets itself: `send_stream` owns `content-type` and a second copy makes
+/// upstream answer `Unsupported content type`.
 fn with_headers(
     mut request: reqwest::RequestBuilder,
     headers: &HeaderMap,
 ) -> reqwest::RequestBuilder {
     for (name, value) in headers {
-        if is_hop_by_hop(name.as_str()) {
+        if is_hop_by_hop(name.as_str()) || *name == header::CONTENT_TYPE {
             continue;
         }
         request = request.header(name.as_str(), value.as_bytes());
@@ -1441,6 +1454,8 @@ async fn publish_usage(
     session_id: &str,
     runtime: &SessionRuntime,
     bytes: &Bytes,
+    wire: WireKind,
+    request: &Value,
 ) {
     let Some(usage) = meter::extract_usage(bytes) else {
         return;
@@ -1448,12 +1463,23 @@ async fn publish_usage(
     runtime
         .last_input_tokens
         .store(usage.input_tokens, Ordering::Relaxed);
-    publish_usage_event(state, session_id, usage).await;
+    publish_usage_event(
+        state,
+        session_id,
+        usage,
+        crate::context::ContextBreakdown::from_request(wire, request),
+    )
+    .await;
 }
 
 /// The meter reads the window from the live catalogue, so a refreshed window
 /// reaches the UI with the next response instead of a stale model snapshot.
-async fn publish_usage_event(state: &ProxyState, session_id: &str, usage: meter::Usage) {
+async fn publish_usage_event(
+    state: &ProxyState,
+    session_id: &str,
+    usage: meter::Usage,
+    breakdown: crate::context::ContextBreakdown,
+) {
     let window = match state.inner.sessions.get(session_id).await {
         Some(meta) => state.inner.models.window(&meta.model).await,
         None => None,
@@ -1461,7 +1487,8 @@ async fn publish_usage_event(state: &ProxyState, session_id: &str, usage: meter:
     let mut data = json!({
         "inputTokens": usage.input_tokens,
         "outputTokens": usage.output_tokens,
-        "cachedTokens": usage.cached_tokens
+        "cachedTokens": usage.cached_tokens,
+        "breakdown": breakdown
     });
     if let Some(window) = window {
         data["contextWindow"] = json!(window);
@@ -1525,7 +1552,10 @@ fn error_response(error: &ProxyError) -> Response<Body> {
     let status = match error {
         ProxyError::Token(_) | ProxyError::UnknownSession => StatusCode::UNAUTHORIZED,
         ProxyError::Json(_) | ProxyError::NoContents => StatusCode::BAD_REQUEST,
-        ProxyError::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        ProxyError::BodyTooLarge | ProxyError::Encoding(crate::encoding::Error::TooLarge) => {
+            StatusCode::PAYLOAD_TOO_LARGE
+        }
+        ProxyError::Encoding(_) => StatusCode::BAD_REQUEST,
         ProxyError::UnknownProvider(_) => StatusCode::NOT_FOUND,
         ProxyError::Prompt(_)
         | ProxyError::ToolRoundLimit
@@ -1637,7 +1667,13 @@ impl SseState {
         self.runtime
             .last_input_tokens
             .store(usage.input_tokens, Ordering::Relaxed);
-        publish_usage_event(&self.proxy, &self.session_id, usage).await;
+        publish_usage_event(
+            &self.proxy,
+            &self.session_id,
+            usage,
+            crate::context::ContextBreakdown::from_request(self.wire, &self.request),
+        )
+        .await;
     }
 
     async fn follow_up(&mut self) -> Result<(), ProxyError> {
@@ -1649,6 +1685,7 @@ impl SseState {
         )
         .await?;
         self.stream = Some(response.bytes_stream().boxed());
+        self.published = None;
         self.step_signature = None;
         self.proxy_round = false;
         self.stream_calls.clear();

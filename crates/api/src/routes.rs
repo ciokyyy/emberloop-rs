@@ -39,6 +39,7 @@ use crate::state::{AppState, Settings};
         list_models,
         refresh_models,
         crate::providers::list_providers,
+        crate::providers::provider_usage,
         crate::providers::start_agy_login,
         crate::providers::get_agy_login,
         crate::providers::cancel_agy_login,
@@ -67,6 +68,9 @@ use crate::state::{AppState, Settings};
             PromptTextDto,
             ModelEntry,
             crate::providers::ProviderView,
+            crate::providers::UsageView,
+            crate::providers::UsageWindow,
+            crate::providers::UsageBalance,
             crate::providers::AccountView,
             crate::providers::LoginView,
             crate::providers::LoginRequest,
@@ -131,6 +135,7 @@ pub struct CreateSessionRequest {
 #[derive(Deserialize, ToSchema)]
 pub struct UpdateSessionRequest {
     pub title: Option<String>,
+    pub model: Option<String>,
     #[serde(rename = "thoughtLevel")]
     pub thought_level: Option<String>,
 }
@@ -351,20 +356,27 @@ pub async fn update_session(
         .get(&id)
         .await
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Session not found: {id}")))?;
+    if payload.model.is_some() || payload.thought_level.is_some() {
+        crate::session_setup::configure(&state, &mut updated, payload.model, payload.thought_level)
+            .await?;
+    }
+    updated.updated_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    state
+        .sessions
+        .save(&updated)
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     if let Some(title) = payload.title {
         updated = state
             .sessions
             .update_title(&id, &title)
             .await
-            .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
-    }
-    if let Some(level) = payload.thought_level {
-        updated = state
-            .sessions
-            .update_thought_level(&id, Some(level.clone()))
-            .await
-            .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
-        let _ = state.driver.set_thought_level(&id, &level).await;
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    } else if let Some(current) = state.sessions.get(&id).await {
+        updated = current;
     }
     Ok(Json(session_dto(updated)))
 }
@@ -417,9 +429,12 @@ pub async fn prompt_session(
     Path(id): Path<String>,
     Json(payload): Json<PromptRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if state.sessions.get(&id).await.is_none() {
-        return Err((StatusCode::NOT_FOUND, "Session not found".into()));
-    }
+    let meta = state
+        .sessions
+        .get(&id)
+        .await
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Session not found".into()))?;
+    crate::session_setup::validate_images(&state, &meta, &payload.images).await?;
     // A turn already running takes the message as a steer. The UI's own idea of
     // `working` is stale after a page reload; the queue's is not.
     if state.steers.queue(&id).is_turn_active() {
@@ -594,16 +609,29 @@ pub async fn get_settings(State(state): State<AppState>) -> Json<Settings> {
     path = "/api/settings",
     request_body = Settings,
     responses(
-        (status = 200, description = "Settings updated", body = Settings)
+        (status = 200, description = "Settings updated", body = Settings),
+        (status = 400, description = "Invalid title model")
     )
 )]
 pub async fn update_settings(
     State(state): State<AppState>,
     Json(payload): Json<Settings>,
-) -> Json<Settings> {
+) -> Result<Json<Settings>, (StatusCode, String)> {
+    if payload.title_model.len() > 256
+        || payload.title_model.chars().any(char::is_whitespace)
+        || !payload
+            .title_model
+            .split_once('/')
+            .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty())
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Title model must be provider/model".into(),
+        ));
+    }
     let mut settings = state.settings.write().await;
     *settings = payload.clone();
-    Json(payload)
+    Ok(Json(payload))
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -771,7 +799,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/sessions/{id}",
             patch(update_session).delete(delete_session),
         )
-        .route("/api/sessions/{id}/prompt", post(prompt_session))
+        .route(
+            "/api/sessions/{id}/prompt",
+            post(prompt_session).layer(axum::extract::DefaultBodyLimit::max(70 * 1024 * 1024)),
+        )
         .route("/api/sessions/{id}/steer", post(steer_session))
         .route("/api/sessions/{id}/cancel", post(cancel_session))
         .route(
@@ -1073,6 +1104,35 @@ mod prompt_routes_tests {
                     .uri("/api/prompts/policy")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"text":"Custom {{ nope }}"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    #[tokio::test]
+    async fn title_settings_default_and_validate_the_sdk_model_id() {
+        let app = app().await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let settings = json(response).await;
+        assert_eq!(settings["title_model"], "openrouter/openrouter/free");
+        assert_eq!(settings["title_generation"], true);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title_model":"not-a-provider-model"}"#))
                     .unwrap(),
             )
             .await

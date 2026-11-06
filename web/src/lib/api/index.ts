@@ -1,4 +1,5 @@
 import type {
+  UsageView,
   LoginView,
   Model,
   Project,
@@ -49,13 +50,14 @@ export const api = {
     projectId: string,
     title: string | undefined,
     ponytailLevel: string,
-    model?: string
+    model?: string,
+    thoughtLevel?: string
   ) =>
     request<Session>('/api/sessions', {
       method: 'POST',
-      body: JSON.stringify({ projectId, title, ponytailLevel, model })
+      body: JSON.stringify({ projectId, title, ponytailLevel, model, thoughtLevel })
     }),
-  updateSession: (id: string, patch: { title?: string; thoughtLevel?: string }) =>
+  updateSession: (id: string, patch: { title?: string; model?: string; thoughtLevel?: string }) =>
     request<Session>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch)
@@ -83,6 +85,8 @@ export const api = {
   updateSettings: (settings: Settings) =>
     request<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }),
 
+  providerUsage: (provider: string, refresh = false): Promise<UsageView> =>
+    request(`/api/providers/${encodeURIComponent(provider)}/usage?refresh=${refresh}`),
   listProviders: () => request<ProviderView[]>('/api/providers'),
   startAgyLogin: (label: string) =>
     request<LoginView>('/api/providers/agy/login', {
