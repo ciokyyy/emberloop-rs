@@ -1,0 +1,1 @@
+Read or stop a background command. `list` shows every process of the Session; `read` takes an offset into the log and answers with the chunk and the next offset; `wait` answers `exited` or `timeout`; `stop` ends the process group.

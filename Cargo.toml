@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/store",
+    "crates/prompts",
+    "crates/proxy",
+    "crates/tools",
+    "crates/harness",
+    "crates/harness-acp",
+    "crates/harness-agy",
+    "crates/harness-pi",
+    "crates/api",
+    "crates/daemon",
+]
+exclude = [
+    "crates/spike",
+]
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+emberloop-core = { package = "emberloop-core", path = "crates/core" }
+store = { path = "crates/store" }
+harness = { path = "crates/harness" }
+harness-acp = { path = "crates/harness-acp" }
+harness-agy = { path = "crates/harness-agy" }
+harness-pi = { path = "crates/harness-pi" }
+tools = { path = "crates/tools" }
+prompts = { path = "crates/prompts" }
+proxy = { path = "crates/proxy" }
+api = { path = "crates/api" }
+daemon = { path = "crates/daemon" }
+
+tokio = { version = "1.40", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+libc = "0.2"
+axum = { version = "0.8", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+utoipa = { version = "6.0", features = ["axum_extras"] }
+utoipa-axum = "0.3"
+agent-client-protocol = "=5.0.0"
+rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-io"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+thiserror = "1.0"
+async-trait = "0.1"
+futures = "0.3"
+sha2 = "0.10"
+hex = "0.4"
+zstd = "0.13"
+hmac = "0.12"
+ignore = "0.4"
+regex = "1.10"
+glob = "0.3"
+tempfile = "3.12"
+clap = { version = "4.5", features = ["derive"] }
+rust-embed = "8.5"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+
+[workspace.lints.clippy]
+cognitive_complexity = "deny"
+disallowed_methods = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+await_holding_lock = "deny"
+large_futures = "deny"
+
+# Light dev profile: the check links faster and tests read no debug info.
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

@@ -1,0 +1,6 @@
+cognitive-complexity-threshold = 15
+
+disallowed-methods = [
+  { path = "std::thread::sleep", reason = "real sleeps hide races and blow the check budget; use a fake clock in tests and a watcher outside them" },
+  { path = "tokio::time::sleep", reason = "real sleeps hide races and blow the check budget; use a fake clock in tests and a watcher outside them" },
+]

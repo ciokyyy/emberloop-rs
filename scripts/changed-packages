@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Map changed paths to workspace packages, then to the packages that depend
+on them, so scripts/check-changed can test a focused slice.
+
+Usage: changed-paths via stdin, one per line. Prints one package name per line.
+"""
+import json
+import pathlib
+import subprocess
+import sys
+
+root = pathlib.Path(__file__).resolve().parent.parent
+meta = json.loads(
+    subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+)
+packages = {p["name"]: p for p in meta["packages"]}
+by_dir = {}
+for name, package in packages.items():
+    by_dir[pathlib.Path(package["manifest_path"]).parent] = name
+
+changed = [
+    pathlib.Path(line.strip())
+    for line in sys.stdin
+    if line.strip() and line.strip().endswith((".rs", ".toml"))
+]
+selected = set()
+for path in changed:
+    absolute = (root / path).resolve()
+    for directory, name in by_dir.items():
+        if absolute == directory or directory in absolute.parents:
+            selected.add(name)
+
+# Reverse dependencies: anything that names a selected package in its deps.
+dependents = {name: set() for name in packages}
+for name, package in packages.items():
+    for dep in package["dependencies"]:
+        if dep["name"] in dependents:
+            dependents[dep["name"]].add(name)
+
+grew = True
+while grew:
+    grew = False
+    for name in list(selected):
+        for dependent in dependents[name]:
+            if dependent not in selected:
+                selected.add(dependent)
+                grew = True
+
+for name in sorted(selected):
+    print(name)

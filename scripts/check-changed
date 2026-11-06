@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Focused loop check: a changed crate, its dependents, and the full check when
+# something shared (a manifest, the lockfile, scripts or config) changed.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+if [ -f "$HOME/.cargo/env" ]; then
+    . "$HOME/.cargo/env"
+fi
+
+changed="$(
+    {
+        git diff --name-only
+        git diff --cached --name-only
+        git ls-files --others --exclude-standard
+    } | sort -u
+)"
+if [ -z "$changed" ]; then
+    echo "no changes; nothing to check"
+    exit 0
+fi
+
+if printf '%s\n' "$changed" | grep -Eq '(^|/)Cargo\.toml$|^Cargo\.lock$|^scripts/|^\.config/|^clippy\.toml$'; then
+    echo "==> shared change; running the full check"
+    exec scripts/check
+fi
+
+packages="$(printf '%s\n' "$changed" | scripts/changed-packages)"
+if [ -z "$packages" ]; then
+    echo "==> no crate changed; running the full check"
+    exec scripts/check
+fi
+
+args=()
+for package in $packages; do
+    args+=(-p "$package")
+done
+echo "==> changed packages: ${packages//$'\n'/ }"
+
+began=$(date +%s%N)
+cargo fmt --check
+cargo clippy "${args[@]}" --all-targets -- -D warnings
+cargo nextest run "${args[@]}"
+
+spent=$(( ($(date +%s%N) - began) / 1000000 ))
+budget=$(awk -F '\t' '$1 == "loop" { print $2 }' scripts/check-budget.tsv)
+if [ -n "$budget" ] && [ "$spent" -gt $((budget * 1000)) ]; then
+    echo "budget exceeded: loop ${spent}ms > $((budget * 1000))ms" >&2
+    exit 1
+fi
+echo "==> check-changed passed in $(( spent / 1000 ))s"

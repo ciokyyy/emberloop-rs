@@ -1,0 +1,1 @@
+Apply a hashline patch. The header carries `[path#TAG]`; ops are `PUT N.=M:`, `PUT <N:`, `PUT >N:`, `PUT >$:` and `CUT N`/`CUT N.=M`; body lines start with `+`. Anchors must come from the view the tag names.

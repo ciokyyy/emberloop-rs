@@ -1,0 +1,1 @@
+Search the Project tree. `pattern` is a regular expression unless `fixed` is true; `path` narrows the scope; `glob` filters file names; `case_insensitive`, `context` and `max_results` tune the answer; `files` and `count` change the output shape. `.gitignore` is respected.

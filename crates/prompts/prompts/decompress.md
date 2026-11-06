@@ -1,0 +1,1 @@
+Restore previously compressed content. Use when you need exact details lost in compression. Pass the `blockId` a compression returned. `toFile` writes the restored turns to a file under the session spill directory instead of inflating context; only a plain file name is accepted there.

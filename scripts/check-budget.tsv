@@ -1,0 +1,12 @@
+# stage	seconds, measured on the development host
+fmt	5
+deny	30
+machete	15
+clippy	120
+nextest	90
+doc	30
+web	180
+openapi	60
+generated	10
+total	180
+loop	30

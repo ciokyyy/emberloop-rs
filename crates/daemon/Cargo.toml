@@ -1,0 +1,36 @@
+[package]
+name = "emberloop-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+emberloop-core = { workspace = true }
+store = { workspace = true }
+prompts = { workspace = true }
+proxy = { workspace = true }
+api = { workspace = true }
+harness = { workspace = true }
+harness-agy = { workspace = true }
+harness-pi = { workspace = true }
+tools = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+rust-embed = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

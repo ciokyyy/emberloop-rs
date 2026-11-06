@@ -1,0 +1,249 @@
+<script lang="ts">
+  import { onDestroy, onMount } from 'svelte';
+  import { api } from '$lib/api';
+  import { fade } from 'svelte/transition';
+  import { flip, flipAnimation, flipReady, motionParams, rise, rowEnter, slide, slideDown } from '$lib/motion';
+  import type { LoginView, ProviderView } from '$lib/api/types';
+
+  let providers = $state<ProviderView[]>([]);
+  let login = $state<LoginView | null>(null);
+  let label = $state('');
+  let address = $state('');
+  let opencodeKey = $state('');
+  let error = $state('');
+  let loading = $state(false);
+  let copied = $state(false);
+  let poll: ReturnType<typeof setInterval> | null = null;
+
+  async function refresh() {
+    try {
+      providers = await api.listProviders();
+    } catch (cause) {
+      error = String(cause);
+    }
+  }
+
+  function watch(id: string) {
+    stopWatch();
+    poll = setInterval(() => {
+      void (async () => {
+        try {
+          login = await api.getAgyLogin(id);
+          if (login.state !== 'running') {
+            stopWatch();
+            void refresh();
+          }
+        } catch (cause) {
+          error = String(cause);
+          stopWatch();
+        }
+      })();
+    }, 1000);
+  }
+
+  function stopWatch() {
+    if (poll) clearInterval(poll);
+    poll = null;
+  }
+
+  async function signIn() {
+    loading = true;
+    error = '';
+    try {
+      login = await api.startAgyLogin(label);
+      address = '';
+      watch(login.id);
+    } catch (cause) {
+      error = String(cause);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function complete() {
+    if (!login) return;
+    loading = true;
+    error = '';
+    try {
+      login = await api.completeAgyLogin(login.id, address);
+    } catch (cause) {
+      error = String(cause);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function cancel() {
+    if (!login) return;
+    stopWatch();
+    try {
+      await api.cancelAgyLogin(login.id);
+      login = null;
+      await refresh();
+    } catch (cause) {
+      error = String(cause);
+    }
+  }
+
+  async function signOut(id: string) {
+    if (!window.confirm('Sign out of this Account? Its home directory is deleted.')) return;
+    try {
+      await api.signOutAccount(id);
+      await refresh();
+    } catch (cause) {
+      error = String(cause);
+    }
+  }
+
+  async function saveOpenCodeKey() {
+    loading = true;
+    error = '';
+    try {
+      await api.setOpenCodeKey(opencodeKey);
+      opencodeKey = '';
+      await refresh();
+      await api.refreshModels();
+    } catch (cause) {
+      error = String(cause);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function copy() {
+    if (!login?.url) return;
+    await navigator.clipboard.writeText(login.url);
+    copied = true;
+    setTimeout(() => (copied = false), 1500);
+  }
+
+  onMount(() => {
+    void refresh();
+    return () => stopWatch();
+  });
+  onDestroy(stopWatch);
+</script>
+
+<section class="h-full overflow-y-auto p-6" in:rise|global>
+  <h2 class="text-[1.75rem] font-semibold leading-[1.2] tracking-[-0.02em]">Providers</h2>
+  <p class="mt-1 text-[13px] text-fg-3">
+    The daemon spawns the Antigravity server for the Account's own home. No token passes through
+    Emberloop.
+  </p>
+
+  {#if error}
+    <p
+      class="mt-4 rounded border border-status-failed/40 bg-status-failed/10 px-3 py-2 text-[13px]"
+      transition:slideDown
+    >
+      {error}
+    </p>
+  {/if}
+
+  {#each providers as provider (provider.id)}
+    <div class="mt-6 rounded border border-border" in:rise>
+      <div class="flex items-center justify-between border-b border-border px-4 py-3">
+        <div>
+          <div class="font-medium">{provider.name}</div>
+          <div class="text-[12px] text-fg-3">
+            {provider.signedIn ? 'Signed in' : 'Signed out'}
+          </div>
+        </div>
+      </div>
+      <ul class="divide-y divide-border">
+        {#each provider.accounts as account (account.id)}
+          <li
+            class="flex items-center justify-between px-4 py-3"
+            use:flipReady
+            animate:flip={flipAnimation()}
+            in:slide={rowEnter}
+            out:fade={motionParams()}
+          >
+            <div>
+              <div>{account.label}</div>
+              <div class="text-[12px] text-fg-3">
+                {account.signedIn ? `Tier ${account.tier || 'unknown'}` : 'Not signed in'}
+              </div>
+            </div>
+            {#if account.signedIn}
+              <button class="btn" onclick={() => void signOut(account.id)}>Sign out</button>
+            {/if}
+          </li>
+        {/each}
+        {#if provider.accounts.length === 0}
+          <li class="px-4 py-3 text-[13px] text-fg-3">No Account yet.</li>
+        {/if}
+      </ul>
+    </div>
+  {/each}
+
+  {#if login}
+    <div class="mt-6 rounded border border-border p-4">
+      <div class="flex items-center justify-between">
+        <div class="font-medium">
+          {#if login.state === 'running'}Waiting for sign-in
+          {:else if login.state === 'succeeded'}Signed in
+          {:else if login.state === 'canceled'}Login canceled
+          {:else}Login failed{/if}
+        </div>
+        {#if login.state === 'running'}
+          <button class="btn" onclick={() => void cancel()}>Cancel</button>
+        {/if}
+      </div>
+
+      {#if login.state === 'running'}
+        {#if login.url}
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <a class="btn" href={login.url} target="_blank" rel="noreferrer">Open sign-in page</a>
+            <button class="btn" onclick={() => void copy()}>{copied ? 'Copied' : 'Copy link'}</button>
+          </div>
+          <p class="mt-3 text-[13px] text-fg-3">
+            After signing in, the browser lands on a <code>127.0.0.1</code> address that does not
+            load on a remote machine. Paste that address here.
+          </p>
+          <div class="mt-2 flex gap-2">
+            <input
+              class="input min-w-0 flex-1"
+              placeholder="http://127.0.0.1:…"
+              bind:value={address}
+            />
+            <button class="btn" disabled={loading || !address} onclick={() => void complete()}>
+              Complete
+            </button>
+          </div>
+        {:else}
+          <p class="mt-3 text-[13px] text-fg-3">Waiting for the server to print the sign-in link…</p>
+        {/if}
+      {:else if login.state === 'succeeded'}
+        <p class="mt-2 text-[13px] text-fg-3">
+          Tier {login.tier || 'unknown'}. The Account is kept and ready for Sessions.
+        </p>
+      {:else if login.error}
+        <p class="mt-2 text-[13px] text-status-failed">{login.error}</p>
+      {/if}
+    </div>
+  {:else}
+    <div class="mt-6 rounded border border-border p-4">
+      <div class="font-medium">Sign in to Antigravity</div>
+      <div class="mt-2 flex gap-2">
+        <input class="input min-w-0 flex-1" placeholder="Account label (optional)" bind:value={label} />
+        <button class="btn" disabled={loading} onclick={() => void signIn()}>Sign in</button>
+      </div>
+    </div>
+  {/if}
+
+  <div class="mt-6 rounded border border-border p-4">
+    <div class="font-medium">OpenCode Go API key (pi harness)</div>
+    <div class="mt-2 flex gap-2">
+      <input
+        class="input min-w-0 flex-1"
+        type="password"
+        placeholder="API key"
+        bind:value={opencodeKey}
+      />
+      <button class="btn" disabled={loading || !opencodeKey.trim()} onclick={() => void saveOpenCodeKey()}>
+        Save key
+      </button>
+    </div>
+  </div>
+</section>

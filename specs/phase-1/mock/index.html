@@ -1,0 +1,354 @@
+<title>Emberloop Rust Mock</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<style>
+/* Layout: dark-only app shell copied from the current Emberloop tokens (app.css). Sidebar | feed | composer. */
+:root{
+  color-scheme:dark;
+  --s0:#212121;--s1:#2a2a2a;--s2:#2f2f2f;--s3:#383838;--side:#171717;
+  --f1:#ececec;--f2:#c7c7cc;--f3:#9b9ba1;--f4:#6e6e73;
+  --bd:#3a3a3c;--input:#48484a;--ring:#0a84ff;
+  --working:#5aa9ff;--needs:#ffb340;--done:#3fd070;--failed:#ff6b63;--paused:#a1a1a8;
+  --brand:#6c63ff;--brand2:#4f46e5;
+  --bash:#3ecf8e;--read:#82aaff;--edit:#ffcb6b;--grep:#c792ea;--misc:#9b9ba1;--compress:#9d8cff;
+  --font-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
+  --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+}
+html,body{height:100%}
+body{margin:0;background:var(--s0);color:var(--f1);font-family:var(--font-sans);font-size:15px;line-height:1.5;overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+.mono{font-family:var(--font-mono)}
+.scroll{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--s3) transparent}
+.dot{width:8px;height:8px;border-radius:99px;flex:none}
+.row{border-radius:10px}
+.row:hover{background:var(--s3)}
+.sel{background:var(--s3)}
+.chip{font-size:12px;line-height:1.35;border:1px solid var(--bd);border-radius:99px;padding:1px 8px;color:var(--f3)}
+.glyph{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font:600 12px var(--font-mono);flex:none;background:color-mix(in srgb,currentColor 16%,transparent)}
+.trow{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:6px 10px;border-radius:10px;background:transparent;border:0}
+.trow:hover{background:var(--s1)}
+.tbody{margin:2px 0 8px 42px;border:1px solid var(--bd);border-radius:10px;background:var(--s1);font:12.5px/1.55 var(--font-mono);overflow-x:auto}
+.tbody pre{margin:0;padding:10px 12px;white-space:pre}
+.add{color:#7ee2a0;background:#1d2b22;display:block}.del{color:#ff9a94;background:#2a2222;display:block}
+.btn{border:1px solid var(--bd);background:var(--s2);border-radius:10px;padding:6px 12px;font-size:13px}
+.btn:hover{background:var(--s3)}
+.btn-pri{background:var(--f1);color:#171717;border-color:var(--f1);font-weight:600}
+.btn-pri:hover{background:#fff}
+.field{width:100%;background:var(--s1);border:1px solid var(--input);border-radius:10px;padding:7px 10px;color:var(--f1);font:inherit;font-size:14px}
+.field:focus,button:focus-visible,textarea:focus{outline:2px solid var(--ring);outline-offset:1px}
+.sw{position:relative;width:38px;height:22px;border-radius:99px;background:var(--s3);border:0;flex:none}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:99px;background:var(--f2);transition:transform .18s}
+.sw[aria-checked=true]{background:var(--brand2)}.sw[aria-checked=true]::after{transform:translateX(16px);background:#fff}
+.sw[disabled]{opacity:.45;cursor:not-allowed}
+.seg{display:inline-flex;background:var(--s1);border:1px solid var(--bd);border-radius:10px;padding:2px}
+.seg button{border:0;background:transparent;border-radius:8px;padding:3px 10px;font-size:13px;color:var(--f3)}
+.seg button[aria-pressed=true]{background:var(--brand2);color:#fff}
+.meter{height:6px;width:96px;background:var(--s3);border-radius:99px;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--working);border-radius:99px;transition:width .3s}
+.pulse{animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.pulse{animation:none}.sw::after,.meter i{transition:none}}
+.md p{margin:0 0 .6em}.md code{font:12.5px var(--font-mono);background:var(--s2);padding:1px 5px;border-radius:5px}
+.drawer-btn{display:none}
+@media (max-width:760px){
+  #side{position:fixed;inset:0 auto 0 0;width:min(86vw,300px);z-index:30;transform:translateX(-100%);transition:transform .2s}
+  #side.open{transform:none}
+  .drawer-btn{display:inline-grid}
+  #scrim{display:none}#scrim.open{display:block;position:fixed;inset:0;background:#0008;z-index:20}
+  .hide-sm{display:none}
+}
+dialog{background:var(--s2);color:var(--f1);border:1px solid var(--bd);border-radius:16px;padding:20px;width:min(92vw,420px)}
+dialog::backdrop{background:#000a}
+</style>
+
+<div class="flex h-full">
+  <div id="scrim" onclick="toggleDrawer(false)"></div>
+
+  <!-- Sidebar -->
+  <aside id="side" class="flex flex-col w-[280px] shrink-0 border-r" style="background:var(--side);border-color:var(--bd)">
+    <div class="flex items-center justify-between px-4 pt-4 pb-3">
+      <div class="font-semibold tracking-tight">Emberloop <span class="chip ml-1">rust</span></div>
+    </div>
+    <div class="px-3 pb-2"><button class="btn btn-pri w-full" onclick="openNew()">New session</button></div>
+    <nav id="tree" class="scroll flex-1 px-2 pb-2" aria-label="Projects and sessions"></nav>
+    <div class="border-t p-2" style="border-color:var(--bd)">
+      <button id="navProviders" class="row w-full text-left px-3 py-2 text-[14px]" style="background:none;border:0" onclick="showView('providers')">Providers</button>
+      <button id="navSettings" class="row w-full text-left px-3 py-2 text-[14px]" style="background:none;border:0" onclick="showView('settings')">Settings</button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="flex-1 min-w-0 flex flex-col">
+    <header class="flex items-center gap-3 px-4 py-2.5 border-b" style="border-color:var(--bd)">
+      <button class="drawer-btn btn" onclick="toggleDrawer(true)" aria-label="Open sessions">☰</button>
+      <div class="min-w-0 flex-1">
+        <div id="hTitle" class="truncate font-semibold" style="letter-spacing:-.01em"></div>
+        <div id="hSub" class="text-[12px] truncate" style="color:var(--f3)"></div>
+      </div>
+      <span class="chip hide-sm mono">agy · gemini-3-pro</span>
+      <div class="hide-sm flex items-center gap-2 text-[12px]" style="color:var(--f3)" title="Last request input tokens over the window">
+        <div class="meter"><i id="meterFill" style="width:0%"></i></div><span id="meterTxt" class="tabular-nums"></span>
+      </div>
+      <span id="hStatus" class="flex items-center gap-1.5 text-[13px]"></span>
+    </header>
+
+    <!-- Session view -->
+    <section id="vSession" class="flex-1 min-h-0 flex flex-col">
+      <div id="feedWrap" class="relative flex-1 min-h-0">
+        <div id="feed" class="scroll h-full px-4 py-4"><div id="feedInner" class="mx-auto max-w-[760px] flex flex-col gap-1"></div></div>
+        <button id="jump" class="btn absolute left-1/2 -translate-x-1/2 bottom-3 shadow-lg" hidden onclick="toTail()">Jump to latest ↓</button>
+      </div>
+
+      <!-- prototype controls -->
+      <div class="px-4 pb-1"><div class="mx-auto max-w-[760px] flex flex-wrap items-center gap-2 text-[12px]" style="color:var(--f4)">
+        <span>Prototype:</span>
+        <button class="btn" onclick="demoTurn()">Stream a turn</button>
+        <button class="btn" onclick="demoBgExit()">Background command exits</button>
+        <button class="btn" onclick="demoConn()">Drop connection</button>
+      </div></div>
+
+      <div class="px-4 pb-4 pt-1"><div class="mx-auto max-w-[760px]">
+        <div id="steerQ" class="flex flex-col gap-1 mb-2"></div>
+        <div id="thumbs" class="flex flex-wrap gap-2 mb-2"></div>
+        <div class="rounded-2xl border p-2" style="background:var(--s1);border-color:var(--input)">
+          <label for="ta" class="sr-only">Message</label>
+          <textarea id="ta" rows="2" class="w-full resize-none bg-transparent px-2 py-1 outline-none" style="color:var(--f1);max-height:200px" placeholder="Message the agent. Enter sends, Shift+Enter adds a line."></textarea>
+          <div class="flex items-center gap-2 px-1 pt-1">
+            <button class="btn" onclick="document.getElementById('file').click()" aria-label="Attach image">＋ Image</button>
+            <input id="file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+            <span id="limits" class="text-[12px]" style="color:var(--f4)">10 MB each · 5 per prompt</span>
+            <span class="flex-1"></span>
+            <button id="sendBtn" class="btn btn-pri" onclick="send()">Send</button>
+          </div>
+        </div>
+        <div id="composerHint" class="text-[12px] mt-1.5 px-1" style="color:var(--f4)"></div>
+      </div></div>
+    </section>
+
+    <!-- Providers view -->
+    <section id="vProviders" class="flex-1 min-h-0 scroll px-4 py-6" hidden>
+      <div class="mx-auto max-w-[760px] flex flex-col gap-6">
+        <div><h1 class="text-[1.75rem] font-semibold" style="letter-spacing:-.02em;line-height:1.2">Providers</h1>
+          <p style="color:var(--f3)">Sign in to the account a harness uses. No password or token passes through this app.</p></div>
+        <div class="rounded-2xl border p-4 flex flex-col gap-4" style="background:var(--s1);border-color:var(--bd)">
+          <div class="flex items-center gap-3">
+            <div class="min-w-0 flex-1"><div class="font-semibold mono">agy</div><div id="agyState" class="text-[13px]" style="color:var(--f3)">Signed out</div></div>
+            <button id="agyBtn" class="btn btn-pri" onclick="agyStart()">Sign in</button>
+            <button id="agyOut" class="btn" onclick="agyOut()" hidden>Sign out</button>
+          </div>
+          <div id="agyPanel" class="flex flex-col gap-3" hidden>
+            <div class="text-[13px]" style="color:var(--f2)">1. Open the sign-in link and finish signing in with Google.</div>
+            <div class="flex gap-2"><input id="agyUrl" class="field mono" readonly value="https://accounts.google.com/o/oauth2/v2/auth?client_id=…&amp;redirect_uri=http%3A%2F%2Flocalhost%3A51234%2F…"><button class="btn" onclick="this.textContent='Copied'">Copy</button><button class="btn">Open</button></div>
+            <div class="text-[13px]" style="color:var(--f2)">2. The browser ends on an address that does not load. Paste that address here.</div>
+            <div class="flex gap-2"><input id="agyAddr" class="field mono" placeholder="http://localhost:51234/?code=…"><button class="btn btn-pri" onclick="agyDone()">Finish</button></div>
+            <div class="flex items-center gap-3 text-[12px]" style="color:var(--f4)"><span class="dot pulse" style="background:var(--working)"></span>Waiting · times out in 10 minutes<span class="flex-1"></span><button class="btn" onclick="agyCancel()">Cancel</button></div>
+          </div>
+          <div id="agyErr" class="text-[13px] rounded-xl px-3 py-2" style="border:1px solid var(--failed);background:#2a2222;color:#ffb3ad" hidden></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings view -->
+    <section id="vSettings" class="flex-1 min-h-0 scroll px-4 py-6" hidden>
+      <div class="mx-auto max-w-[760px] flex flex-col gap-8">
+        <div><h1 class="text-[1.75rem] font-semibold" style="letter-spacing:-.02em;line-height:1.2">Settings</h1>
+          <p style="color:var(--f3)">Daemon-wide. Changes apply to the next Session or subagent, not to running ones.</p></div>
+
+        <div class="flex flex-col gap-3">
+          <h2 class="font-semibold text-[1.0625rem]">Proxy</h2>
+          <div class="rounded-2xl border p-4 flex flex-col gap-4" style="background:var(--s1);border-color:var(--bd)">
+            <div class="flex items-center justify-between gap-4">
+              <div><div>Billion context</div><div class="text-[13px]" style="color:var(--f3)">Compress, decompress and search the history through the proxy.</div></div>
+              <button class="sw" role="switch" aria-checked="true" aria-label="Billion context" onclick="tog(this)"></button>
+            </div>
+            <div class="flex items-center justify-between gap-4">
+              <div><div>Ponytail level</div><div class="text-[13px]" style="color:var(--f3)">Default for new Sessions. One embedded skill text, appended by the proxy.</div></div>
+              <div class="seg" id="pony"><button aria-pressed="false">off</button><button aria-pressed="false">lite</button><button aria-pressed="true">full</button><button aria-pressed="false">ultra</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center gap-2"><h2 class="font-semibold text-[1.0625rem]">Subagents</h2><span class="chip">phase 2</span></div>
+          <p class="text-[13px]" style="color:var(--f3)">scout reads and searches. worker edits. Both are off until phase 2; the form shows what will be configurable.</p>
+          <div class="grid gap-3 sm:grid-cols-2" id="subs"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- New session dialog -->
+<dialog id="dlg">
+  <form method="dialog" class="flex flex-col gap-4" onsubmit="return createSession(event)">
+    <h2 class="font-semibold text-[1.0625rem]">New session</h2>
+    <label class="flex flex-col gap-1.5 text-[13px]" style="color:var(--f3)" for="dProj">Project
+      <select id="dProj" class="field"></select></label>
+    <label class="flex flex-col gap-1.5 text-[13px]" style="color:var(--f3)" for="dPath">Or add a Project by path
+      <input id="dPath" class="field mono" placeholder="/home/you/Projects/name"></label>
+    <div class="flex flex-col gap-1.5 text-[13px]" style="color:var(--f3)">Ponytail level
+      <div class="seg" id="dPony"><button type="button" aria-pressed="false">off</button><button type="button" aria-pressed="false">lite</button><button type="button" aria-pressed="true">full</button><button type="button" aria-pressed="false">ultra</button></div></div>
+    <div class="flex justify-end gap-2"><button type="button" class="btn" onclick="dlg.close()">Cancel</button><button class="btn btn-pri">Create</button></div>
+  </form>
+</dialog>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const dlg=$('dlg');
+
+/* ---------- data (examples) ---------- */
+const projects=[
+  {id:'p1',name:'emberloop',root:'/home/cioky/Projects/emberloop'},
+  {id:'p2',name:'dotfiles',root:'/home/cioky/Projects/dotfiles'}];
+const sessions=[
+  {id:'s1',pid:'p1',title:'Fix token refresh race in auth',status:'idle',ago:'2m'},
+  {id:'s2',pid:'p1',title:'Port hashline tests to Rust',status:'working',ago:'now'},
+  {id:'s3',pid:'p1',title:'Why does the feed jump on resume',status:'failed',ago:'1h'},
+  {id:'s4',pid:'p2',title:'Tidy zsh startup time',status:'idle',ago:'3d'}];
+let cur='s1';
+
+const T={ // tool kinds
+  bash:{g:'$',c:'--bash'},read:{g:'≡',c:'--read'},edit:{g:'✎',c:'--edit'},grep:{g:'⌕',c:'--grep'},bg:{g:'▶',c:'--bash'}};
+
+function feedFor(id){
+  if(id!=='s1') return [{t:'user',text:'(example Session — open “Fix token refresh race in auth” for the full feed.)'}];
+  return [
+  {t:'user',text:'Tokens refresh twice when two requests expire together. Find why and fix it.',imgs:1},
+  {t:'asst',text:'I’ll start with where the refresh happens, then check how concurrent callers share it.'},
+  {t:'tool',k:'grep',sum:'refresh_token  in src/',meta:'7 hits · 41 ms',body:'src/auth/session.rs:41:    pub async fn refresh_token(&self) -> Result<Token> {\nsrc/auth/session.rs:88:        let t = self.refresh_token().await?;\nsrc/http/client.rs:112:    self.auth.refresh_token().await?\nsrc/http/client.rs:187:    self.auth.refresh_token().await?\n… 3 more'},
+  {t:'tool',k:'read',sum:'src/auth/session.rs',meta:'lines 30-96 · [src/auth/session.rs#A3F1]',body:'  41  pub async fn refresh_token(&self) -> Result<Token> {\n  42      let cur = self.token.read().await.clone();\n  43      let new = self.api.refresh(&cur.refresh).await?;\n  44      *self.token.write().await = new.clone();\n  45      Ok(new)\n  46  }'},
+  {t:'asst',text:'Found it. `refresh_token` has no single-flight guard: two expired callers both hit `api.refresh`, and the second invalidates the first’s refresh token. I’ll serialize it behind a mutex and re-check expiry once the lock is held.'},
+  {t:'tool',k:'edit',sum:'src/auth/session.rs',meta:'+6 −3 · now [src/auth/session.rs#7C20]',
+   body:'<span class="mono" style="color:var(--f3)">[src/auth/session.rs#A3F1]\nPUT 41.=45:</span>\n<span class="del">-    let cur = self.token.read().await.clone();</span><span class="del">-    let new = self.api.refresh(&cur.refresh).await?;</span><span class="del">-    *self.token.write().await = new.clone();</span><span class="add">+    let _g = self.refresh_lock.lock().await;</span><span class="add">+    let cur = self.token.read().await.clone();</span><span class="add">+    if !cur.is_expired() { return Ok(cur); }</span><span class="add">+    let new = self.api.refresh(&cur.refresh).await?;</span><span class="add">+    *self.token.write().await = new.clone();</span>',html:true},
+  {t:'tool',k:'bash',sum:'cargo test -p auth',meta:'ok · 14.2 s',body:'$ cargo test -p auth\n   Compiling auth v0.3.1\nrunning 12 tests\ntest session::refresh_is_single_flight ... ok\n…\ntest result: ok. 12 passed; 0 failed'},
+  {t:'tool',k:'bg',sum:'cargo watch -x "test -p auth"',meta:'background · handle bg1 · running',body:'handle bg1 · pid 48213\nlog: spill/bg1.log\n[watch] waiting for changes…'},
+  {t:'comp',text:'Compressed 38 turns into 4.1k tokens. The originals stay on disk, and the agent can decompress them.'},
+  {t:'asst',text:'Fixed and tested. A watcher is running in the background as `bg1`, and I’ll tell you when it reports.'}];
+}
+
+/* ---------- rendering ---------- */
+let feed=[],pending=[],working=false,files=[];
+function statusDot(s){return {idle:'var(--done)',working:'var(--working)',failed:'var(--failed)'}[s]||'var(--paused)'}
+function statusWord(s){return {idle:'Idle',working:'Working',failed:'Failed'}[s]}
+function renderTree(){
+  $('tree').innerHTML=projects.map(p=>{
+    const ss=sessions.filter(s=>s.pid===p.id);
+    return `<div class="mb-2"><div class="px-3 py-1 text-[12px] flex justify-between" style="color:var(--f3);letter-spacing:.04em"><span class="uppercase">${esc(p.name)}</span><span class="mono" title="${esc(p.root)}">${ss.length}</span></div>`+
+    ss.map(s=>`<button class="row w-full text-left px-3 py-2 flex items-center gap-2.5 ${s.id===cur?'sel':''}" style="border:0;background:none" onclick="openSession('${s.id}')" ${s.id===cur?'aria-current="true"':''}>
+      <span class="dot ${s.status==='working'?'pulse':''}" style="background:${statusDot(s.status)}" title="${statusWord(s.status)}"></span>
+      <span class="truncate flex-1 text-[14px]">${esc(s.title)}</span><span class="text-[12px]" style="color:var(--f4)">${s.ago}</span></button>`).join('')+`</div>`}).join('');
+}
+function row(it,i){
+  if(it.t==='user') return `<div class="self-end max-w-[85%] rounded-2xl px-4 py-2.5 my-1.5" style="background:var(--s3)">${esc(it.text)}${it.imgs?'<div class="mt-2 flex gap-2"><div class="w-16 h-16 rounded-lg grid place-items-center text-[11px]" style="background:var(--s1);border:1px solid var(--bd);color:var(--f3)">trace.png</div></div>':''}</div>`;
+  if(it.t==='asst') return `<div class="md my-1.5 max-w-[92%]">${esc(it.text).replace(/`([^`]+)`/g,'<code>$1</code>')}${it.live?'<span class="pulse"> ▍</span>':''}</div>`;
+  if(it.t==='comp') return `<div class="my-2 rounded-xl border px-3 py-2 flex items-center gap-2.5 text-[13px]" style="border-color:var(--bd);background:var(--s1);color:var(--f2)"><span class="glyph" style="color:var(--compress)">⇲</span>${esc(it.text)}</div>`;
+  if(it.t==='notice') return `<div class="my-2 rounded-xl border px-3 py-2 text-[13px] flex flex-wrap items-center gap-2" style="border-color:var(--bd);background:var(--s1)"><span class="glyph" style="color:var(--needs)">!</span><span>${esc(it.text)}</span><span class="chip" style="color:var(--${it.route==='pending'?'needs':'done'})">${it.route==='injected'?'delivered · injected into the next request':it.route==='idle'?'delivered · sent as a prompt at idle':'queued'}</span></div>`;
+  if(it.t==='steer') return `<div class="self-end max-w-[85%] my-1.5 text-right"><div class="rounded-2xl px-4 py-2 inline-block text-left" style="background:var(--s3)">${esc(it.text)}</div><div class="text-[12px] mt-0.5" style="color:var(--f3)">Steer · <span style="color:var(--${it.route==='pending'?'needs':'done'})">${it.route==='injected'?'injected into the next request':it.route==='idle'?'sent at idle':'queued'}</span></div></div>`;
+  if(it.t==='err') return `<div class="my-2 rounded-xl border px-3 py-2 text-[13px]" style="border-color:var(--failed);background:#2a2222;color:#ffb3ad">${esc(it.text)}</div>`;
+  const k=T[it.k];
+  return `<div><button class="trow" aria-expanded="${!!it.open}" onclick="toggleRow(${i})"><span class="glyph" style="color:var(${k.c})">${k.g}</span><span class="mono text-[13px] truncate flex-1" style="color:var(--f1)">${esc(it.sum)}</span><span class="text-[12px] hide-sm truncate" style="color:var(--f3)">${esc(it.meta)}</span><span style="color:var(--f4)">${it.open?'▾':'▸'}</span></button>${it.open?`<div class="tbody"><pre>${it.html?it.body:esc(it.body)}</pre></div>`:''}</div>`;
+}
+let stick=true;
+function renderFeed(){ $('feedInner').innerHTML=feed.map(row).join(''); if(stick) toTail(); }
+function toTail(){const f=$('feed');f.scrollTop=f.scrollHeight;stick=true;$('jump').hidden=true}
+$('feed').addEventListener('scroll',()=>{const f=$('feed');stick=f.scrollHeight-f.scrollTop-f.clientHeight<40;$('jump').hidden=stick});
+function toggleRow(i){feed[i].open=!feed[i].open;const keep=stick;renderFeed();stick=keep}
+function renderHeader(){
+  const s=sessions.find(x=>x.id===cur),p=projects.find(x=>x.id===s.pid);
+  $('hTitle').textContent=s.title;$('hSub').textContent=p.name+' · '+p.root;
+  $('hStatus').innerHTML=`<span class="dot ${s.status==='working'?'pulse':''}" style="background:${statusDot(s.status)}"></span>${statusWord(s.status)}`;
+  const used=cur==='s1'?412:cur==='s2'?731:96,pct=Math.min(100,Math.round(used/10));
+  $('meterFill').style.width=pct+'%';$('meterTxt').textContent=`${used}k / 1M`;
+}
+function renderComposer(){
+  const w=working;
+  $('sendBtn').textContent=w?'Stop':'Send';$('sendBtn').className='btn '+(w?'':'btn-pri');
+  $('ta').placeholder=w?'Steer the agent. It reaches the model with the next tool result.':'Message the agent. Enter sends, Shift+Enter adds a line.';
+  $('composerHint').textContent=w?'Working. A steer is injected at the next request, or sent as a prompt if the turn ends first.':'';
+  $('steerQ').innerHTML=pending.map(p=>`<div class="flex items-center gap-2 text-[13px] rounded-xl px-3 py-1.5" style="background:var(--s1);border:1px dashed var(--input)"><span class="chip" style="color:var(--needs)">queued ${p.kind}</span><span class="truncate flex-1" style="color:var(--f2)">${esc(p.text)}</span></div>`).join('');
+}
+function renderThumbs(){
+  $('thumbs').innerHTML=files.map((f,i)=>`<div class="relative"><div class="w-16 h-16 rounded-lg grid place-items-center text-[11px] px-1 text-center overflow-hidden" style="background:var(--s1);border:1px solid var(--bd);color:var(--f3)">${esc(f)}</div><button class="absolute -top-2 -right-2 w-5 h-5 rounded-full text-[12px] leading-none" style="background:var(--s3);border:1px solid var(--bd)" aria-label="Remove ${esc(f)}" onclick="files.splice(${i},1);renderThumbs()">×</button></div>`).join('');
+}
+function openSession(id){cur=id;feed=feedFor(id);pending=[];working=sessions.find(s=>s.id===id).status==='working';stick=true;showView('session');renderAll();toggleDrawer(false)}
+function renderAll(){renderTree();renderHeader();renderFeed();renderComposer();renderThumbs()}
+
+/* ---------- views ---------- */
+function showView(v){
+  $('vSession').hidden=v!=='session';$('vSettings').hidden=v!=='settings';$('vProviders').hidden=v!=='providers';
+  $('navSettings').classList.toggle('sel',v==='settings');$('navProviders').classList.toggle('sel',v==='providers');
+  if(v==='providers'){$('hTitle').textContent='Providers';$('hSub').textContent='';$('hStatus').innerHTML='';toggleDrawer(false)}
+  else if(v==='settings'){$('hTitle').textContent='Settings';$('hSub').textContent='';$('hStatus').innerHTML='';toggleDrawer(false)}else renderHeader();
+}
+function toggleDrawer(o){$('side').classList.toggle('open',o);$('scrim').classList.toggle('open',o)}
+
+/* ---------- composer, steer ---------- */
+function setStatus(st){sessions.find(s=>s.id===cur).status=st;working=st==='working';renderTree();renderHeader();renderComposer()}
+function send(){
+  if(working&&$('sendBtn').textContent==='Stop'&&!$('ta').value.trim()){setStatus('idle');feed.push({t:'err',text:'Cancelled by you. The turn stopped and the Session is idle.'});renderFeed();return}
+  const text=$('ta').value.trim(); if(!text&&!files.length) return;
+  $('ta').value='';
+  if(working){ // steer: queued until the next request
+    pending.push({kind:'steer',text,id:Date.now()});renderComposer();return}
+  feed.push({t:'user',text,imgs:files.length});files=[];renderThumbs();renderFeed();demoTurn(true);
+}
+$('ta').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});
+$('file').addEventListener('change',e=>{
+  for(const f of e.target.files){ if(files.length>=5)break; if(f.size>10*1048576){feed.push({t:'err',text:f.name+' is over 10 MB and was not attached.'});continue} files.push(f.name)}
+  e.target.value='';renderThumbs();renderFeed()});
+
+/* ---------- demos ---------- */
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function drainPending(route){ // proxy injects pending entries into the next request
+  pending.forEach(p=>{ if(p.kind==='notice') feed.push({t:'notice',text:p.text,route}); else feed.push({t:'steer',text:p.text,route}) });
+  const n=pending.length;pending=[];renderComposer();return n}
+async function demoTurn(){
+  if(working) return; setStatus('working');
+  const a={t:'asst',text:'',live:true};feed.push(a);renderFeed();
+  for(const w of 'Looking at the tests next. '.split(' ')){a.text+=w+' ';renderFeed();await sleep(60)}
+  a.live=false;
+  feed.push({t:'tool',k:'read',sum:'src/auth/tests.rs',meta:'lines 1-64 · running',body:'  1  use super::*;'});renderFeed();await sleep(900);
+  if(drainPending('injected')) feed.push({t:'asst',text:'Got your steer with that tool result. Adjusting.'});
+  const b={t:'asst',text:'',live:true};feed.push(b);renderFeed();
+  for(const w of 'Done. Nothing else to change.'.split(' ')){b.text+=w+' ';renderFeed();await sleep(60)}
+  b.live=false; // turn ends: anything still queued is sent as a prompt
+  if(pending.length){const n=pending.length;setStatus('idle');drainPending('idle');setStatus('working');await sleep(700);setStatus('idle')} else setStatus('idle');
+  renderFeed();
+}
+function demoBgExit(){
+  const text='bg1 “cargo watch -x test -p auth” exited with code 0 after 4 min.';
+  if(working){pending.push({kind:'notice',text,id:Date.now()});renderComposer();feed.push({t:'notice',text,route:'pending'});renderFeed()}
+  else{feed.push({t:'notice',text,route:'idle'});renderFeed()}
+}
+function demoConn(){
+  feed.push({t:'err',text:'Connection to the daemon lost. Reconnecting and replaying from event 214.'});renderFeed();
+  setTimeout(()=>{feed.push({t:'asst',text:'Reconnected. No events were lost.'});renderFeed()},1200)}
+
+/* ---------- providers (agy login) ---------- */
+function agyStart(){$('agyPanel').hidden=false;$('agyBtn').hidden=true;$('agyErr').hidden=true;$('agyState').textContent='Signing in…'}
+function agyCancel(){$('agyPanel').hidden=true;$('agyBtn').hidden=false;$('agyState').textContent='Signed out'}
+function agyDone(){
+  if(!$('agyAddr').value.trim()){$('agyErr').textContent='Paste the address the browser ended on. It starts with http://localhost.';$('agyErr').hidden=false;return}
+  $('agyPanel').hidden=true;$('agyErr').hidden=true;$('agyOut').hidden=false;$('agyBtn').hidden=true;$('agyState').textContent='Signed in · tier: Pro (example) · just now'}
+function agyOut(){$('agyOut').hidden=true;$('agyBtn').hidden=false;$('agyState').textContent='Signed out'}
+
+/* ---------- dialog, settings ---------- */
+function openNew(){
+  $('dProj').innerHTML=projects.map(p=>`<option value="${p.id}">${esc(p.name)} — ${esc(p.root)}</option>`).join('');
+  $('dPath').value='';dlg.showModal()}
+function createSession(e){
+  e.preventDefault();const path=$('dPath').value.trim();let pid=$('dProj').value;
+  if(path){const name=path.split('/').filter(Boolean).pop()||'project';pid='p'+(projects.length+1);projects.push({id:pid,name,root:path})}
+  const id='s'+(sessions.length+1);sessions.unshift({id,pid,title:'New session',status:'idle',ago:'now'});
+  dlg.close();feed=[];cur=id;showView('session');renderAll();$('ta').focus();return false}
+function tog(b){b.setAttribute('aria-checked',b.getAttribute('aria-checked')!=='true')}
+document.querySelectorAll('.seg').forEach(g=>g.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;g.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b))}));
+$('subs').innerHTML=[['scout','Reads and searches. Cannot edit.','read, grep, find'],['worker','Edits and runs commands. One at a time per Session.','all tools except subagents']].map(([n,d,t])=>`
+ <div class="rounded-2xl border p-4 flex flex-col gap-3" style="background:var(--s1);border-color:var(--bd);opacity:.7">
+  <div class="flex items-center justify-between"><div><div class="font-semibold mono">${n}</div><div class="text-[13px]" style="color:var(--f3)">${d}</div></div><button class="sw" role="switch" aria-checked="false" aria-label="Enable ${n}" disabled></button></div>
+  <label class="text-[12px] flex flex-col gap-1" style="color:var(--f3)" for="m-${n}">Model<select id="m-${n}" class="field" disabled><option>agy default</option></select></label>
+  <label class="text-[12px] flex flex-col gap-1" style="color:var(--f3)" for="e-${n}">Extra instruction<input id="e-${n}" class="field" disabled placeholder="Optional line added to its prompt"></label>
+  <div class="text-[12px]" style="color:var(--f4)">Tools: ${t}</div></div>`).join('');
+
+openSession('s1');
+</script>

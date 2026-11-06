@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+if [ -f "$HOME/.cargo/env" ]; then
+    . "$HOME/.cargo/env"
+fi
+
+budgets="scripts/check-budget.tsv"
+mkdir -p target
+
+declare -A spent
+failures=()
+names=()
+pids=()
+
+# A stage runs in the background, logs to target/<name>.log and records its
+# milliseconds. The caller waits with wait_stage.
+run_stage() {
+    local name=$1
+    shift
+    rm -f "target/$name.ms" "target/$name.failed"
+    names+=("$name")
+    (
+        local began
+        began=$(date +%s%N)
+        if ! "$@" >"target/$name.log" 2>&1; then
+            touch "target/$name.failed"
+        fi
+        echo "$(( ($(date +%s%N) - began) / 1000000 ))" >"target/$name.ms"
+    ) &
+    pids+=("$!")
+}
+
+wait_stage() {
+    local pid name
+    for pid in "${pids[@]}"; do
+        wait "$pid" || true
+    done
+    for name in "${names[@]}"; do
+        spent[$name]=$(cat "target/$name.ms" 2>/dev/null || echo 0)
+        if [ -f "target/$name.failed" ]; then
+            failures+=("$name")
+        fi
+    done
+    pids=()
+    names=()
+}
+
+report_failures() {
+    local name
+    for name in "${failures[@]}"; do
+        echo "==> stage $name failed; last 40 lines:"
+        tail -40 "target/$name.log"
+    done
+    [ ${#failures[@]} -eq 0 ]
+}
+
+# Independent stages run together; cargo locks its own target dir, so clippy
+# and nextest never overlap.
+echo "==> fmt, deny and machete"
+run_stage fmt cargo fmt --check
+run_stage deny cargo deny check
+run_stage machete cargo machete
+wait_stage
+
+echo "==> clippy"
+run_stage clippy cargo clippy --workspace --all-targets -- -D warnings
+wait_stage
+
+echo "==> nextest"
+run_stage nextest bash -c 'cargo nextest run --workspace 2>&1 | tee target/nextest-tests.log'
+wait_stage
+
+echo "==> doc tests"
+run_stage doc cargo test --doc
+wait_stage
+
+echo "==> web"
+run_stage web bash -c 'cd web && npm ci && npx svelte-check --tsconfig ./tsconfig.json && npx fallow health --score --min-score 87.9 && npm test'
+wait_stage
+
+echo "==> openapi"
+run_stage openapi bash -c 'cargo run -p api --bin dump_openapi && npm --prefix web run generate:api'
+wait_stage
+
+echo "==> generated files are committed"
+run_stage generated git diff --exit-code -- openapi.json web/src/lib/api/schema.d.ts
+wait_stage
+
+echo "==> the slowest tests"
+scripts/slow-tests
+
+total=0
+printf '%-12s %8s %8s\n' stage ms budget
+budget_failures=0
+total_budget=""
+while IFS=$'\t' read -r stage seconds; do
+    [ -z "${stage:-}" ] && continue
+    case "$stage" in \#*) continue ;; esac
+    if [ "$stage" = total ]; then
+        total_budget=$((seconds * 1000))
+        continue
+    fi
+    ms=${spent[$stage]:-0}
+    cup=$((seconds * 1000))
+    total=$((total + ms))
+    printf '%-12s %8d %8d\n' "$stage" "$ms" "$cup"
+    if [ "$ms" -gt "$cup" ]; then
+        echo "budget exceeded: $stage ${ms}ms > ${cup}ms" >&2
+        budget_failures=$((budget_failures + 1))
+    fi
+done <"$budgets"
+
+if [ -n "$total_budget" ] && [ "$total" -gt "$total_budget" ]; then
+    echo "budget exceeded: total ${total}ms > ${total_budget}ms" >&2
+    budget_failures=$((budget_failures + 1))
+fi
+
+report_failures || exit 1
+if [ "$budget_failures" -ne 0 ]; then
+    exit 1
+fi
+echo "==> scripts/check passed cleanly in $(( total / 1000 ))s"

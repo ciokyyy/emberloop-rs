@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/fallow/schema.json",
+  "entry": ["src/app.html", "src/routes/**/*.svelte"],
+  "ignorePatterns": ["build/**", ".svelte-kit/**"],
+  "health": {
+    "maxCyclomatic": 20,
+    "maxCognitive": 15,
+    "maxUnitSize": 60,
+    "maxFileLines": 600
+  },
+  "rules": {
+    "unresolved-imports": "off"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts"],
+      "rules": {
+        "complexity-cyclomatic": "off",
+        "complexity-cognitive": "off",
+        "complexity-crap": "off",
+        "complexity-file-lines": "off"
+      }
+    }
+  ]
+}

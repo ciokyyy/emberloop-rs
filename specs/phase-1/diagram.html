@@ -1,0 +1,238 @@
+<title>Phase 1 Map</title>
+<style>
+/* Layout: three figures, each one claim: the parts, one steered turn, the build order. */
+:root{
+  --bg:#fbfaf8;--fg:#1d1d21;--muted:#62626b;--panel:#f1f0ed;--line:#9a9aa3;--accent:#4f46e5;--done:#1f8a4c;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1b1b1d;--fg:#ececec;--muted:#a1a1a8;--panel:#26262a;--line:#5b5b63;--accent:#9d8cff;--done:#3fd070;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#1b1b1d;--fg:#ececec;--muted:#a1a1a8;--panel:#26262a;--line:#5b5b63;--accent:#9d8cff;--done:#3fd070;color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;padding-inline:max(16px,4vw);padding-block:28px 56px}
+main{max-width:1040px;margin:0 auto}
+h1{font-size:1.6rem;line-height:1.2;letter-spacing:-.02em;margin:0 0 6px;text-wrap:balance}
+.lede{color:var(--muted);margin:0 0 28px;max-width:62ch}
+figure{margin:0 0 40px}
+figcaption{color:var(--muted);font-size:14px;max-width:70ch;margin-top:10px}
+figcaption b{color:var(--fg)}
+.scroll{overflow-x:auto}
+svg{display:block;width:100%;height:auto;min-width:720px;color:var(--fg)}
+.box{fill:var(--panel);stroke:var(--line);stroke-width:1.2}
+.acc{stroke:var(--accent);stroke-width:2}
+.dash{fill:none;stroke:var(--line);stroke-width:1.2;stroke-dasharray:6 5}
+.ln{stroke:currentColor;stroke-width:1.4;fill:none}
+.lna{stroke:var(--accent);stroke-width:2;fill:none}
+.life{stroke:var(--line);stroke-width:1;stroke-dasharray:3 5}
+svg text{fill:currentColor;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+.t{font-weight:600;font-size:13px}
+.m{fill:var(--muted);font-size:11px}
+.l{fill:var(--muted);font-size:10.5px}
+.ta{fill:var(--accent);font-weight:600;font-size:13px}
+.la{fill:var(--accent);font-size:10.5px;font-weight:600}
+.done{fill:var(--panel);stroke:var(--done);stroke-width:2}
+.ok{fill:var(--done);font-size:11px;font-weight:600}
+</style>
+
+<main>
+<h1>Phase 1 Map</h1>
+<p class="lede">agy first. One Rust daemon, tools over MCP, one proxy on the model wire. Each harness fills in the same small trait, so the rest never changes.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 1000 680" role="img" aria-label="The daemon holds an API, stores, a steer queue, prompts and background processes, plus three parts that face agy: the agy driver over ACP, the MCP tool server, and the proxy, which alone talks to the model provider.">
+<defs>
+  <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+  <marker id="aa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker>
+</defs>
+
+<rect class="dash" x="170" y="20" width="580" height="640" rx="14"/>
+<text class="m" x="186" y="40">Daemon · one Rust binary · loopback only · no auth</text>
+
+<!-- browser -->
+<rect class="box" x="20" y="60" width="130" height="130" rx="10"/>
+<text class="t" x="85" y="88" text-anchor="middle">Browser SPA</text>
+<text class="m" x="85" y="110" text-anchor="middle">Projects · Sessions</text>
+<text class="m" x="85" y="126" text-anchor="middle">tool feed</text>
+<text class="m" x="85" y="142" text-anchor="middle">composer + images</text>
+<text class="m" x="85" y="158" text-anchor="middle">Settings · Prompts</text>
+<text class="m" x="85" y="174" text-anchor="middle">Tauri shell later</text>
+
+<!-- left column -->
+<rect class="box" x="210" y="50" width="220" height="60" rx="10"/>
+<text class="t" x="320" y="76" text-anchor="middle">HTTP + SSE API</text>
+<text class="m" x="320" y="94" text-anchor="middle">axum · OpenAPI → TS client</text>
+
+<rect class="box" x="210" y="130" width="220" height="60" rx="10"/>
+<text class="t" x="320" y="156" text-anchor="middle">Projects · Sessions</text>
+<text class="m" x="320" y="174" text-anchor="middle">event log, replay by seq</text>
+
+<rect class="box" x="210" y="210" width="220" height="80" rx="10"/>
+<text class="t" x="320" y="236" text-anchor="middle">Steer queue</text>
+<text class="m" x="320" y="254" text-anchor="middle">steer | notice, per Session</text>
+<text class="m" x="320" y="270" text-anchor="middle">first drain wins</text>
+
+<rect class="box" x="210" y="310" width="220" height="70" rx="10"/>
+<text class="t" x="320" y="336" text-anchor="middle">Prompts as files</text>
+<text class="m" x="320" y="354" text-anchor="middle">defaults + override files</text>
+<text class="m" x="320" y="369" text-anchor="middle">pinned when a Session starts</text>
+
+<rect class="box" x="210" y="400" width="220" height="70" rx="10"/>
+<text class="t" x="320" y="426" text-anchor="middle">Background commands</text>
+<text class="m" x="320" y="444" text-anchor="middle">started by bash(background)</text>
+<text class="m" x="320" y="459" text-anchor="middle">daemon-owned, log files</text>
+
+<rect class="box" x="210" y="560" width="520" height="80" rx="10"/>
+<text class="t" x="470" y="586" text-anchor="middle">Disk</text>
+<text class="m" x="470" y="606" text-anchor="middle">data root: projects.json · sessions/&lt;id&gt;/ meta, events.jsonl, images, spill</text>
+<text class="m" x="470" y="623" text-anchor="middle">config root: prompts/ · settings.json</text>
+
+<!-- right column -->
+<rect class="box" x="500" y="60" width="230" height="80" rx="10"/>
+<text class="t" x="615" y="86" text-anchor="middle">agy driver</text>
+<text class="m" x="615" y="106" text-anchor="middle">harness trait: spawn · send</text>
+<text class="m" x="615" y="122" text-anchor="middle">cancel · resume · wake</text>
+
+<rect class="box" x="500" y="160" width="230" height="140" rx="10"/>
+<text class="t" x="615" y="186" text-anchor="middle">MCP server · tools</text>
+<text class="m" x="615" y="208" text-anchor="middle">read · edit (hashline)</text>
+<text class="m" x="615" y="224" text-anchor="middle">grep · bash · background</text>
+<text class="m" x="615" y="240" text-anchor="middle">path jail · seen-line store</text>
+<text class="m" x="615" y="256" text-anchor="middle">big output → spill/</text>
+<text class="m" x="615" y="276" text-anchor="middle">every call → a feed event</text>
+
+<rect class="box acc" x="500" y="330" width="230" height="200" rx="10"/>
+<text class="ta" x="615" y="358" text-anchor="middle">Proxy /p/&lt;session&gt;</text>
+<text class="m" x="615" y="380" text-anchor="middle">route by signed token</text>
+<text class="m" x="615" y="396" text-anchor="middle">usage meter: last request</text>
+<text class="m" x="615" y="412" text-anchor="middle">Ponytail text</text>
+<text class="m" x="615" y="428" text-anchor="middle">stored splices, byte-exact</text>
+<text class="m" x="615" y="444" text-anchor="middle">Compressor trait → native</text>
+<text class="m" x="615" y="460" text-anchor="middle">compress · decompress · search</text>
+<text class="m" x="615" y="484" text-anchor="middle">runs only its own pure tools</text>
+<text class="m" x="615" y="500" text-anchor="middle">never a workspace tool</text>
+
+<!-- outside right -->
+<rect class="box" x="790" y="100" width="180" height="200" rx="10"/>
+<text class="t" x="880" y="130" text-anchor="middle">agy</text>
+<text class="m" x="880" y="152" text-anchor="middle">official ACP server</text>
+<text class="m" x="880" y="168" text-anchor="middle">native tools off</text>
+<text class="m" x="880" y="184" text-anchor="middle">empty work dir</text>
+<text class="m" x="880" y="200" text-anchor="middle">--uid= required</text>
+<text class="m" x="880" y="262" text-anchor="middle">base URL → proxy</text>
+<text class="m" x="880" y="278" text-anchor="middle">MCP config → tools</text>
+
+<rect class="box" x="790" y="470" width="180" height="80" rx="10"/>
+<text class="t" x="880" y="504" text-anchor="middle">Cloud Code</text>
+<text class="m" x="880" y="522" text-anchor="middle">Gemini model</text>
+
+<!-- arrows -->
+<line class="ln" x1="150" y1="80" x2="210" y2="80" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<text class="l" x="180" y="98" text-anchor="middle">JSON+SSE</text>
+<line class="ln" x1="320" y1="110" x2="320" y2="130" marker-end="url(#ar)"/>
+<line class="ln" x1="430" y1="80" x2="500" y2="80" marker-end="url(#ar)"/>
+<text class="l" x="465" y="72" text-anchor="middle">prompt</text>
+<line class="ln" x1="730" y1="100" x2="790" y2="100" marker-end="url(#ar)"/>
+<text class="l" x="760" y="92" text-anchor="middle">ACP</text>
+<line class="ln" x1="790" y1="230" x2="730" y2="230" marker-end="url(#ar)"/>
+<text class="l" x="760" y="222" text-anchor="middle">MCP</text>
+<polyline class="lna" points="880,300 880,430 730,430" marker-end="url(#aa)"/>
+<text class="la" x="805" y="422" text-anchor="middle">model traffic</text>
+<line class="lna" x1="730" y1="510" x2="790" y2="510" marker-end="url(#aa)"/>
+<text class="la" x="760" y="502" text-anchor="middle">wire</text>
+<polyline class="ln" points="430,230 465,230 465,110 500,110" marker-end="url(#ar)"/>
+<text class="l" x="460" y="170" text-anchor="end">wake</text>
+<polyline class="lna" points="430,270 470,270 470,380 500,380" marker-end="url(#aa)"/>
+<text class="la" x="464" y="330" text-anchor="end">inject</text>
+<polyline class="ln" points="210,435 195,435 195,250 210,250" marker-end="url(#ar)"/>
+<text class="l" x="188" y="345" text-anchor="middle" transform="rotate(-90 188 345)">exit notice</text>
+</svg>
+</div>
+<figcaption><b>Everything phase 1 builds.</b> agy touches the daemon in three places: the driver (ACP), the tool server (MCP) and the proxy (model traffic, in violet). Only the proxy reaches the provider, which is why compression, Ponytail and steering live there once. A steer takes one of two routes, <b>inject</b> into the next request or <b>wake</b> a finished turn.</figcaption>
+</figure>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 1000 520" role="img" aria-label="A steer sent during a turn is queued, appended by the proxy to the next request that carries tool results, stored by tool call id, re-attached identically on the following request, and sent as a prompt if the turn ends first.">
+<defs>
+  <marker id="b1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+  <marker id="b2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker>
+</defs>
+<!-- lanes -->
+<g>
+<rect class="box" x="30" y="14" width="120" height="30" rx="8"/><text class="t" x="90" y="34" text-anchor="middle">Browser</text>
+<rect class="box" x="230" y="14" width="120" height="30" rx="8"/><text class="t" x="290" y="34" text-anchor="middle">Daemon queue</text>
+<rect class="box" x="430" y="14" width="120" height="30" rx="8"/><text class="t" x="490" y="34" text-anchor="middle">agy</text>
+<rect class="box acc" x="630" y="14" width="120" height="30" rx="8"/><text class="ta" x="690" y="34" text-anchor="middle">Proxy</text>
+<rect class="box" x="830" y="14" width="120" height="30" rx="8"/><text class="t" x="890" y="34" text-anchor="middle">Model</text>
+</g>
+<line class="life" x1="90" y1="44" x2="90" y2="510"/><line class="life" x1="290" y1="44" x2="290" y2="510"/>
+<line class="life" x1="490" y1="44" x2="490" y2="510"/><line class="life" x1="690" y1="44" x2="690" y2="510"/><line class="life" x1="890" y1="44" x2="890" y2="510"/>
+
+<line class="ln" x1="90" y1="80" x2="290" y2="80" marker-end="url(#b1)"/>
+<text class="l" x="190" y="72" text-anchor="middle">1 steer text</text>
+<text class="m" x="298" y="98">queued: pending</text>
+
+<line class="ln" x1="490" y1="130" x2="690" y2="130" marker-end="url(#b1)"/>
+<text class="l" x="590" y="122" text-anchor="middle">2 request N + tool results</text>
+
+<line class="lna" x1="690" y1="172" x2="290" y2="172" marker-end="url(#b2)"/>
+<text class="la" x="500" y="164" text-anchor="middle">3 pop steer</text>
+
+<line class="lna" x1="690" y1="214" x2="890" y2="214" marker-end="url(#b2)"/>
+<text class="la" x="790" y="206" text-anchor="middle">4 N + steer part</text>
+<text class="m" x="698" y="236">splice stored by tool_use_id</text>
+
+<line class="ln" x1="690" y1="272" x2="490" y2="272" marker-end="url(#b1)"/>
+<text class="l" x="590" y="264" text-anchor="middle">5 response (proxy-only calls hidden)</text>
+<text class="m" x="298" y="290">marked delivered after upstream 2xx</text>
+
+<line class="ln" x1="490" y1="328" x2="690" y2="328" marker-end="url(#b1)"/>
+<text class="l" x="590" y="320" text-anchor="middle">6 request N+1, history lacks the steer</text>
+<line class="lna" x1="690" y1="368" x2="890" y2="368" marker-end="url(#b2)"/>
+<text class="la" x="790" y="360" text-anchor="middle">7 same bytes re-attached</text>
+
+<line class="ln" x1="490" y1="426" x2="290" y2="426" marker-end="url(#b1)"/>
+<text class="l" x="390" y="418" text-anchor="middle">8 turn ends, no tool call</text>
+<line class="ln" x1="290" y1="466" x2="490" y2="466" marker-end="url(#b1)"/>
+<text class="l" x="390" y="458" text-anchor="middle">9 wake(text), only if still queued</text>
+</svg>
+</div>
+<figcaption><b>One steered turn.</b> Steps 2 to 7 are the inject route: the proxy adds the steer to the request that carries tool results, remembers it by tool call id, and replays identical bytes later so the prompt cache holds. Steps 8 and 9 are the wake route, used when the turn ends before another request comes. Background-exit notices ride the same queue.</figcaption>
+</figure>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 1000 300" role="img" aria-label="Tickets by wave: 1 and 2 done; 3, 4, 5 and 12 can run in parallel; then 6, 7, 8 and 10; then 9; then the acceptance run 11.">
+<defs>
+  <marker id="c1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+</defs>
+<text class="m" x="20" y="22">Wave 0 · done</text><text class="m" x="270" y="22">Wave 1 · parallel</text><text class="m" x="520" y="22">Wave 2 · parallel</text><text class="m" x="760" y="22">Wave 3 · serial</text>
+
+<rect class="box done" x="20" y="36" width="200" height="56" rx="8"/><text class="t" x="34" y="60">1 Spike: agy behind proxy</text><text class="ok" x="34" y="78">done · signatures survive</text>
+<rect class="box done" x="20" y="106" width="200" height="56" rx="8"/><text class="t" x="34" y="130">2 Workspace + stores</text><text class="ok" x="34" y="148">done · check passes</text>
+
+<rect class="box" x="270" y="36" width="210" height="46" rx="8"/><text class="t" x="284" y="64">3 agy ACP driver</text>
+<rect class="box" x="270" y="92" width="210" height="46" rx="8"/><text class="t" x="284" y="120">4 API · SSE · OpenAPI</text>
+<rect class="box" x="270" y="148" width="210" height="46" rx="8"/><text class="t" x="284" y="176">5 MCP server · read · grep</text>
+<rect class="box" x="270" y="204" width="210" height="46" rx="8"/><text class="t" x="284" y="232">12 Prompts as files</text>
+
+<rect class="box" x="520" y="36" width="210" height="46" rx="8"/><text class="t" x="534" y="64">6 Hashline edit</text>
+<rect class="box" x="520" y="92" width="210" height="46" rx="8"/><text class="t" x="534" y="120">7 bash · background</text>
+<rect class="box acc" x="520" y="148" width="210" height="46" rx="8"/><text class="ta" x="534" y="176">8 Proxy · Compressor</text>
+<rect class="box" x="520" y="204" width="210" height="46" rx="8"/><text class="t" x="534" y="232">10 SPA · Tailwind · shadcn</text>
+
+<rect class="box" x="760" y="36" width="210" height="46" rx="8"/><text class="t" x="774" y="64">9 Steer queue + notices</text>
+<rect class="box" x="760" y="204" width="210" height="46" rx="8"/><text class="t" x="774" y="232">11 Acceptance run</text>
+
+<line class="ln" x1="220" y1="134" x2="268" y2="134" marker-end="url(#c1)"/>
+<line class="ln" x1="480" y1="160" x2="518" y2="64" marker-end="url(#c1)"/>
+<line class="ln" x1="480" y1="168" x2="518" y2="115" marker-end="url(#c1)"/>
+<line class="ln" x1="480" y1="72" x2="518" y2="158" marker-end="url(#c1)"/>
+<line class="ln" x1="480" y1="222" x2="518" y2="184" marker-end="url(#c1)"/>
+<line class="ln" x1="480" y1="126" x2="518" y2="216" marker-end="url(#c1)"/>
+<line class="ln" x1="730" y1="115" x2="758" y2="64" marker-end="url(#c1)"/>
+<line class="ln" x1="730" y1="168" x2="758" y2="76" marker-end="url(#c1)"/>
+<line class="ln" x1="865" y1="82" x2="865" y2="202" marker-end="url(#c1)"/>
+</svg>
+</div>
+<figcaption><b>Build order.</b> Arrows show the main blockers: 2 unlocks wave 1; 5 unlocks 6 and 7; 3 and 12 unlock 8; 4 unlocks 10; 7 and 8 unlock 9; everything unlocks 11. Every ticket is test-first and ends with <b>scripts/check</b> passing.</figcaption>
+</figure>
+</main>

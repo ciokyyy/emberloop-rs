@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Print the slowest tests of the last nextest run in target/nextest-tests.log.
+
+Check calls this after nextest; the log is the plain text nextest wrote.
+"""
+import pathlib
+import re
+import sys
+
+log = pathlib.Path("target/nextest-tests.log")
+if not log.exists():
+    sys.exit("no target/nextest-tests.log; run scripts/check first")
+
+pattern = re.compile(r"^\s+(?:PASS|FAIL|LEAK)\s+\[\s*([0-9.]+)s\]\s+\(\s*\d+/\d+\)\s+(\S+)")
+rows = []
+for line in log.read_text(errors="replace").splitlines():
+    match = pattern.match(line)
+    if match:
+        rows.append((float(match.group(1)), match.group(2)))
+
+rows.sort(reverse=True)
+for seconds, name in rows[:10]:
+    print(f"{seconds:8.3f}s  {name}")
