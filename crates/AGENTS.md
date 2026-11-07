@@ -9,7 +9,7 @@ Cargo workspace containing all library and binary crates for emberloop-rs.
 - `crates/core/AGENTS.md` — Core primitives: Context tree, typed EventBus, ID generation, shared provider endpoint registry
 - `crates/store/AGENTS.md` — Project and Session persistence, append-only event log
 - `crates/prompts/AGENTS.md` — Prompt files: defaults, overrides, placeholders, per-Session pinning
-- `crates/proxy/AGENTS.md` — Model-wire proxy: routing, usage meter and context-category estimates, splices, Compressor
+- `crates/proxy/AGENTS.md` — Model-wire proxy: routing, usage meter and context-category estimates, splices, Compressor, prompt-cache prefix stability
 - `crates/harness/AGENTS.md` — Harness trait, acknowledged live model configuration and wiring types
 - `crates/harness-acp/AGENTS.md` — Shared ACP session driver
 - `crates/harness-agy/AGENTS.md` — agy ACP harness implementation
