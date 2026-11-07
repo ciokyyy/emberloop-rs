@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -27,7 +28,7 @@ use crate::ctx::CtxStore;
 use crate::marker;
 use crate::meter;
 use crate::nudge::{self, NudgeConfig, NudgeKind, NudgeState};
-use crate::splice::{Splice, SpliceStore};
+use crate::splice::{turn_key, Splice, SpliceStore};
 use crate::token::{TokenError, TokenSigner};
 use crate::tokens::turns_tokens;
 use crate::wire::{
@@ -473,7 +474,8 @@ async fn handle_generation(
     publish_prepare_events(&state.inner.events, session_id, outcome);
     dump_request(session_id, "out", &request);
     let url = upstream_url(base, path, query);
-    let response = match send_stream(&state.inner.client, &url, headers, &request).await {
+    let sent = outgoing_body(&runtime, wire, &request);
+    let response = match send_stream(&state.inner.client, &url, headers, &sent).await {
         Ok(response) => response,
         Err(error) => {
             settle_steer(&queue, &injected, None, &state.inner.events, session_id).await;
@@ -581,7 +583,10 @@ async fn buffered_generation(
     for _ in 0..MAX_TOOL_ROUNDS {
         let (status, content_type, bytes) = match current.take() {
             Some(response) => response,
-            None => send_generation(&state.inner.client, &url, headers, &request).await?,
+            None => {
+                let sent = outgoing_body(&runtime, wire, &request);
+                send_generation(&state.inner.client, &url, headers, &sent).await?
+            }
         };
         if !status.is_success() {
             return Ok(response_with(status, content_type.as_deref(), bytes));
@@ -590,7 +595,7 @@ async fn buffered_generation(
             final_response = Some((status, content_type, bytes));
             break;
         };
-        let turns = run_proxy_tool(
+        let (turns, after) = run_proxy_tool(
             state,
             session_id,
             &runtime,
@@ -600,13 +605,14 @@ async fn buffered_generation(
             &settings,
             window,
         )?;
-        store_proxy_splice(&runtime, &turns)?;
+        store_proxy_splice(&runtime, &turns, after)?;
     }
 
     let Some((status, content_type, bytes)) = final_response else {
         return Err(ProxyError::ToolRoundLimit);
     };
-    publish_usage(state, session_id, &runtime, &bytes, wire, &request).await;
+    let sent = outgoing_body(&runtime, wire, &request);
+    publish_usage(state, session_id, &runtime, &bytes, wire, &sent).await;
     Ok(response_with(status, content_type.as_deref(), bytes))
 }
 
@@ -654,7 +660,7 @@ fn prepare_request(
     } else {
         None
     };
-    lock(&runtime.splices)?.apply(&mut contents);
+    lock(&runtime.splices)?.apply(&mut contents)?;
     if wire == WireKind::Google {
         crate::splice::sign_unsigned_calls(&mut contents);
     }
@@ -678,9 +684,6 @@ fn prepare_request(
         .is_some_and(|report| report.kind == NudgeKind::Emergency.name())
     {
         runtime.emergency_truncated.store(true, Ordering::Relaxed);
-    }
-    if runtime.emergency_truncated.load(Ordering::Relaxed) {
-        truncate_emergency(&mut contents);
     }
     write_core_contents(wire, request, contents);
     Ok(PrepareOutcome {
@@ -801,6 +804,25 @@ fn strip_raw_markers(raw: &mut Value) {
                 .trim());
         }
     }
+}
+
+/// The body as it goes upstream. While an emergency holds, older results are cut short on this
+/// copy only: the stored request keeps every result, so a compress or decompress run in it works
+/// on the full text.
+fn outgoing_body<'a>(
+    runtime: &SessionRuntime,
+    wire: WireKind,
+    request: &'a Value,
+) -> Cow<'a, Value> {
+    if !runtime.emergency_truncated.load(Ordering::Relaxed) {
+        return Cow::Borrowed(request);
+    }
+    let mut body = request.clone();
+    if let Some(mut contents) = extract_core_contents(wire, request_body_mut(&mut body)) {
+        truncate_emergency(&mut contents);
+        write_core_contents(wire, request_body_mut(&mut body), contents);
+    }
+    Cow::Owned(body)
 }
 
 fn truncate_emergency(contents: &mut [Value]) {
@@ -1060,6 +1082,7 @@ async fn inject_steer(
         marker: String::new(),
         turns: vec![json!({ "role": "user", "parts": [{ "text": text }] })],
         append_parts: Vec::new(),
+        after_turn: None,
     };
     if let Ok(mut splices) = lock(&runtime.splices) {
         let _ = splices.insert(splice);
@@ -1200,9 +1223,11 @@ fn run_proxy_tool(
     call: ProxyCall,
     settings: &Settings,
     window: usize,
-) -> Result<Vec<Value>, ProxyError> {
+) -> Result<(Vec<Value>, Option<String>), ProxyError> {
     let request = request_body_mut(request);
     let mut contents = extract_core_contents(wire, request).ok_or(ProxyError::NoContents)?;
+    // Read before the tool runs: a `compress` in this call rewrites the contents it would be read from.
+    let after = splice_anchor(&contents);
     let text = execute_by_name(
         state,
         session_id,
@@ -1215,7 +1240,17 @@ fn run_proxy_tool(
     let turns = proxy_pair(&call, &text, &format!("emberloop-splice:{}", call.id));
     contents.extend(turns.clone());
     write_core_contents(wire, request, contents);
-    Ok(turns)
+    Ok((turns, after))
+}
+
+/// The turn a proxy pair follows: the newest turn of the request that the harness resends. The
+/// transient nudge is skipped, because no later request carries it.
+fn splice_anchor(contents: &[Value]) -> Option<String> {
+    contents
+        .iter()
+        .rev()
+        .find(|turn| turn.get("_nudge").is_none())
+        .and_then(turn_key)
 }
 
 fn execute_by_name(
@@ -1274,7 +1309,11 @@ fn proxy_pair(call: &ProxyCall, text: &str, marker: &str) -> Vec<Value> {
     ]
 }
 
-fn store_proxy_splice(runtime: &SessionRuntime, turns: &[Value]) -> Result<String, ProxyError> {
+fn store_proxy_splice(
+    runtime: &SessionRuntime,
+    turns: &[Value],
+    after: Option<String>,
+) -> Result<String, ProxyError> {
     let marker = turns
         .first()
         .and_then(|turn| turn.get("parts"))
@@ -1295,7 +1334,9 @@ fn store_proxy_splice(runtime: &SessionRuntime, turns: &[Value]) -> Result<Strin
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let splice = Splice::new(&anchor, turns.to_vec()).with_marker(marker);
+    let splice = Splice::new(&anchor, turns.to_vec())
+        .with_marker(marker)
+        .with_after_turn(after);
     lock(&runtime.splices)?.insert(splice)?;
     Ok(anchor)
 }
@@ -1726,19 +1767,18 @@ impl SseState {
             &self.proxy,
             &self.session_id,
             usage,
-            crate::context::ContextBreakdown::from_request(self.wire, &self.request),
+            crate::context::ContextBreakdown::from_request(
+                self.wire,
+                &outgoing_body(&self.runtime, self.wire, &self.request),
+            ),
         )
         .await;
     }
 
     async fn follow_up(&mut self) -> Result<(), ProxyError> {
-        let response = send_stream(
-            &self.proxy.inner.client,
-            &self.url,
-            &self.headers,
-            &self.request,
-        )
-        .await?;
+        let sent = outgoing_body(&self.runtime, self.wire, &self.request);
+        let response =
+            send_stream(&self.proxy.inner.client, &self.url, &self.headers, &sent).await?;
         self.stream = Some(response.bytes_stream().boxed());
         self.published = None;
         self.step_signature = None;
@@ -1773,10 +1813,14 @@ impl SseState {
             .first()
             .map(|completed| completed.call.id.clone())
             .unwrap_or_default();
-        let splice = Splice::new(&anchor, turns.clone()).with_marker(&marker);
-        lock(&self.runtime.splices)?.insert(splice)?;
         let req_body = request_body_mut(&mut self.request);
-        if let Some(mut contents) = extract_core_contents(self.wire, req_body) {
+        let contents = extract_core_contents(self.wire, req_body);
+        let after = contents.as_deref().and_then(splice_anchor);
+        let splice = Splice::new(&anchor, turns.clone())
+            .with_marker(&marker)
+            .with_after_turn(after);
+        lock(&self.runtime.splices)?.insert(splice)?;
+        if let Some(mut contents) = contents {
             contents.extend(turns);
             write_core_contents(self.wire, req_body, contents);
         }
