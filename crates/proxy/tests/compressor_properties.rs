@@ -237,14 +237,10 @@ proptest! {
 
     /// The same refold property with repeated texts (a history of "ok", "done" and so on).
     ///
-    /// Ignored because it finds a real engine bug. Minimal counterexample: turns
-    /// `[model "ok", model "ok", user "final question"]`, fold `1..2`. The compressed history is
-    /// `[ok, summary, final]`, but refolding the raw history matches the first identical `ok`
-    /// and then folds the second one too, so `apply_skipping` returns 2 and gives
-    /// `[summary, summary, final]`. Fold matching by stored turns is ambiguous for repeated
-    /// turns. Run with `--run-ignored all` to reproduce.
+    /// A fold matches the span nearest its recorded start, and a block whose summary is already
+    /// in the history is not applied again. The minimal case, `[ok, ok, final]` with fold `1..2`,
+    /// is pinned by a characterization test.
     #[test]
-    #[ignore = "engine bug: refolding repeated turns folds too much (see doc comment)"]
     fn refolding_a_history_with_repeated_text_reproduces_the_fold(
         (turns, folds) in history_with_folds(false)
     ) {

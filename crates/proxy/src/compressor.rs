@@ -21,6 +21,10 @@ struct Block {
     summary: String,
     originals: Vec<Value>,
     summary_turn: Value,
+    /// Index of the first folded turn when the fold was made. A refold prefers the span that
+    /// starts nearest here, so identical turns elsewhere in the history are not folded instead.
+    #[serde(default)]
+    start: usize,
     #[serde(default)]
     restored: bool,
 }
@@ -288,6 +292,7 @@ impl NativeCompressor {
             summary: call.summary.clone(),
             originals,
             summary_turn,
+            start: call.start,
             restored: false,
         };
         (line, block)
@@ -412,7 +417,7 @@ impl Compressor for NativeCompressor {
         }
 
         let position = contents.iter().position(|turn| turn == &block.summary_turn);
-        if position.is_none() && find_span(contents, &block.originals).is_none() {
+        if position.is_none() && find_span(contents, &block.originals, block.start).is_none() {
             return Err(format!(
                 "block {} is not present in this conversation",
                 block.id
@@ -537,11 +542,21 @@ impl Compressor for NativeCompressor {
             .collect();
         blocks.sort_by_key(|block| std::cmp::Reverse(block.originals.len()));
         let cap = blocks.len() * 2 + 4;
+        // (first index, turns removed) of every fold applied in this pass, so a later block's
+        // stored start can be moved to where its turns are now.
+        let mut shifts: Vec<(usize, usize)> = Vec::new();
         loop {
             let mut moved = false;
             for block in &blocks {
+                // A fold already in the history is never folded again: its summary turn is the
+                // proof, and it keeps a stored fold from matching its own result.
+                if contents.contains(&block.summary_turn) {
+                    continue;
+                }
                 let wanted = wanted_turns(block, skip, &skip_ids);
-                if let Some(matched) = find_span(contents, &wanted) {
+                let near = shifted_start(block.start, &shifts);
+                if let Some(matched) = find_span(contents, &wanted, near) {
+                    let before = contents.len();
                     fold_matched(
                         contents,
                         &matched,
@@ -549,6 +564,7 @@ impl Compressor for NativeCompressor {
                         skip,
                         &skip_ids,
                     );
+                    shifts.push((matched[0], before - contents.len()));
                     applied += 1;
                     moved = true;
                 }
@@ -591,6 +607,17 @@ impl Compressor for NativeCompressor {
         }
         None
     }
+}
+
+/// Where a fold's stored start is now, given the folds applied before it in the same pass: each
+/// one that began before it removed its turns from the history.
+fn shifted_start(start: usize, shifts: &[(usize, usize)]) -> usize {
+    let removed: usize = shifts
+        .iter()
+        .filter(|(first, _)| *first < start)
+        .map(|(_, count)| count)
+        .sum();
+    start.saturating_sub(removed)
 }
 
 /// The stored turns a fold must find in the request: its originals without the transient nudge
@@ -712,22 +739,36 @@ fn turn_tool_names(turn: &Value) -> impl Iterator<Item = &str> {
 const MAX_SPLICE_GAP: usize = 4;
 
 /// Indices in `contents` of the folded turns, in order, with at most `MAX_SPLICE_GAP` unrelated
-/// turns between neighbours. The fast path is the exact contiguous window.
-fn find_span(contents: &[Value], originals: &[Value]) -> Option<Vec<usize>> {
+/// turns between neighbours. Contiguous windows come first, then gapped ones. Among the
+/// candidates of a kind, the one whose first index is nearest `near` (the fold's recorded start)
+/// wins, the earlier one on a tie, so repeated turns resolve to the position the fold was made at.
+fn find_span(contents: &[Value], originals: &[Value], near: usize) -> Option<Vec<usize>> {
     if originals.is_empty() || originals.len() > contents.len() {
         return None;
     }
-    if let Some(start) = contents.windows(originals.len()).position(|turns| {
-        turns
-            .iter()
-            .zip(originals)
-            .all(|(a, b)| turnkeys::same_turn(a, b))
-    }) {
-        return Some((start..start + originals.len()).collect());
+    let contiguous: Vec<Vec<usize>> = (0..=contents.len() - originals.len())
+        .filter(|&start| {
+            contents[start..start + originals.len()]
+                .iter()
+                .zip(originals)
+                .all(|(a, b)| turnkeys::same_turn(a, b))
+        })
+        .map(|start| (start..start + originals.len()).collect())
+        .collect();
+    if let Some(span) = nearest_span(contiguous, near) {
+        return Some(span);
     }
-    (0..contents.len())
+    let gapped: Vec<Vec<usize>> = (0..contents.len())
         .filter(|&start| turnkeys::same_turn(&contents[start], &originals[0]))
-        .find_map(|start| span_from(contents, originals, start))
+        .filter_map(|start| span_from(contents, originals, start))
+        .collect();
+    nearest_span(gapped, near)
+}
+
+fn nearest_span(spans: Vec<Vec<usize>>, near: usize) -> Option<Vec<usize>> {
+    spans
+        .into_iter()
+        .min_by_key(|span| (span[0].abs_diff(near), span[0]))
 }
 
 fn span_from(contents: &[Value], originals: &[Value], start: usize) -> Option<Vec<usize>> {
