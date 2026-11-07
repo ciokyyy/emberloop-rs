@@ -27,6 +27,10 @@ pub const COMPRESS: &str = "compress";
 pub const DECOMPRESS: &str = "decompress";
 pub const SEARCH_CONTEXT: &str = "search_context";
 pub const ACP_STATUS_DESCRIPTION: &str = "acp_status.description";
+/// The `acp_status` report: a Session-pinned template filled per request.
+pub const ACP_STATUS_REPORT: &str = "acp_status.report";
+/// The turn-end todo reminder steer: a Session-pinned template filled per reminder.
+pub const TODO_REMINDER: &str = "todo.reminder";
 pub const COMPRESS_PROMPT: &str = "compress.prompt";
 pub const TOOL_READ: &str = "tool.read.description";
 pub const TOOL_EDIT: &str = "tool.edit.description";
@@ -72,6 +76,8 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_CHECK,
     TOOL_CTX_SEARCH,
     SKILL_CODEBASE_MEMORY,
+    ACP_STATUS_REPORT,
+    TODO_REMINDER,
     NUDGE_FIRST,
     NUDGE_PRESSURE,
     NUDGE_EMERGENCY,
@@ -88,6 +94,18 @@ pub const ALLOWED_PLACEHOLDERS: &[&str] = &[
     "context_breakdown",
     "since_last_nudge",
     "compressible_ranges",
+    "status_tokens",
+    "status_window",
+    "status_percent",
+    "status_active",
+    "status_total",
+    "status_stored",
+    "status_compressed",
+    "status_restored",
+    "status_ranges",
+    "reminder_sent",
+    "reminder_max",
+    "open_todos",
 ];
 
 /// The tool a `tool.<name>.description` id describes.
@@ -119,6 +137,8 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_CHECK => defaults::TOOL_CHECK,
         TOOL_CTX_SEARCH => defaults::TOOL_CTX_SEARCH,
         SKILL_CODEBASE_MEMORY => defaults::SKILL_CODEBASE_MEMORY,
+        ACP_STATUS_REPORT => defaults::ACP_STATUS_REPORT,
+        TODO_REMINDER => defaults::TODO_REMINDER,
         NUDGE_FIRST => defaults::NUDGE_FIRST,
         NUDGE_PRESSURE => defaults::NUDGE_PRESSURE,
         NUDGE_EMERGENCY => defaults::NUDGE_EMERGENCY,
@@ -174,6 +194,22 @@ pub struct PromptVars {
     pub since_last_nudge: String,
     /// Nudge-only: the compressible range block, header included.
     pub compressible_ranges: String,
+    /// `acp_status.report`: the usage figures, already formatted (`1.2K`, `12`).
+    pub status_tokens: String,
+    pub status_window: String,
+    pub status_percent: String,
+    pub status_active: String,
+    pub status_total: String,
+    pub status_stored: String,
+    pub status_compressed: String,
+    pub status_restored: String,
+    /// `acp_status.report`: the compressible range block, header included.
+    pub status_ranges: String,
+    /// `todo.reminder`: the reminder's sequence number and cap.
+    pub reminder_sent: String,
+    pub reminder_max: String,
+    /// `todo.reminder`: each open item as `id status "content"`, comma-separated.
+    pub open_todos: String,
 }
 
 impl PromptVars {
@@ -187,6 +223,18 @@ impl PromptVars {
             "context_breakdown" => Some(&self.context_breakdown),
             "since_last_nudge" => Some(&self.since_last_nudge),
             "compressible_ranges" => Some(&self.compressible_ranges),
+            "status_tokens" => Some(&self.status_tokens),
+            "status_window" => Some(&self.status_window),
+            "status_percent" => Some(&self.status_percent),
+            "status_active" => Some(&self.status_active),
+            "status_total" => Some(&self.status_total),
+            "status_stored" => Some(&self.status_stored),
+            "status_compressed" => Some(&self.status_compressed),
+            "status_restored" => Some(&self.status_restored),
+            "status_ranges" => Some(&self.status_ranges),
+            "reminder_sent" => Some(&self.reminder_sent),
+            "reminder_max" => Some(&self.reminder_max),
+            "open_todos" => Some(&self.open_todos),
             _ => None,
         }
     }
@@ -556,7 +604,8 @@ impl PinnedPrompts {
             let text = match *id {
                 PONYTAIL => ponytail_text(store, &vars.level, vars)?,
                 CAVEMAN => caveman_text(store, vars)?,
-                NUDGE_FIRST | NUDGE_PRESSURE | NUDGE_EMERGENCY | NUDGE_TIER2 | NUDGE_TIER3 => {
+                NUDGE_FIRST | NUDGE_PRESSURE | NUDGE_EMERGENCY | NUDGE_TIER2 | NUDGE_TIER3
+                | ACP_STATUS_REPORT | TODO_REMINDER => {
                     let raw = store.text(id).unwrap_or_default();
                     validate(id, &raw)?;
                     raw

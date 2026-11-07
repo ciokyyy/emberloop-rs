@@ -14,8 +14,8 @@ use emberloop_core::events::{EventBus, EventKind, SessionEvent};
 use emberloop_core::steer::{delivered_event, SteerEntry, SteerQueue, SteerQueues};
 use futures::{Stream, StreamExt};
 use prompts::{
-    render_text, PinnedPrompts, PromptError, PromptStore, PromptVars, NUDGE_EMERGENCY, NUDGE_FIRST,
-    NUDGE_PRESSURE, NUDGE_TIER2, NUDGE_TIER3,
+    render_text, PinnedPrompts, PromptError, PromptStore, PromptVars, ACP_STATUS_REPORT,
+    NUDGE_EMERGENCY, NUDGE_FIRST, NUDGE_PRESSURE, NUDGE_TIER2, NUDGE_TIER3,
 };
 use serde_json::{json, Value};
 use store::{DataRoot, ProjectsStore, SessionsStore};
@@ -240,6 +240,11 @@ impl ProxyState {
                 runtimes: RwLock::new(HashMap::new()),
             }),
         }
+    }
+
+    /// The Prompt Store the proxy renders from, shared with the daemon's own prompts.
+    pub fn prompts(&self) -> Arc<PromptStore> {
+        Arc::clone(&self.inner.prompts)
     }
 
     pub fn token_for(&self, session_id: &str) -> String {
@@ -720,12 +725,7 @@ fn preflight_fold(
         if turns_tokens(contents) <= u64::try_from(window).unwrap_or(u64::MAX) {
             break;
         }
-        let keep = policy.preserve_recent_messages.min(contents.len());
-        // Never reaches the latest user message: no fold may include it.
-        let end = contents
-            .len()
-            .saturating_sub(keep)
-            .min(latest_user_turn(contents).unwrap_or(usize::MAX));
+        let end = compressible_end(contents, policy.preserve_recent_messages);
         if end <= 1 {
             break;
         }
@@ -936,17 +936,21 @@ struct CompressibleView {
     ranges: String,
 }
 
-fn compressible_view(turns: &[Value], preserve_recent_messages: usize) -> CompressibleView {
-    // A range never includes the latest user message (`compress` refuses it), so the mass
-    // past it is not compressible and must not carry a nudge. Ranges start at turn 1, so a
-    // latest message at turn 0 cuts nothing.
+/// The exclusive end of the compressible range `1..end`, shared by the nudge and the preflight
+/// backstop. A range never includes the latest user message (`compress` refuses it), and never
+/// the preserved tail. Ranges start at turn 1, so a latest message at turn 0 cuts nothing.
+fn compressible_end(turns: &[Value], preserve_recent_messages: usize) -> usize {
     let latest = latest_user_turn(turns)
         .filter(|&latest| latest > 0)
         .unwrap_or(usize::MAX);
-    let end = turns
+    turns
         .len()
         .saturating_sub(preserve_recent_messages)
-        .min(latest);
+        .min(latest)
+}
+
+fn compressible_view(turns: &[Value], preserve_recent_messages: usize) -> CompressibleView {
+    let end = compressible_end(turns, preserve_recent_messages);
     let (tokens, count) = if end > 1 {
         (turns_tokens(&turns[1..end]), end - 1)
     } else {
@@ -1378,20 +1382,24 @@ fn execute_tool(
             let status = lock(&runtime.compressor)
                 .map_err(|error| error.to_string())?
                 .status();
-            Ok(acp_status_text(contents, window, &status, settings))
+            let template = runtime.pins.text(ACP_STATUS_REPORT).unwrap_or_default();
+            acp_status_text(template, contents, window, &status, settings)
+                .map_err(|error| error.to_string())
         }
         other => Err(format!("not a proxy tool: {other}")),
     }
 }
 
 fn acp_status_text(
+    template: &str,
     contents: &[Value],
     window: usize,
     status: &crate::compressor::CompressorStatus,
     settings: &Settings,
-) -> String {
+) -> Result<String, PromptError> {
     let view = compressible_view(contents, settings.preserve_recent_messages as usize);
     format_acp_status(
+        template,
         turns_tokens(contents),
         window,
         status.active_blocks,
@@ -1403,8 +1411,10 @@ fn acp_status_text(
     )
 }
 
+/// The `acp_status` report, filled into the Session's pinned `acp_status.report` template.
 #[allow(clippy::too_many_arguments)]
 fn format_acp_status(
+    template: &str,
     tokens: u64,
     window: usize,
     active_blocks: usize,
@@ -1413,24 +1423,25 @@ fn format_acp_status(
     tokens_compressed: u64,
     restored: usize,
     ranges: &str,
-) -> String {
+) -> Result<String, PromptError> {
     let percent = if window == 0 {
         0
     } else {
         tokens.saturating_mul(100) / u64::try_from(window).unwrap_or(u64::MAX)
     };
-    format!(
-        "ACP STATUS\nContext: {} / {} tokens ({}%)\nBlocks: {} active, {} total; {} stored messages; {} tokens compressed; {} restored\n{}",
-        kilo(tokens),
-        kilo(u64::try_from(window).unwrap_or(u64::MAX)),
-        percent,
-        active_blocks,
-        total_blocks,
-        stored_messages,
-        kilo(tokens_compressed),
-        restored,
-        ranges
-    )
+    let vars = PromptVars {
+        status_tokens: kilo(tokens),
+        status_window: kilo(u64::try_from(window).unwrap_or(u64::MAX)),
+        status_percent: percent.to_string(),
+        status_active: active_blocks.to_string(),
+        status_total: total_blocks.to_string(),
+        status_stored: stored_messages.to_string(),
+        status_compressed: kilo(tokens_compressed),
+        status_restored: restored.to_string(),
+        status_ranges: ranges.to_string(),
+        ..PromptVars::default()
+    };
+    render_text(ACP_STATUS_REPORT, template, &vars)
 }
 
 /// `compress` takes `ranges: [{start, end, summary, topic?}, ...]`; the single-range form

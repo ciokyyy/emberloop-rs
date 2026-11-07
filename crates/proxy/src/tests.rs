@@ -7,7 +7,7 @@ use axum::routing::post;
 use axum::{Json, Router as AxumRouter};
 use emberloop_core::events::{EventBus, EventKind};
 use futures::Stream;
-use prompts::PromptStore;
+use prompts::{default_text, PromptStore};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
@@ -2136,11 +2136,13 @@ fn acp_status_reports_usage_blocks_and_ranges() {
         spill_dir: "/tmp/spill".into(),
     };
     let text = acp_status_text(
+        default_text(ACP_STATUS_REPORT),
         contents.as_array().unwrap(),
         10_000,
         &status,
         &api::state::Settings::default(),
-    );
+    )
+    .unwrap();
     assert!(text.contains("ACP STATUS"), "{text}");
     assert!(text.contains("1 active, 2 total"), "{text}");
     assert!(text.contains("3 stored messages"), "{text}");
@@ -2161,6 +2163,7 @@ fn acp_status_numbers_follow_the_reference_golden() {
         .find_map(|frame| frame.get("status"))
         .expect("a golden frame with status");
     let text = format_acp_status(
+        default_text(ACP_STATUS_REPORT),
         status["tokenCount"].as_u64().unwrap(),
         status["modelContextLimit"].as_u64().unwrap() as usize,
         status["activeBlocks"].as_u64().unwrap() as usize,
@@ -2169,9 +2172,30 @@ fn acp_status_numbers_follow_the_reference_golden() {
         status["tokensCompressed"].as_u64().unwrap(),
         status["breakdown"]["retrievals"].as_u64().unwrap() as usize,
         "ranges",
-    );
+    )
+    .unwrap();
     assert!(text.contains("0 active, 0 total"), "{text}");
     assert!(text.contains("(1%)"), "{text}");
+}
+
+#[test]
+fn acp_status_report_bytes_are_pinned() {
+    let text = format_acp_status(
+        default_text(ACP_STATUS_REPORT),
+        1_234,
+        10_000,
+        1,
+        2,
+        3,
+        4_000,
+        1,
+        "ranges",
+    )
+    .unwrap();
+    assert_eq!(
+        text,
+        "ACP STATUS\nContext: 1.2K / 10.0K tokens (12%)\nBlocks: 1 active, 2 total; 3 stored messages; 4.0K tokens compressed; 1 restored\nranges"
+    );
 }
 
 #[test]
@@ -2219,6 +2243,33 @@ async fn preflight_folds_until_the_request_fits_the_window() {
     let folded = preflight_fold(&runtime, &mut contents, 20, &settings).unwrap();
     assert!(folded.is_some());
     assert!(turns_tokens(&contents) < before);
+    assert!(contents[1]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Preflight fold"));
+}
+
+#[tokio::test]
+async fn preflight_folds_a_long_single_turn_whose_only_user_message_is_turn_zero() {
+    let fixture = fixture().await;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    // One user prompt at turn 0 and a long agent tail: no fold may include turn 0, but the
+    // tail after it is compressible, so the backstop must still fold it.
+    let mut contents: Vec<Value> = (0..10)
+        .map(|index| match index {
+            0 => json!({"role": "user", "parts": [{"text": "start the task"}]}),
+            _ => json!({"role": "model", "parts": [{"text": format!("step {index} {}", "x".repeat(400))}]}),
+        })
+        .collect();
+    let before = turns_tokens(&contents);
+    let settings = api::state::Settings {
+        preserve_recent_messages: 2,
+        ..Default::default()
+    };
+    let folded = preflight_fold(&runtime, &mut contents, 20, &settings).unwrap();
+    assert!(folded.is_some(), "the backstop folds the tail after turn 0");
+    assert!(turns_tokens(&contents) < before);
+    assert_eq!(contents[0]["parts"][0]["text"], "start the task");
     assert!(contents[1]["parts"][0]["text"]
         .as_str()
         .unwrap()

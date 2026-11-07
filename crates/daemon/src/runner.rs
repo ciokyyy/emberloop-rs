@@ -10,6 +10,7 @@ use emberloop_core::events::{EventBus, EventKind, SessionEvent};
 use emberloop_core::steer::{deliver_idle, SteerKind, SteerQueue, SteerQueues, SteerWaker};
 use futures::StreamExt;
 use harness::{Harness, HarnessEvent, HarnessSession, HarnessWiring, PromptImage};
+use prompts::PromptStore;
 use proxy::ProxyState;
 use store::{DataRoot, EventLog, ProjectsStore, SessionMeta, SessionsStore};
 use tokio::sync::{Mutex, RwLock};
@@ -204,6 +205,7 @@ impl SessionRunner {
             Arc::clone(&self.handles),
             Arc::clone(&self.settings),
             Arc::clone(&self.reminders),
+            self.proxy.prompts(),
         ));
         Ok(handle)
     }
@@ -360,6 +362,7 @@ async fn pump(
     handles: Arc<Mutex<HashMap<String, Arc<Handle>>>>,
     settings: Arc<RwLock<Settings>>,
     reminders: Arc<Mutex<HashMap<String, Cycle>>>,
+    prompts: Arc<PromptStore>,
 ) {
     let mut stream = handle.session.events();
     let mut tracker = ToolTracker::default();
@@ -383,6 +386,7 @@ async fn pump(
                 &events_dir,
                 &settings,
                 &reminders,
+                &prompts,
             )
             .await;
             let waker = SessionWaker {
@@ -471,6 +475,7 @@ async fn turn_end_todos(
     events_dir: &std::path::Path,
     settings: &Arc<RwLock<Settings>>,
     reminders: &Arc<Mutex<HashMap<String, Cycle>>>,
+    prompts: &PromptStore,
 ) {
     publish_todos(events, logs, events_dir, session_id, data_root).await;
     let settings = settings.read().await.clone();
@@ -483,33 +488,55 @@ async fn turn_end_todos(
     let mut cycles = reminders.lock().await;
     let cycle = cycles.entry(session_id.to_string()).or_default();
     if todo_reminder::should_send(&settings, cycle, &items) {
-        cycle.sent += 1;
-        cycle.last_open = todo_reminder::open_set(&items);
-        let text = todo_reminder::text(&items, cycle.sent, settings.todo_reminders_max);
-        handle.queue.enqueue(SteerKind::Notice, text).await;
+        send_reminder(handle, cycle, &items, &settings, prompts).await;
         return;
     }
     let open = todo_reminder::open_set(&items).len();
-    if !cycle.capped
-        && settings.todo_reminders
-        && settings.todo_reminders_max > 0
-        && cycle.sent >= settings.todo_reminders_max
-        && open > 0
-    {
+    if todo_reminder::should_cap(&settings, cycle, open) {
         cycle.capped = true;
         drop(cycles);
-        let event = SessionEvent::new(
-            session_id,
-            0,
-            EventKind::Notice,
-            serde_json::json!({
-                "text": todo_reminder::cap_note(open, settings.todo_reminders_max),
-                "route": "cap"
-            }),
-        );
-        if let Ok(stored) = append(logs, events_dir, &event).await {
-            events.publish(stored);
+        let text = todo_reminder::cap_note(open, settings.todo_reminders_max);
+        publish_notice(events, logs, events_dir, session_id, text, "cap").await;
+    }
+}
+
+/// Enqueue one reminder and count it; a template that fails to render sends nothing and
+/// leaves the cycle unchanged, so the next settled turn end tries again.
+async fn send_reminder(
+    handle: &Handle,
+    cycle: &mut Cycle,
+    items: &[tools::todo::Todo],
+    settings: &Settings,
+    prompts: &PromptStore,
+) {
+    let sent = cycle.sent + 1;
+    match todo_reminder::text(prompts, items, sent, settings.todo_reminders_max) {
+        Ok(text) => {
+            cycle.sent = sent;
+            cycle.last_open = todo_reminder::open_set(items);
+            handle.queue.enqueue(SteerKind::Notice, text).await;
         }
+        Err(error) => tracing::warn!(%error, "todo reminder not sent"),
+    }
+}
+
+/// Store one feed notice and publish it.
+async fn publish_notice(
+    events: &EventBus,
+    logs: &Arc<RwLock<HashMap<String, EventLog>>>,
+    events_dir: &std::path::Path,
+    session_id: &str,
+    text: String,
+    route: &str,
+) {
+    let event = SessionEvent::new(
+        session_id,
+        0,
+        EventKind::Notice,
+        serde_json::json!({ "text": text, "route": route }),
+    );
+    if let Ok(stored) = append(logs, events_dir, &event).await {
+        events.publish(stored);
     }
 }
 

@@ -391,3 +391,29 @@ fn nudge_templates_keep_raw_placeholders_when_pinned_and_render_per_request() {
     assert!(rendered.contains("turns 1–77"));
     assert!(!rendered.contains("{{"));
 }
+
+#[test]
+fn todo_and_status_templates_pin_raw_and_render_per_request() {
+    let dir = tempdir().unwrap();
+    let store = PromptStore::new(dir.path().join("prompts"));
+    let pins = PinnedPrompts::pin(&store, &vars()).unwrap();
+
+    let reminder = pins.text(TODO_REMINDER).unwrap();
+    assert!(reminder.contains("{{ open_todos }}"), "{reminder}");
+    let reminder_vars = PromptVars {
+        reminder_sent: "2".into(),
+        reminder_max: "3".into(),
+        open_todos: "t1 pending \"one\"".into(),
+        ..vars()
+    };
+    let rendered = render_text(TODO_REMINDER, reminder, &reminder_vars).unwrap();
+    assert!(
+        rendered.starts_with("Reminder 2 of 3: t1 pending \"one\" still open."),
+        "{rendered}"
+    );
+
+    let report = pins.text(ACP_STATUS_REPORT).unwrap();
+    assert!(report.contains("{{ status_ranges }}"), "{report}");
+    assert!(PROMPT_IDS.contains(&TODO_REMINDER));
+    assert!(PROMPT_IDS.contains(&ACP_STATUS_REPORT));
+}
