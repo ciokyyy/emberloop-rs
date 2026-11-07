@@ -455,9 +455,14 @@ fn the_engine_stays_silent_on_every_reference_silent_frame() {
     assert_eq!(early, KNOWN_EARLY);
 }
 
-/// The first nudge of each golden: the engine's `(step, tokens, kind)` beside the
-/// reference's `(step, tokens)`. Pins both counts, so a golden or threshold change shows.
-const FIRST_FIRES: &[(&str, Option<(u64, u64, &str)>, Option<(u64, u64)>)] = &[
+/// The engine's first nudge: `(step, tokens, kind)`.
+type EngineFirst = Option<(u64, u64, &'static str)>;
+/// The reference's first injection: `(step, tokens)`.
+type ReferenceFirst = Option<(u64, u64)>;
+
+/// The first nudge of each golden: the engine's beside the reference's. Pins both counts,
+/// so a golden or threshold change shows.
+const FIRST_FIRES: &[(&str, EngineFirst, ReferenceFirst)] = &[
     ("window-64k-steady", None, None),
     (
         "window-64k-pressure",
