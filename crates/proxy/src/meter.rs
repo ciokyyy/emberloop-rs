@@ -4,6 +4,7 @@ use serde_json::Value;
 /// requests: the last request's input is the context size the UI shows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Usage {
+    /// The whole prompt of the request (the context size). See `input_total`.
     pub input_tokens: u64,
     pub output_tokens: u64,
     /// Input tokens the upstream served from its prompt cache, when it says so.
@@ -84,7 +85,7 @@ fn gemini_usage(root: &Value) -> Option<Usage> {
 
 fn openai_usage(root: &Value) -> Option<Usage> {
     let usage = root.get("usage")?;
-    let input = number(usage, "prompt_tokens").max(number(usage, "input_tokens"));
+    let input = input_total(usage);
     let output = number(usage, "completion_tokens").max(number(usage, "output_tokens"));
     if input == 0 && output == 0 {
         return None;
@@ -94,6 +95,29 @@ fn openai_usage(root: &Value) -> Option<Usage> {
         output_tokens: output,
         cached_tokens: cached_tokens(usage),
     })
+}
+
+/// The prompt size of a request. Anthropic's `input_tokens` leaves out its cache reads and
+/// writes, so the total adds them back; OpenAI counts its cached tokens inside the input total
+/// already. Gemini: `cachedContentTokenCount` is left out of the total on purpose. Whether
+/// `promptTokenCount` includes it is UNVERIFIED, so the reported count is kept as it is.
+fn input_total(usage: &Value) -> u64 {
+    if !is_anthropic(usage) {
+        return number(usage, "prompt_tokens").max(number(usage, "input_tokens"));
+    }
+    // A message_delta may carry only the cache counts; without `input_tokens` it is no total.
+    if usage.get("input_tokens").is_none() {
+        return 0;
+    }
+    number(usage, "input_tokens")
+        + number(usage, "cache_read_input_tokens")
+        + number(usage, "cache_creation_input_tokens")
+}
+
+/// Anthropic is the only wire whose usage carries cache counts beside `input_tokens`.
+fn is_anthropic(usage: &Value) -> bool {
+    usage.get("cache_read_input_tokens").is_some()
+        || usage.get("cache_creation_input_tokens").is_some()
 }
 
 /// Where each wire reports the prefix it served from cache. OpenAI-style usage carries
@@ -225,6 +249,34 @@ mod tests {
         assert_eq!(
             extract_usage(gemini.as_bytes()).map(|u| u.cached_tokens),
             Some(15)
+        );
+    }
+
+    #[test]
+    fn anthropic_input_is_the_whole_prompt_with_cache_reads_and_writes() {
+        // Anthropic's `input_tokens` excludes cache reads and writes, so the context is their sum.
+        let body = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":2000,\"cache_read_input_tokens\":80000,\"cache_creation_input_tokens\":5000,\"output_tokens\":1}}}\n\n";
+        assert_eq!(
+            extract_usage(body.as_bytes()),
+            Some(Usage {
+                input_tokens: 87000,
+                output_tokens: 1,
+                cached_tokens: 80000,
+            })
+        );
+    }
+
+    #[test]
+    fn anthropic_message_delta_without_input_keeps_the_context_total() {
+        let body = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":2000,\"cache_read_input_tokens\":80000,\"cache_creation_input_tokens\":5000,\"output_tokens\":1}}}\n\n\
+                    data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":14}}\n\n";
+        assert_eq!(
+            extract_usage(body.as_bytes()),
+            Some(Usage {
+                input_tokens: 87000,
+                output_tokens: 14,
+                cached_tokens: 80000,
+            })
         );
     }
 
