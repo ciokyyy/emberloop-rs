@@ -704,15 +704,32 @@ fn contains_window(contents: &[Value], window: &[Value]) -> bool {
 }
 
 fn snippet_for(summary: &str, needle: &str) -> String {
-    let lower = summary.to_lowercase();
-    let Some(byte) = lower.find(needle) else {
+    let Some((match_start, match_end)) = find_lowercase(summary, needle) else {
         return summary.chars().take(160).collect();
     };
-    let start = byte.saturating_sub(60);
-    let end = (byte + needle.len() + 100).min(summary.len());
+    let start = match_start.saturating_sub(60);
+    let end = (match_end + 100).min(summary.len());
     let start = floor_char_boundary(summary, start);
     let end = ceil_char_boundary(summary, end);
     summary[start..end].trim().to_string()
+}
+
+/// Byte range in `text` of the first case-insensitive match of `needle_lower` (already lowercase,
+/// non-empty). Lowercasing can change the byte length, so the match is located in the lowercased
+/// text and mapped back to the original characters that produced it.
+fn find_lowercase(text: &str, needle_lower: &str) -> Option<(usize, usize)> {
+    let mut lower = String::with_capacity(text.len());
+    let mut spans = Vec::with_capacity(text.len());
+    for (start, ch) in text.char_indices() {
+        let span = (start, start + ch.len_utf8());
+        for lowered in ch.to_lowercase() {
+            lower.push(lowered);
+            spans.extend(std::iter::repeat_n(span, lowered.len_utf8()));
+        }
+    }
+    let at = lower.find(needle_lower)?;
+    let last = at + needle_lower.len() - 1;
+    Some((spans[at].0, spans[last].1))
 }
 
 fn floor_char_boundary(text: &str, mut index: usize) -> usize {
@@ -1342,6 +1359,28 @@ mod tests {
         assert_eq!(hits[0].block_id, "b1");
         assert!(compressor.search_context("absent", 5).unwrap().is_empty());
         assert!(compressor.search_context("  ", 5).is_err());
+    }
+
+    #[test]
+    fn snippet_stays_on_the_match_when_lowercasing_changes_the_byte_length() {
+        // 'İ' lowercases to two code points (3 bytes against 2), 'ẞ' shrinks (2 bytes against 3):
+        // the match offset must come from the text the snippet is cut from.
+        for prefix in ["İ".repeat(100), "ẞ".repeat(100)] {
+            let dir = tempdir().unwrap();
+            let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+            let mut contents = turns();
+            let call = CompressCall {
+                summary: format!("{prefix} target {}", "x".repeat(300)),
+                ..call()
+            };
+            compressor
+                .compress_batch(&mut contents, vec![call], &CompressPolicy::default())
+                .unwrap();
+
+            let hits = compressor.search_context("target", 5).unwrap();
+            assert_eq!(hits.len(), 1);
+            assert!(hits[0].snippet.contains("target"), "{}", hits[0].snippet);
+        }
     }
 
     #[test]
