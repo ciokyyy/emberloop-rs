@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { UsageRecord } from './api/types';
-import { coldStart, latestHit, sessionHit, trendPoints } from './cache';
+import { coldStart, latestHit, percentLabel, sessionHit, trendPoints } from './cache';
 
 const row = (seq: number, cached: number, creation: number, fresh: number, hitPercent: number | null): UsageRecord => ({
   seq,
@@ -59,5 +59,15 @@ describe('coldStart', () => {
     expect(coldStart([row(1, 500, 0, 500, 50)])).toBe(false);
     expect(coldStart([row(1, 0, 0, 900, null)])).toBe(false);
     expect(coldStart([])).toBe(false);
+  });
+});
+
+describe('percentLabel', () => {
+  it('shows a dash for no percent, <1% for a trace, and whole percents otherwise', () => {
+    expect(percentLabel(null)).toBe('–');
+    expect(percentLabel(0.4)).toBe('<1%');
+    expect(percentLabel(0)).toBe('0%');
+    expect(percentLabel(83.4)).toBe('83%');
+    expect(percentLabel(100)).toBe('100%');
   });
 });

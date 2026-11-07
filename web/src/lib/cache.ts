@@ -39,3 +39,10 @@ export function coldStart(rows: UsageRecord[]): boolean {
   const first = rows[0];
   return first !== undefined && first.cachedTokens === 0 && first.cacheCreationTokens > 0;
 }
+
+/** A hit percent for display: a dash when there is none, `<1%` for a trace, else whole percents. */
+export function percentLabel(value: number | null): string {
+  if (value === null) return '–';
+  if (value > 0 && value < 1) return '<1%';
+  return `${Math.round(value)}%`;
+}
