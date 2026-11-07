@@ -40,7 +40,14 @@ export interface TodoItem {
 export interface FeedState {
   items: FeedItem[];
   status: SessionStatus;
-  usage: { used: number; window: number; breakdown?: ContextBreakdown | null } | null;
+  /** `cachedTokens` and `cacheCreationTokens` are present only when the provider reported them. */
+  usage: {
+    used: number;
+    window: number;
+    cachedTokens?: number;
+    cacheCreationTokens?: number;
+    breakdown?: ContextBreakdown | null;
+  } | null;
   todos: TodoItem[];
 }
 
@@ -244,6 +251,14 @@ function appendChunk(state: FeedState, kind: 'assistant' | 'thinking', chunk: st
   };
 }
 
+/** The prompt-cache counts of a usage event or snapshot, absent when the provider reports none. */
+function cacheCounts(data: Record<string, unknown>): { cachedTokens?: number; cacheCreationTokens?: number } {
+  return {
+    ...(data.cachedTokens === undefined ? {} : { cachedTokens: number(data.cachedTokens) }),
+    ...(data.cacheCreationTokens === undefined ? {} : { cacheCreationTokens: number(data.cacheCreationTokens) })
+  };
+}
+
 /** The server's view of a Session at open: its latest status and usage. A first load shows only a
  *  tail window, and a long Session's last status or usage event can sit far behind it, so without
  *  this a working Session opens as idle with a stale context ring. It touches no feed row. */
@@ -262,6 +277,7 @@ export function applySnapshot(state: FeedState, snapshot: Snapshot): FeedState {
       usage: {
         used: number(snapshot.usage.inputTokens ?? snapshot.usage.used ?? snapshot.usage.tokens),
         window: number(snapshot.usage.contextWindow ?? snapshot.usage.window) || next.usage?.window || 0,
+        ...cacheCounts(snapshot.usage),
         ...(snapshot.usage.breakdown ? { breakdown: readBreakdown(snapshot.usage.breakdown) } : {})
       }
     };
@@ -381,6 +397,7 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
         usage: {
           used: number(data.inputTokens ?? data.used ?? data.tokens),
           window: number(data.contextWindow ?? data.window) || state.usage?.window || 0,
+          ...cacheCounts(data),
           ...(data.breakdown ? { breakdown: readBreakdown(data.breakdown) } : {})
         }
       };

@@ -29,7 +29,7 @@ SvelteKit SPA for phase 1: Projects sidebar, Session feed, composer and Settings
 - `notice`: `id`, `text`, `route` (`"cap"` marks the todo cap note)
 - `todos`: `items` (the whole list, `{id, content, status}`)
 - `compression`: `text`; `action` is `compress`, `decompress`, `nudge` or `preflight`, and a nudge also carries `kind`, `tokens` and `sinceLast`
-- `usage`: `inputTokens`, `contextWindow`, optional `breakdown` (`system`, `toolDefinitions`, `toolCalls`, `toolResults`, `compression`, `conversation`, `images`, `imageCount`, `estimatedTokens`); categories are estimated text tokens, `images` is zero because image costs are unknown
+- `usage`: `inputTokens`, `contextWindow`, optional `cachedTokens` and `cacheCreationTokens` (the provider's prompt-cache reads and writes; absent when unreported), optional `breakdown` (`system`, `toolDefinitions`, `toolCalls`, `toolResults`, `compression`, `conversation`, `images`, `imageCount`, `estimatedTokens`); categories are estimated text tokens, `images` is zero because image costs are unknown
 - `error`: `message`
 
 ## Workflow
