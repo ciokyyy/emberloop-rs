@@ -770,6 +770,16 @@ async fn a_silent_upstream_round_times_out_with_an_error_event() {
     assert!(String::from_utf8_lossy(&response).contains("timed out"));
 }
 
+/// `tool_conversation` plus a later user prompt: the latest user message is protected, so a fold
+/// that holds a steer needs a user turn after it.
+fn tool_conversation_with_later_prompt() -> Value {
+    let mut turns = tool_conversation().as_array().unwrap().clone();
+    turns.push(json!({ "role": "model", "parts": [{ "text": "ok" }] }));
+    turns.push(json!({ "role": "model", "parts": [{ "text": "more" }] }));
+    turns.push(json!({ "role": "user", "parts": [{ "text": "later" }] }));
+    Value::Array(turns)
+}
+
 fn tool_conversation() -> Value {
     json!([
         { "role": "user", "parts": [{ "text": "run it" }] },
@@ -1305,7 +1315,14 @@ async fn openai_chat_streaming_proxy_tool_is_swallowed_and_followed_up() {
     let req_body = json!({
         "model": "glm-5",
         "stream": true,
-        "messages": [{"role": "system", "content": "Base"}, {"role": "user", "content": "hello"}]
+        "messages": [
+            {"role": "system", "content": "Base"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "more"},
+            {"role": "assistant", "content": "still"},
+            {"role": "user", "content": "latest"}
+        ]
     });
     let response = router(fixture.state.clone())
         .oneshot(
@@ -1378,7 +1395,14 @@ async fn openai_streaming_publishes_usage_even_when_the_client_stops_reading() {
     let req_body = json!({
         "model": "glm-5",
         "stream": true,
-        "messages": [{"role": "system", "content": "Base"}, {"role": "user", "content": "hello"}]
+        "messages": [
+            {"role": "system", "content": "Base"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "more"},
+            {"role": "assistant", "content": "still"},
+            {"role": "user", "content": "latest"}
+        ]
     });
     let response = router(fixture.state.clone())
         .oneshot(
@@ -1470,7 +1494,13 @@ async fn anthropic_streaming_proxy_tool_is_swallowed_and_followed_up() {
     let req_body = json!({
         "model": "claude-sonnet",
         "stream": true,
-        "messages": [{"role": "user", "content": "hello"}]
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "more"},
+            {"role": "assistant", "content": "still"},
+            {"role": "user", "content": "latest"}
+        ]
     });
     let response = router(fixture.state.clone())
         .oneshot(
@@ -1541,13 +1571,16 @@ async fn a_fold_over_a_spliced_steer_still_applies_to_the_resent_history() {
         &fixture.state,
         &fixture.token,
         "v1internal:streamGenerateContent",
-        body(tool_conversation()),
+        body(tool_conversation_with_later_prompt()),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
 
     // Turn two: the harness resends its own history, without the steer or the proxy's pair.
-    let mut next = tool_conversation().as_array().unwrap().clone();
+    let mut next = tool_conversation_with_later_prompt()
+        .as_array()
+        .unwrap()
+        .clone();
     next.push(json!({ "role": "user", "parts": [{ "text": "next" }] }));
     let before = fixture.fake.calls();
     let (status, _) = send(
@@ -1818,7 +1851,11 @@ async fn conversation_reset_archives_blocks_without_reloading_or_overwriting_the
     let spill = fixture.data_root.session_spill_dir("ses_1");
     for generation in 1..=2 {
         let mut compressor = NativeCompressor::new(&spill).unwrap();
-        let mut contents = vec![json!({"role": "user", "parts": [{"text": "original"}]})];
+        let mut contents = vec![
+            json!({"role": "user", "parts": [{"text": "original"}]}),
+            json!({"role": "model", "parts": [{"text": "ack"}]}),
+            json!({"role": "user", "parts": [{"text": "latest"}]}),
+        ];
         compressor
             .compress(
                 &mut contents,
@@ -2042,6 +2079,28 @@ async fn preflight_folds_until_the_request_fits_the_window() {
 }
 
 #[tokio::test]
+async fn preflight_folds_the_old_turns_and_keeps_the_latest_user_message_verbatim() {
+    let fixture = fixture().await;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    // The latest user prompt is turn 10, followed by a long model tail: a fold of everything but
+    // the preserved tail would reach it.
+    let mut contents: Vec<Value> = (0..14)
+        .map(|index| match index {
+            0 => json!({"role": "user", "parts": [{"text": "first prompt"}]}),
+            10 => json!({"role": "user", "parts": [{"text": "latest prompt"}]}),
+            _ => json!({"role": "model", "parts": [{"text": format!("step {index} with some text")}]}),
+        })
+        .collect();
+    let settings = api::state::Settings::default();
+    let folded = preflight_fold(&runtime, &mut contents, 20, &settings).unwrap();
+    assert!(folded.is_some());
+    assert!(contents.len() < 14);
+    assert!(contents
+        .iter()
+        .any(|turn| turn["parts"][0]["text"] == "latest prompt"));
+}
+
+#[tokio::test]
 async fn switches_skip_nudge_and_tool_injection() {
     let fixture = fixture_with(text_only_fake()).await;
     {
@@ -2183,7 +2242,10 @@ async fn a_fold_survives_the_next_request_that_carries_the_raw_result_again() {
             {"role": "system", "content": "Base"},
             {"role": "user", "content": "read it"},
             {"role": "assistant", "tool_calls": [{"id": "call_big", "type": "function", "function": {"name": "read", "arguments": "{\"path\":\"target.txt\"}"}}]},
-            {"role": "tool", "tool_call_id": "call_big", "content": big}
+            {"role": "tool", "tool_call_id": "call_big", "content": big},
+            {"role": "assistant", "content": "got it"},
+            {"role": "assistant", "content": "more"},
+            {"role": "user", "content": "now summarise"}
         ]
     });
     for _ in 0..2 {
