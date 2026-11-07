@@ -255,6 +255,15 @@ fn grep_respects_gitignore_and_supports_modes() {
 }
 
 #[test]
+fn grep_refuses_a_parameter_it_does_not_have() {
+    let fixture = setup();
+    write(&fixture, "dots.txt", "a.c\nabc\n");
+    let error = call(&fixture, "grep", json!({"pattern": "a.c", "fixed": true}))
+        .expect_err("fixed is not a grep parameter");
+    assert!(error.to_string().contains("fixed"), "{error}");
+}
+
+#[test]
 fn grep_records_seen_lines_for_edit() {
     let fixture = setup();
     let content = "alpha\nneedle here\ngamma\n";
