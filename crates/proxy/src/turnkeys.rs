@@ -9,7 +9,7 @@
 //!   wire's signature on a part. Stored originals keep both, because decompress restores them, so
 //!   they are ignored by comparison and never stripped from a stored turn.
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 /// Marks the transient nudge turn.
 pub const NUDGE: &str = "_nudge";
@@ -57,29 +57,13 @@ pub fn canonical(value: &Value) -> Value {
     }
 }
 
-/// Whether two turns are equal once both are canonical. The same answer as comparing
-/// `canonical` views, without building them: the compressor compares turns in a window scan.
+/// Whether two turns are the same conversation turn: equal canonical views.
 pub fn same_turn(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Object(x), Value::Object(y)) => {
-            kept_keys(x) == kept_keys(y)
-                && x.iter()
-                    .filter(|(key, _)| !is_ignored(key))
-                    .all(|(key, field)| y.get(key).is_some_and(|other| same_turn(field, other)))
-        }
-        (Value::Array(x), Value::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_turn(p, q))
-        }
-        _ => a == b,
-    }
+    canonical(a) == canonical(b)
 }
 
 fn is_ignored(key: &str) -> bool {
     IGNORED_KEYS.contains(&key)
-}
-
-fn kept_keys(map: &Map<String, Value>) -> usize {
-    map.keys().filter(|key| !is_ignored(key)).count()
 }
 
 #[cfg(test)]
@@ -142,20 +126,6 @@ mod tests {
     fn a_nudge_is_not_the_same_turn_as_a_plain_turn_with_its_text() {
         let plain = json!({"role": "user", "parts": [{"text": "nudge: first"}]});
         assert!(!same_turn(&nudge_turn("nudge: first"), &plain));
-    }
-
-    #[test]
-    fn same_turn_agrees_with_equality_of_canonical_views() {
-        let mut samples = vec![wired_call(), bare_call(), nudge_turn("x")];
-        let mut other = wired_call();
-        other["parts"][0]["functionCall"]["args"]["path"] = json!("b.rs");
-        samples.push(other);
-        samples.push(json!({"role": "user", "parts": [{"text": "a"}], "_raw": 1}));
-        for a in &samples {
-            for b in &samples {
-                assert_eq!(same_turn(a, b), canonical(a) == canonical(b), "{a} vs {b}");
-            }
-        }
     }
 
     #[test]

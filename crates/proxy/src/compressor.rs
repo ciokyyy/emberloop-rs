@@ -1,5 +1,6 @@
 use crate::marker;
 use crate::tokens;
+use crate::turnkeys::{self, is_transient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -567,7 +568,10 @@ impl Compressor for NativeCompressor {
             .max_by_key(|block| block.originals.len())?;
         let wanted = wanted_turns(block, skip, &skip_ids);
         let head = wanted.first()?;
-        let Some(start) = contents.iter().position(|turn| turn_eq(turn, head)) else {
+        let Some(start) = contents
+            .iter()
+            .position(|turn| turnkeys::same_turn(turn, head))
+        else {
             return Some(format!(
                 "{}: first stored turn `{}` is not in the request",
                 block.id,
@@ -576,7 +580,7 @@ impl Compressor for NativeCompressor {
         };
         for (offset, turn) in wanted.iter().enumerate().skip(1) {
             let found = contents.get(start + offset);
-            if found.is_none_or(|found| !turn_eq(turn, found)) {
+            if found.is_none_or(|found| !turnkeys::same_turn(turn, found)) {
                 return Some(format!(
                     "{}: turns 0..{offset} matched at {start}, turn {offset} differs: stored `{}` vs request `{}`",
                     block.id,
@@ -627,12 +631,6 @@ fn brief(turn: &Value) -> String {
         })
         .unwrap_or_default();
     text.chars().take(80).collect()
-}
-
-/// The nudge is injected into one request only; a fold that spanned it stored a turn no later
-/// request carries, which would otherwise stop the fold from ever matching again.
-fn is_transient(turn: &Value) -> bool {
-    turn.get("_nudge").is_some()
 }
 
 /// Index of the latest message the user typed, the one no fold may include.
@@ -719,14 +717,16 @@ fn find_span(contents: &[Value], originals: &[Value]) -> Option<Vec<usize>> {
     if originals.is_empty() || originals.len() > contents.len() {
         return None;
     }
-    if let Some(start) = contents
-        .windows(originals.len())
-        .position(|turns| turns.iter().zip(originals).all(|(a, b)| turn_eq(a, b)))
-    {
+    if let Some(start) = contents.windows(originals.len()).position(|turns| {
+        turns
+            .iter()
+            .zip(originals)
+            .all(|(a, b)| turnkeys::same_turn(a, b))
+    }) {
         return Some((start..start + originals.len()).collect());
     }
     (0..contents.len())
-        .filter(|&start| turn_eq(&contents[start], &originals[0]))
+        .filter(|&start| turnkeys::same_turn(&contents[start], &originals[0]))
         .find_map(|start| span_from(contents, originals, start))
 }
 
@@ -735,7 +735,7 @@ fn span_from(contents: &[Value], originals: &[Value], start: usize) -> Option<Ve
     let mut at = start;
     for original in &originals[1..] {
         let next = (at + 1..contents.len().min(at + 2 + MAX_SPLICE_GAP))
-            .find(|&index| turn_eq(&contents[index], original))?;
+            .find(|&index| turnkeys::same_turn(&contents[index], original))?;
         matched.push(next);
         at = next;
     }
@@ -770,28 +770,6 @@ fn fold_matched(
     }
 }
 
-/// Turn equality that ignores `thoughtSignature` and `_raw`: the Google wire signs unsigned calls
-/// after a fold, and the chat wires wrap every turn in a `_raw` copy the proxy's own turns lack.
-fn turn_eq(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Object(x), Value::Object(y)) => {
-            let kept = |m: &serde_json::Map<String, Value>| {
-                m.keys()
-                    .filter(|k| *k != "thoughtSignature" && *k != "_raw")
-                    .count()
-            };
-            kept(x) == kept(y)
-                && x.iter()
-                    .filter(|(k, _)| *k != "thoughtSignature" && *k != "_raw")
-                    .all(|(k, v)| y.get(k).is_some_and(|w| turn_eq(v, w)))
-        }
-        (Value::Array(x), Value::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| turn_eq(p, q))
-        }
-        _ => a == b,
-    }
-}
-
 /// The function call or the function result a part carries, whichever it is.
 fn part_call(part: &Value) -> Option<&Value> {
     part.get("functionCall")
@@ -822,7 +800,10 @@ fn is_skipped(turn: &Value, skip: &[Value], skip_ids: &[&str]) -> bool {
                     .is_some_and(|id| skip_ids.contains(&id))
             })
         });
-    id_matches || skip.iter().any(|spliced| turn_eq(turn, spliced))
+    id_matches
+        || skip
+            .iter()
+            .any(|spliced| turnkeys::same_turn(turn, spliced))
 }
 
 /// Lowercased whitespace-separated query terms; an empty query is an error.
