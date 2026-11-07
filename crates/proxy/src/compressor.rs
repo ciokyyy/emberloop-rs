@@ -1,11 +1,13 @@
 use crate::marker;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Snippet budget in characters, and how many of them come before the match.
 const SNIPPET_TOTAL: usize = 200;
 const SNIPPET_AHEAD: usize = 80;
+/// Directory under a Session's spill dir holding one `<block id>.json` per fold.
+const BLOCKS_DIR: &str = "blocks";
 
 /// One folded range: the summary survives, the original turns live in `spill/`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -186,7 +188,7 @@ impl NativeCompressor {
             next_id: 1,
             spill_dir: spill_dir.into(),
         };
-        let entries = match std::fs::read_dir(compressor.spill_dir.join("blocks")) {
+        let entries = match std::fs::read_dir(compressor.spill_dir.join(BLOCKS_DIR)) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(compressor),
             Err(error) => return Err(format!("load compression blocks: {error}")),
@@ -220,9 +222,27 @@ impl NativeCompressor {
         Ok(compressor)
     }
 
+    /// Moves the spill dir's blocks directory aside as `blocks-reset-N` (N the first free number),
+    /// so a new compressor starts empty. The originals stay on disk. A missing directory moves
+    /// nothing.
+    pub fn archive_blocks(spill_dir: &Path) -> std::io::Result<()> {
+        let blocks = spill_dir.join(BLOCKS_DIR);
+        if !blocks.exists() {
+            return Ok(());
+        }
+        let mut generation = 1;
+        while spill_dir
+            .join(format!("blocks-reset-{generation}"))
+            .exists()
+        {
+            generation += 1;
+        }
+        std::fs::rename(blocks, spill_dir.join(format!("blocks-reset-{generation}")))
+    }
+
     /// Writes the block's file and returns its path. A failed rename leaves no temporary file.
     fn spill_originals(&self, block: &Block) -> Result<PathBuf, String> {
-        let dir = self.spill_dir.join("blocks");
+        let dir = self.spill_dir.join(BLOCKS_DIR);
         std::fs::create_dir_all(&dir).map_err(|err| format!("spill dir: {err}"))?;
         let bytes = serde_json::to_vec(block).map_err(|err| err.to_string())?;
         let temporary = dir.join(format!("{}.tmp", block.id));
@@ -1965,5 +1985,31 @@ mod tests {
         // `rebuilt[2]` is the second turn of the fold: the first one at index 1 is `turn 0`.
         let report = compressor.fold_report(&rebuilt, &[]).expect("a report");
         assert!(report.contains("turn 1 differs"), "{report}");
+    }
+
+    #[test]
+    fn archive_blocks_moves_the_directory_aside_under_the_first_free_generation() {
+        let dir = tempdir().unwrap();
+        let blocks = dir.path().join("blocks");
+        std::fs::create_dir_all(&blocks).unwrap();
+        std::fs::write(blocks.join("b1.json"), b"old").unwrap();
+
+        NativeCompressor::archive_blocks(dir.path()).unwrap();
+        assert!(!blocks.exists());
+        assert_eq!(
+            std::fs::read(dir.path().join("blocks-reset-1/b1.json")).unwrap(),
+            b"old"
+        );
+
+        std::fs::create_dir_all(&blocks).unwrap();
+        NativeCompressor::archive_blocks(dir.path()).unwrap();
+        assert!(dir.path().join("blocks-reset-2").exists());
+    }
+
+    #[test]
+    fn archive_blocks_with_no_directory_moves_nothing() {
+        let dir = tempdir().unwrap();
+        NativeCompressor::archive_blocks(dir.path()).unwrap();
+        assert!(!dir.path().join("blocks-reset-1").exists());
     }
 }

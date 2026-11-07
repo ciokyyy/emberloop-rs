@@ -249,14 +249,7 @@ impl ProxyState {
         let runtime = self.runtime(session_id).await?;
         let spill = self.inner.data_root.session_spill_dir(session_id);
         let mut compressor = lock(&runtime.compressor)?;
-        let blocks = spill.join("blocks");
-        if blocks.exists() {
-            let mut generation = 1;
-            while spill.join(format!("blocks-reset-{generation}")).exists() {
-                generation += 1;
-            }
-            std::fs::rename(&blocks, spill.join(format!("blocks-reset-{generation}")))?;
-        }
+        NativeCompressor::archive_blocks(&spill)?;
         *compressor = Box::new(NativeCompressor::new(spill).map_err(ProxyError::Compression)?);
         lock(&runtime.splices)?.reset()?;
         runtime.close_nudge_gate()?;
