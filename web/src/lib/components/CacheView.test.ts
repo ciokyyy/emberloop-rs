@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '$lib/api';
 import type { UsageRecord } from '$lib/api/types';
@@ -35,6 +35,27 @@ describe('cache page', () => {
     expect(await screen.findByText(/no cache fields/i)).toBeTruthy();
     expect(screen.getByText(/minimum prompt size/i)).toBeTruthy();
     expect(screen.queryByTestId('latest-hit')).toBeNull();
+  });
+
+  it('says the Session figure covers only the last 200 requests when the history is full', async () => {
+    const full = Array.from({ length: 200 }, (_, index) => row(index + 1, 900, 0, 100));
+    vi.spyOn(api, 'sessionUsage').mockResolvedValue(full);
+    render(CacheView, { sessionId: 's1' });
+    expect(await screen.findByText('Across the last 200 requests')).toBeTruthy();
+  });
+
+  it('shows a dash, not 0%, for a request in the table without a hit rate', async () => {
+    vi.spyOn(api, 'sessionUsage').mockResolvedValue([row(1, 900, 0, 100), row(2, 0, 0, 0)]);
+    render(CacheView, { sessionId: 's1' });
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('cell', { name: '–' })).toBeTruthy();
+    expect(within(table).queryByRole('cell', { name: '0%' })).toBeNull();
+  });
+
+  it('words the cold-start note about the oldest request shown, since a long history is cut', async () => {
+    vi.spyOn(api, 'sessionUsage').mockResolvedValue(fixture);
+    render(CacheView, { sessionId: 's1' });
+    expect(await screen.findByText(/oldest request shown wrote the cache/i)).toBeTruthy();
   });
 
   it('says so when a Session has no requests yet', async () => {

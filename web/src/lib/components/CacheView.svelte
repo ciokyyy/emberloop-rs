@@ -7,6 +7,8 @@
 
   // The table shows the newest requests; the trend and the Session figure use every row loaded.
   const RECENT = 10;
+  // The server's default history window; a full window means older requests are not shown.
+  const HISTORY = 200;
 
   let { sessionId, status = 'idle' }: { sessionId: string; status?: SessionStatus } = $props();
 
@@ -24,7 +26,7 @@
     shownFor = id;
     failure = '';
     api
-      .sessionUsage(id)
+      .sessionUsage(id, HISTORY)
       .then((loaded) => {
         if (current) rows = loaded;
       })
@@ -71,13 +73,15 @@
       <div class="rounded-xl border border-border bg-surface-1 p-4">
         <p class="text-[12px] text-fg-3">Session, token-weighted</p>
         <p class="mt-1 text-4xl font-semibold tabular-nums" data-testid="session-hit">{percentLabel(session)}</p>
-        <p class="mt-1 text-[12px] text-fg-3">Across {loaded.length} requests</p>
+        <p class="mt-1 text-[12px] text-fg-3">
+          {loaded.length >= HISTORY ? `Across the last ${HISTORY} requests` : `Across ${loaded.length} requests`}
+        </p>
       </div>
     </section>
 
     {#if coldStart(loaded)}
       <p class="text-[12px] text-fg-3">
-        The first request wrote the cache without reading it, so the early points start low.
+        The oldest request shown wrote the cache without reading it, so the early points start low.
       </p>
     {/if}
 
