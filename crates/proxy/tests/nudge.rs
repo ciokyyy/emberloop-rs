@@ -350,3 +350,152 @@ fn state_is_saved_by_rename_and_a_missing_or_broken_file_loads_the_default() {
     std::fs::write(&path, "{not json").expect("write");
     assert_eq!(proxy::nudge::load(&path), NudgeState::default());
 }
+
+const SCENARIOS: [&str; 7] = [
+    "window-64k-steady",
+    "window-64k-pressure",
+    "window-64k-blocks",
+    "window-64k-compress-reset",
+    "window-64k-protected",
+    "window-200k-steady",
+    "window-1m-steady",
+];
+
+#[derive(Default)]
+struct Replay {
+    /// The engine's first nudge: step, tokens, kind.
+    first: Option<(u64, u64, &'static str)>,
+    /// Frames where the engine nudged and the reference's `shouldInject` is false.
+    early: Vec<(u64, &'static str)>,
+}
+
+/// Replays a golden through the engine. Compressible mass is the token count, zero for
+/// the protected scenario. The golden records each compress, and its frames already show
+/// the folded count, so the engine resets its gate before the frame of that step. Tier
+/// nudges are not replayed: the goldens carry no block count per frame.
+fn replay_frames(name: &str) -> Replay {
+    let g = golden(name);
+    let window = g["windowTokens"].as_u64().expect("windowTokens");
+    let protected = name == "window-64k-protected";
+    let compress_steps: Vec<u64> = g["compresses"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| c["step"].as_u64().expect("compress step"))
+        .collect();
+    let mut state = NudgeState::default();
+    let mut replay = Replay::default();
+    for frame in g["frames"].as_array().expect("frames") {
+        let step = frame["step"].as_u64().expect("step");
+        let tokens = frame["tokenCount"].as_u64().expect("tokenCount");
+        if compress_steps.contains(&step) {
+            state.reset_after_compress();
+        }
+        let mass = if protected { 0 } else { tokens };
+        let Some(nudge) = state.observe(tokens, window, mass) else {
+            continue;
+        };
+        replay
+            .first
+            .get_or_insert((step, tokens, nudge.kind.name()));
+        if frame["shouldInject"] == Value::Bool(false) {
+            replay.early.push((step, nudge.kind.name()));
+        }
+    }
+    replay
+}
+
+/// The reference's first injection in a golden: step and tokens.
+fn reference_first(name: &str) -> Option<(u64, u64)> {
+    golden(name)["frames"]
+        .as_array()
+        .expect("frames")
+        .iter()
+        .find(|frame| frame["shouldInject"] == Value::Bool(true))
+        .map(|frame| {
+            (
+                frame["step"].as_u64().expect("step"),
+                frame["tokenCount"].as_u64().expect("tokenCount"),
+            )
+        })
+}
+
+/// Frames where the engine nudges and the reference stays silent, as `(scenario, step,
+/// kind)`. Every one is the first-nudge threshold this project keeps on purpose (ticket
+/// 20): the engine fires at `min(75000, window / 2)`, so at 64k at 32000 tokens, the
+/// session's first nudge or the first after a compress. The reference waits for its own
+/// first at 48055 (64k), 51855 (200k) or 50255 (1M). Each frame has compressible mass of
+/// at least 30000, far above the floor, so the token substitution is not what fires it.
+/// Any other early frame, or one of these going quiet, fails the test.
+///
+/// - `pressure` 42: the session's first nudge at 32555 tokens, before the reference's 48055.
+/// - `blocks` 47, 52, 70 and `compress-reset` 42, 70: the gate reopens at 32000 tokens,
+///   after a compress or as the session's first (`blocks` 47 follows the compress at 30,
+///   52 the one at 50, 70 the one at 70; `compress-reset` 42 is its first, 70 follows its
+///   compress at 70). The reference waits for 48000 tokens.
+/// - `200k` 50: the first nudge at 76255 tokens; the reference fired at 51855 and 74730.
+const KNOWN_EARLY: &[(&str, u64, &str)] = &[
+    ("window-64k-pressure", 42, "first"),
+    ("window-64k-blocks", 47, "first"),
+    ("window-64k-blocks", 52, "first"),
+    ("window-64k-blocks", 70, "first"),
+    ("window-64k-compress-reset", 42, "first"),
+    ("window-64k-compress-reset", 70, "first"),
+    ("window-200k-steady", 50, "first"),
+];
+
+#[test]
+fn the_engine_stays_silent_on_every_reference_silent_frame() {
+    let mut early = Vec::new();
+    for name in SCENARIOS {
+        for (step, kind) in replay_frames(name).early {
+            early.push((name, step, kind));
+        }
+    }
+    assert_eq!(early, KNOWN_EARLY);
+}
+
+/// The first nudge of each golden: the engine's `(step, tokens, kind)` beside the
+/// reference's `(step, tokens)`. Pins both counts, so a golden or threshold change shows.
+const FIRST_FIRES: &[(&str, Option<(u64, u64, &str)>, Option<(u64, u64)>)] = &[
+    ("window-64k-steady", None, None),
+    (
+        "window-64k-pressure",
+        Some((42, 32555, "first")),
+        Some((62, 48055)),
+    ),
+    (
+        "window-64k-blocks",
+        Some((47, 32592, "first")),
+        Some((77, 48096)),
+    ),
+    (
+        "window-64k-compress-reset",
+        Some((42, 32555, "first")),
+        Some((62, 48055)),
+    ),
+    ("window-64k-protected", None, None),
+    (
+        "window-200k-steady",
+        Some((50, 76255, "first")),
+        Some((34, 51855)),
+    ),
+    (
+        "window-1m-steady",
+        Some((15, 75380, "first")),
+        Some((10, 50255)),
+    ),
+];
+
+#[test]
+fn the_first_nudge_counts_are_recorded_against_the_reference() {
+    let actual: Vec<_> = SCENARIOS
+        .iter()
+        .map(|name| (*name, replay_frames(name).first, reference_first(name)))
+        .collect();
+    let expected: Vec<_> = FIRST_FIRES
+        .iter()
+        .map(|(name, engine, reference)| (*name, *engine, *reference))
+        .collect();
+    assert_eq!(actual, expected);
+}

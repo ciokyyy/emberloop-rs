@@ -34,7 +34,7 @@ Wiring: `prepare_request` reads a Settings snapshot, applies the compressor poli
 
 ## Tests
 
-`tests/nudge.rs` covers the gate per window size, the band rules, configurable bands, tier triggers, the compress reset, the serde round trip, and replays `parity/golden/` decisions (inject, over-limit, emergency; never reason strings). Golden tests read the files at test time and need no Node.
+`tests/nudge.rs` covers the gate per window size, the band rules, configurable bands, tier triggers, the compress reset, the serde round trip, and replays `parity/golden/` decisions (inject, over-limit, emergency; never reason strings). The silent-frame test allows exactly the first-threshold frames in `KNOWN_EARLY` and pins each golden's first-fire counts in `FIRST_FIRES`; any other drift fails. Golden tests read the files at test time and need no Node.
 
 `tests/compressor_characterization.rs` pins the `Compressor` through its public API (turn matching, refold and skip, `fold_report`, summary marker, token estimate, policy, batch validation) against `tests/fixtures/compressor/`; its one `#[ignore]` test is the red atomic-batch spill test awaiting lane L4.
 
