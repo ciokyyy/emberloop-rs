@@ -2247,6 +2247,80 @@ async fn preflight_folds_the_old_turns_and_keeps_the_latest_user_message_verbati
         .any(|turn| turn["parts"][0]["text"] == "latest prompt"));
 }
 
+#[test]
+fn the_compressible_range_ends_before_the_latest_user_message() {
+    let turns = vec![
+        json!({"role": "user", "parts": [{"text": "first prompt"}]}),
+        json!({"role": "model", "parts": [{"text": "a".repeat(4_000)}]}),
+        json!({"role": "user", "parts": [{"text": "b".repeat(4_000)}]}),
+        json!({"role": "model", "parts": [{"text": "c".repeat(4_000)}]}),
+        json!({"role": "user", "parts": [{"text": "latest prompt"}]}),
+        json!({"role": "model", "parts": [{"text": "d".repeat(160_000)}]}),
+        json!({"role": "model", "parts": [{"text": "e".repeat(160_000)}]}),
+        json!({"role": "model", "parts": [{"text": "tail"}]}),
+    ];
+    let view = compressible_view(&turns, 2);
+    // The range is turns 1..4: the latest user message at 4 is never part of it, so the
+    // 160000-character results after it are not counted as compressible mass.
+    assert_eq!(view.tokens, turns_tokens(&turns[1..4]));
+    assert!(view.ranges.contains("turns 1–3"), "{}", view.ranges);
+}
+
+#[test]
+fn the_compressible_range_is_not_cut_when_the_only_user_message_is_the_first_turn() {
+    // Turn 0 is the latest user message and no range may include it, but `compress` ranges
+    // start at 1, so the whole tail after it is compressible (a long single agent turn).
+    let turns = vec![
+        json!({"role": "user", "parts": [{"text": "start the task"}]}),
+        json!({"role": "model", "parts": [{"text": "a".repeat(40_000)}]}),
+        json!({"role": "model", "parts": [{"text": "b".repeat(40_000)}]}),
+        json!({"role": "model", "parts": [{"text": "tail"}]}),
+    ];
+    let view = compressible_view(&turns, 1);
+    assert_eq!(view.tokens, turns_tokens(&turns[1..3]));
+    assert!(view.ranges.contains("turns 1–2"), "{}", view.ranges);
+}
+
+#[tokio::test]
+async fn a_nudge_is_silent_when_the_latest_user_message_blocks_the_only_mass() {
+    let fixture = fixture().await;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    let settings = api::state::Settings {
+        preserve_recent_messages: 2,
+        ..Default::default()
+    };
+    // The 300000-character result sits after the latest user message at turn 2. Inside
+    // 1..len-2 it would be counted, but no fold may cover the latest message, so the
+    // range ends at turn 2 and holds too little mass to carry a nudge.
+    let mut contents = vec![
+        json!({"role": "user", "parts": [{"text": "first prompt"}]}),
+        json!({"role": "model", "parts": [{"text": "a".repeat(2_000)}]}),
+        json!({"role": "user", "parts": [{"text": "latest prompt"}]}),
+        json!({"role": "model", "parts": [{"functionCall": {"name": "bash", "id": "call_1", "args": {}}}]}),
+        json!({"role": "model", "parts": [{"functionResponse": {"name": "bash", "id": "call_1", "response": {"output": "x".repeat(300_000)}}}]}),
+        json!({"role": "model", "parts": [{"text": "ok"}]}),
+        json!({"role": "model", "parts": [{"text": "more"}]}),
+    ];
+    let (nudge, gate) = inject_nudge(&runtime, &mut contents, 100_000, &settings).unwrap();
+    assert!(nudge.is_none(), "{:?}", nudge.map(|report| report.kind));
+    assert!(gate.is_some());
+    assert_eq!(contents.len(), 7, "no nudge turn was inserted");
+
+    // Control: the same mass with the latest message at the end is compressible, so a nudge
+    // fires (pressure, as the usage is over 75 percent of this window).
+    let mut control = vec![
+        json!({"role": "user", "parts": [{"text": "first prompt"}]}),
+        json!({"role": "model", "parts": [{"text": "a".repeat(2_000)}]}),
+        json!({"role": "model", "parts": [{"functionCall": {"name": "bash", "id": "call_1", "args": {}}}]}),
+        json!({"role": "model", "parts": [{"functionResponse": {"name": "bash", "id": "call_1", "response": {"output": "x".repeat(300_000)}}}]}),
+        json!({"role": "model", "parts": [{"text": "ok"}]}),
+        json!({"role": "model", "parts": [{"text": "more"}]}),
+        json!({"role": "user", "parts": [{"text": "continue"}]}),
+    ];
+    let (nudge, _) = inject_nudge(&runtime, &mut control, 100_000, &settings).unwrap();
+    assert_eq!(nudge.map(|report| report.kind), Some("pressure"));
+}
+
 #[tokio::test]
 async fn switches_skip_nudge_and_tool_injection() {
     let fixture = fixture_with(text_only_fake()).await;

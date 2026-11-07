@@ -47,6 +47,18 @@ function safeRender(nudge) {
   }
 }
 
+// Added fields (existing ones are unchanged, so the goldens they replay stay valid):
+//   frame.activeBlocks              core.status(state).activeBlocks after this step's processTurn, every frame.
+//   frame.totalBlocks               core.status(state).totalBlocks after this step's processTurn, every frame.
+//   compresses[].activeBlocksAfter  core.status(state).activeBlocks right after that compress call.
+//   compresses[].tokensCompressed   applyCompression result.tokensCompressed for that call (the kernel's own count).
+// Tier text (frame.text, from renderNudgeText) already names the target block ids.
+// core.status is pure: it reads the state and never changes the recorded decisions.
+const blockCounts = (core, state, config) => {
+  const status = core.status(state, 0, config);
+  return { activeBlocks: status.activeBlocks, totalBlocks: status.totalBlocks };
+};
+
 // One scenario: a growing conversation, optional compress calls at given steps, and per-step frames.
 // compressAt: step -> [startRef, endRef] applied before that step's processTurn (the host's compress tool).
 // withStatus: record core.status() per step.
@@ -67,7 +79,7 @@ function run(name, windowTokens, { steps, bytesPerStep, toolName = "read", overr
         config,
       });
       state = applied.state;
-      compresses.push({ step: i, startRef, endRef, blocksCreated: applied.result.blocksCreated, errors: applied.result.errors, warnings: applied.result.warnings });
+      compresses.push({ step: i, startRef, endRef, blocksCreated: applied.result.blocksCreated, errors: applied.result.errors, warnings: applied.result.warnings, tokensCompressed: applied.result.tokensCompressed, activeBlocksAfter: blockCounts(core, state, config).activeBlocks });
     }
     appendStep(messages, i, toolName, bytesPerStep);
     // A host reports the size of what it really sends: the history with folded blocks pruned.
@@ -87,6 +99,7 @@ function run(name, windowTokens, { steps, bytesPerStep, toolName = "read", overr
       emergencyOverride: nudge?.breakdown?.emergencyOverride ?? null,
       growth: nudge?.breakdown?.growth ?? null,
       text: nudge?.shouldInject ? safeRender(nudge) : null,
+      ...blockCounts(core, state, config),
     };
     if (withStatus) frame.status = core.status(state, tokenCount, config);
     frames.push(frame);
