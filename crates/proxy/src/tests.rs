@@ -789,7 +789,10 @@ async fn client_disconnect_drops_the_upstream_stream() {
 #[tokio::test]
 async fn a_silent_upstream_round_times_out_with_an_error_event() {
     let dropped = Arc::new(AtomicBool::new(false));
-    let fixture = fixture_with(FakeUpstream::hanging(dropped)).await;
+    let fixture = fixture_config(FakeUpstream::hanging(dropped), |config| {
+        config.with_round_timeout(Duration::from_millis(100))
+    })
+    .await;
     let (status, response) = send(
         &fixture.state,
         &fixture.token,

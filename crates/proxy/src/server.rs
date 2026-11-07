@@ -39,10 +39,7 @@ use crate::wire::{
 pub const DEFAULT_UPSTREAM: &str = "https://daily-cloudcode-pa.googleapis.com";
 /// Unverified with a real key: docs.opencode.ai names `/inference/go`, third-party guides `/zen/go/v1`.
 pub const DEFAULT_OPENCODE_UPSTREAM: &str = "https://opencode.ai/inference/go";
-#[cfg(not(test))]
-const ROUND_TIMEOUT: Duration = Duration::from_secs(120);
-#[cfg(test)]
-const ROUND_TIMEOUT: Duration = Duration::from_secs(1);
+const DEFAULT_ROUND_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_TOOL_ROUNDS: usize = 8;
 const MAX_BODY_BYTES: usize = 128 * 1024 * 1024;
 pub(crate) const PROXY_TOOLS: &[&str] = &["compress", "decompress", "search_context", "acp_status"];
@@ -61,6 +58,8 @@ pub struct ProxyConfig {
     pub provider_origin: Option<String>,
     /// The `execute` tool can reach the code graph, so the skill is worth the tokens.
     pub codebase_memory: bool,
+    /// How long one upstream round may take to answer or to produce its next chunk.
+    pub round_timeout: Duration,
 }
 
 impl ProxyConfig {
@@ -71,6 +70,7 @@ impl ProxyConfig {
             opencode_upstream: DEFAULT_OPENCODE_UPSTREAM.to_string(),
             provider_origin: None,
             codebase_memory: false,
+            round_timeout: DEFAULT_ROUND_TIMEOUT,
         }
     }
 
@@ -95,6 +95,11 @@ impl ProxyConfig {
 
     pub fn with_codebase_memory(mut self, codebase_memory: bool) -> Self {
         self.codebase_memory = codebase_memory;
+        self
+    }
+
+    pub fn with_round_timeout(mut self, round_timeout: Duration) -> Self {
+        self.round_timeout = round_timeout;
         self
     }
 }
@@ -476,7 +481,15 @@ async fn handle_generation(
     dump_request(session_id, "out", &request);
     let url = upstream_url(base, path, query);
     let sent = outgoing_body(&runtime, wire, &request);
-    let response = match send_stream(&state.inner.client, &url, headers, &sent).await {
+    let response = match send_stream(
+        &state.inner.client,
+        &url,
+        headers,
+        &sent,
+        state.inner.config.round_timeout,
+    )
+    .await
+    {
         Ok(response) => response,
         Err(error) => {
             settle_steer(&queue, &injected, None, &state.inner.events, session_id).await;
@@ -586,7 +599,14 @@ async fn buffered_generation(
             Some(response) => response,
             None => {
                 let sent = outgoing_body(&runtime, wire, &request);
-                send_generation(&state.inner.client, &url, headers, &sent).await?
+                send_generation(
+                    &state.inner.client,
+                    &url,
+                    headers,
+                    &sent,
+                    state.inner.config.round_timeout,
+                )
+                .await?
             }
         };
         if !status.is_success() {
@@ -1495,6 +1515,7 @@ async fn send_stream(
     url: &str,
     headers: &HeaderMap,
     body: &Value,
+    round_timeout: Duration,
 ) -> Result<reqwest::Response, ProxyError> {
     let bytes = serde_json::to_vec(body)?;
     let encoding = headers
@@ -1504,7 +1525,7 @@ async fn send_stream(
     let mut request = client.post(url);
     request = with_headers(request, headers);
     let request = request.header(header::CONTENT_TYPE, "application/json");
-    timeout(ROUND_TIMEOUT, request.body(bytes).send())
+    timeout(round_timeout, request.body(bytes).send())
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Upstream)
@@ -1515,11 +1536,12 @@ async fn send_generation(
     url: &str,
     headers: &HeaderMap,
     body: &Value,
+    round_timeout: Duration,
 ) -> Result<(StatusCode, Option<String>, Bytes), ProxyError> {
-    let response = send_stream(client, url, headers, body).await?;
+    let response = send_stream(client, url, headers, body, round_timeout).await?;
     let status = axum_status(response.status());
     let content_type = header_value(response.headers(), header::CONTENT_TYPE.as_str());
-    let bytes = timeout(ROUND_TIMEOUT, response.bytes())
+    let bytes = timeout(round_timeout, response.bytes())
         .await
         .map_err(|_| ProxyError::Timeout)??;
     Ok((status, content_type, bytes))
@@ -1775,8 +1797,14 @@ impl SseState {
 
     async fn follow_up(&mut self) -> Result<(), ProxyError> {
         let sent = outgoing_body(&self.runtime, self.wire, &self.request);
-        let response =
-            send_stream(&self.proxy.inner.client, &self.url, &self.headers, &sent).await?;
+        let response = send_stream(
+            &self.proxy.inner.client,
+            &self.url,
+            &self.headers,
+            &sent,
+            self.proxy.inner.config.round_timeout,
+        )
+        .await?;
         self.stream = Some(response.bytes_stream().boxed());
         self.published = None;
         self.step_signature = None;
@@ -2359,7 +2387,7 @@ async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error
             }
         }
         let polled = match state.stream.as_mut() {
-            Some(stream) => timeout(ROUND_TIMEOUT, stream.next()).await,
+            Some(stream) => timeout(state.proxy.inner.config.round_timeout, stream.next()).await,
             None => Ok(None),
         };
         match polled {
