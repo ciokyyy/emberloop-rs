@@ -1908,6 +1908,7 @@ async fn nudge_turn_numbers_match_the_final_contents_after_a_stored_steer() {
             marker: String::new(),
             turns: vec![json!({ "role": "user", "parts": [{ "text": "steer: keep the tests" }] })],
             append_parts: Vec::new(),
+            after_turn: None,
         })
         .unwrap();
 
@@ -2829,7 +2830,6 @@ async fn prefix_is_stable_across_the_first_nudge() {
 }
 
 #[tokio::test]
-#[ignore = "splice.rs replay_index re-attaches a proxy-only compress pair before the newest model turn, so the pair moves every request"]
 async fn prefix_is_stable_across_a_mid_run_compress() {
     let fixture = fixture_with(echoed_usage_fake()).await;
     let folded_at = 5;
@@ -2856,6 +2856,65 @@ async fn prefix_is_stable_across_a_mid_run_compress() {
         "the fold replaced turns 1.. on the next request"
     );
     assert_run_is_prefix_stable("mid-run compress", &requests);
+}
+
+/// A proxy-only pair whose anchor turn is then folded away: the pair is re-placed once, stays
+/// there, and the Session keeps its prefix after the fold.
+#[tokio::test]
+async fn prefix_is_stable_after_a_compress_folds_the_pairs_anchor() {
+    let fixture = fixture_with(echoed_usage_fake()).await;
+    let pair_id = "call_s";
+    let requests = drive_growing(&fixture, 0, 9, |index, fixture| {
+        if index == 1 {
+            // `acp_status` is answered by the proxy, so the pair follows this request's newest result.
+            fixture.fake.script.lock().unwrap().extend([
+                json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
+                    "functionCall": {"id": pair_id, "name": "acp_status", "args": {}},
+                    "thoughtSignature": "SIG-S"
+                }]}}]}}),
+                json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{ "text": "done" }]}}]}}),
+            ]);
+        }
+        if index == 5 {
+            // Turns 1..8 hold the anchor result and the pair (turn 0 is the task).
+            fixture.fake.script.lock().unwrap().extend([
+                json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
+                    "functionCall": {"id": "call_c", "name": "compress",
+                        "args": {"start": 1, "end": 8, "summary": "folded the anchor"}},
+                    "thoughtSignature": "SIG-C"
+                }]}}]}}),
+                json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{ "text": "done" }]}}]}}),
+            ]);
+        }
+        (index == 6).then_some(Break::Fold(1))
+    })
+    .await;
+    let pair_responses = |body: &Value| {
+        body["contents"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|turn| {
+                turn["parts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|part| part["functionResponse"]["id"].as_str() == Some(pair_id))
+            })
+            .count()
+    };
+    assert!(
+        requests[6].0["contents"][1]["parts"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("folded the anchor")),
+        "the fold replaced the anchor turn on the next request"
+    );
+    for (index, (body, _)) in requests.iter().enumerate().skip(2) {
+        let count = pair_responses(body);
+        // The pair exists from request 2 on, once: a fold that drops it is re-placed, never doubled.
+        assert_eq!(count, 1, "request {index} carries the pair once");
+    }
+    assert_run_is_prefix_stable("folded anchor", &requests);
 }
 
 #[tokio::test]
@@ -2976,4 +3035,65 @@ async fn a_preflight_fold_clears_the_sticky_emergency_flag() {
     .unwrap();
     assert!(outcome.preflight.is_some(), "the preflight fold ran");
     assert!(!runtime.emergency_truncated.load(Ordering::Relaxed));
+}
+
+/// The text of the result a harness call id answered, as a request body carries it.
+fn result_text(body: &Value, call_id: &str) -> Option<String> {
+    body["contents"]
+        .as_array()?
+        .iter()
+        .flat_map(|turn| turn["parts"].as_array().cloned().unwrap_or_default())
+        .find(|part| part["functionResponse"]["id"].as_str() == Some(call_id))
+        .and_then(|part| {
+            part["functionResponse"]["response"]["result"]
+                .as_str()
+                .map(str::to_string)
+        })
+}
+
+/// Emergency truncation shortens what the model is sent, never what a compress keeps: a compress
+/// run in an emergency request stores the full results, so decompress restores them byte for byte.
+#[tokio::test]
+async fn a_compress_during_an_emergency_restores_the_full_results() {
+    let fixture = fixture_with(echoed_usage_fake()).await;
+    {
+        let mut settings = fixture.settings.try_write().unwrap();
+        settings.emergency_threshold_percent = 1;
+        settings.preserve_recent_messages = 0;
+    }
+    let mut history = warm_history(4);
+    history.push(json!({ "role": "user", "parts": [{ "text": "continue" }] }));
+    let end = history.len() - 1;
+    fixture.fake.script.lock().unwrap().extend([
+        json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
+            "functionCall": {"id": "call_c", "name": "compress",
+                "args": {"start": 1, "end": end, "summary": "old steps"}},
+            "thoughtSignature": "SIG-C"
+        }]}}]}}),
+        json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
+            "functionCall": {"id": "call_d", "name": "decompress", "args": {"blockId": "b1"}},
+            "thoughtSignature": "SIG-D"
+        }]}}]}}),
+        json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{ "text": "done" }]}}]}}),
+    ]);
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(Value::Array(history)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let full = format!("0:{}", "x".repeat(STEP_RESULT_CHARS));
+    assert!(
+        result_text(&fixture.fake.body(0), "call_0")
+            .is_some_and(|text| text.contains("emergency truncation")),
+        "the emergency request sent the first result truncated"
+    );
+    assert_eq!(
+        result_text(&fixture.fake.body(2), "call_0").as_deref(),
+        Some(full.as_str()),
+        "decompress restores the result as the harness sent it"
+    );
 }
