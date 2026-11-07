@@ -596,7 +596,6 @@ fn a_spill_failure_on_the_first_fold_changes_nothing() {
 }
 
 #[test]
-#[ignore = "red until the atomic batch lands (lane L4)"]
 fn a_failed_spill_midway_through_a_batch_changes_nothing() {
     let (dir, mut compressor) = fresh();
     // The batch folds the higher range first, as block b2, then the lower one as b1. A
@@ -616,5 +615,21 @@ fn a_failed_spill_midway_through_a_batch_changes_nothing() {
         compressor.status().blocks,
         0,
         "no block is stored after a failed batch"
+    );
+    assert!(
+        !dir.path().join("blocks/b2.json").exists(),
+        "the block spilled before the failure is removed"
+    );
+    // The obstacle goes away: the same batch now folds as if the failure never happened.
+    std::fs::remove_dir(dir.path().join("blocks/b1.json")).expect("remove obstacle");
+    let reloaded = NativeCompressor::new(dir.path()).expect("reload");
+    assert_eq!(reloaded.status().blocks, 0, "no block survives a restart");
+    let mut retry = conversation();
+    let report = compressor
+        .compress_batch(&mut retry, vec![fold(1, 3), fold(6, 8)])
+        .expect("retry succeeds");
+    assert!(
+        report.contains("block b1") && report.contains("block b2"),
+        "{report}"
     );
 }

@@ -74,7 +74,9 @@ pub trait Compressor: Send + Sync {
     fn compress(&mut self, contents: &mut Vec<Value>, call: CompressCall)
         -> Result<String, String>;
     /// Fold several ranges in one call. Every range is numbered against the history as it is
-    /// now; they are validated together and either all fold or none does.
+    /// now and validated before anything changes. Either all of them fold, changing the history,
+    /// the blocks and the spill files, or none does: a failure removes the spill files it wrote
+    /// and leaves the history, the blocks and the next block id as they were.
     fn compress_batch(
         &mut self,
         contents: &mut Vec<Value>,
@@ -166,14 +168,19 @@ impl NativeCompressor {
         Ok(compressor)
     }
 
-    fn spill_originals(&self, block: &Block) -> Result<(), String> {
+    /// Writes the block's file and returns its path. A failed rename leaves no temporary file.
+    fn spill_originals(&self, block: &Block) -> Result<PathBuf, String> {
         let dir = self.spill_dir.join("blocks");
         std::fs::create_dir_all(&dir).map_err(|err| format!("spill dir: {err}"))?;
         let bytes = serde_json::to_vec(block).map_err(|err| err.to_string())?;
         let temporary = dir.join(format!("{}.tmp", block.id));
         std::fs::write(&temporary, bytes).map_err(|err| format!("spill write: {err}"))?;
-        std::fs::rename(temporary, dir.join(format!("{}.json", block.id)))
-            .map_err(|err| format!("spill rename: {err}"))
+        let path = dir.join(format!("{}.json", block.id));
+        if let Err(err) = std::fs::rename(&temporary, &path) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(format!("spill rename: {err}"));
+        }
+        Ok(path)
     }
 
     fn marker(&self, call: &CompressCall, block_id: &str) -> String {
@@ -195,30 +202,30 @@ impl NativeCompressor {
         json!({"role": "user", "parts": [{"text": marker}]})
     }
 
-    fn fold_range(
-        &mut self,
-        contents: &mut Vec<Value>,
-        call: CompressCall,
+    /// Folds one range of `working` into a new block without touching the compressor's state.
+    fn stage_fold(
+        &self,
+        working: &mut Vec<Value>,
+        call: &CompressCall,
         id: &str,
-    ) -> Result<String, String> {
-        let originals = contents[call.start..call.end].to_vec();
-        let summary_turn = Self::summary_turn(self.marker(&call, id));
+    ) -> (String, Block) {
+        let originals = working[call.start..call.end].to_vec();
+        let summary_turn = Self::summary_turn(self.marker(call, id));
+        working.splice(call.start..call.end, [summary_turn.clone()]);
+        let line = format!(
+            "Compressed turns {}–{} into block {id}. Originals kept in the session spill dir.",
+            call.start,
+            call.end.saturating_sub(1)
+        );
         let block = Block {
             id: id.to_string(),
             topic: call.topic.clone(),
             summary: call.summary.clone(),
             originals,
-            summary_turn: summary_turn.clone(),
+            summary_turn,
             restored: false,
         };
-        self.spill_originals(&block)?;
-        contents.splice(call.start..call.end, [summary_turn]);
-        self.blocks.push(block);
-        Ok(format!(
-            "Compressed turns {}–{} into block {id}. Originals kept in the session spill dir.",
-            call.start,
-            call.end.saturating_sub(1)
-        ))
+        (line, block)
     }
 
     fn block_index(&self, id: &str) -> Option<usize> {
@@ -281,14 +288,35 @@ impl Compressor for NativeCompressor {
         }
 
         // Ids follow the position in the history, but ranges are folded from the highest down
-        // so folding one never moves the numbers of the ones before it.
+        // so folding one never moves the numbers of the ones before it. Everything is staged
+        // on a copy first: the history, the blocks and the next id change only once every
+        // spill has been written.
         let first_id = self.next_id;
-        self.next_id += calls.len();
-        let mut lines = vec![String::new(); calls.len()];
+        let count = calls.len();
+        let mut working = contents.clone();
+        let mut lines = vec![String::new(); count];
+        let mut staged = Vec::with_capacity(count);
         for (index, call) in calls.into_iter().enumerate().rev() {
             let id = format!("b{}", first_id + index);
-            lines[index] = self.fold_range(contents, call, &id)?;
+            let (line, block) = self.stage_fold(&mut working, &call, &id);
+            lines[index] = line;
+            staged.push(block);
         }
+        let mut written = Vec::with_capacity(count);
+        for block in &staged {
+            match self.spill_originals(block) {
+                Ok(path) => written.push(path),
+                Err(error) => {
+                    for path in written {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        *contents = working;
+        self.next_id = first_id + count;
+        self.blocks.extend(staged.into_iter().rev());
         Ok(lines.join("\n"))
     }
 
