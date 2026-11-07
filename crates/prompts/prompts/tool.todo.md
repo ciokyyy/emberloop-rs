@@ -2,8 +2,8 @@ The plan for this turn: one ordered checklist with stable ids (`t1`, `t2`, …).
 
 - `read` returns the full list with ids and counts.
 - `set` takes `items: [{content, status?}]`, replaces the list and assigns `t1…tN`.
-- `add` takes `items` and an optional `after: id`; existing ids never change.
-- `update` takes `updates: [{id, status?, content?}]` and patches them in one call.
+- `add` takes `items` and an optional `after` id; existing ids never change.
+- `update` takes `updates`, a list of objects with `id` and optional `status` or `content`, and patches them in one call.
 - `remove` takes `ids`. `clear` empties the list.
 
 Statuses are `pending`, `in_progress`, `completed` and `cancelled`; at most one item is `in_progress`. Keep the list current: mark an item `completed` as soon as its work is done.

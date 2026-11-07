@@ -101,7 +101,7 @@ fn render_file(toolbox: &Toolbox, path: &Path, offset: usize, limit: usize) -> T
     }
     if meta.len() > toolbox.max_read_bytes() as u64 {
         return Err(ToolError::msg(format!(
-            "{} is {} bytes, over the {} byte read limit",
+            "{} is {} bytes, over the {} byte read limit; search it with grep or print a range with bash `sed -n 'START,ENDp'`",
             path.display(),
             meta.len(),
             toolbox.max_read_bytes()

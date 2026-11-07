@@ -205,6 +205,10 @@ fn read_refuses_binary_and_oversized_files() {
     fs::write(&big, vec![b'a'; 2 * 1024 * 1024 + 1]).expect("big");
     let error = call(&fixture, "read", json!({"path": "huge.txt"})).expect_err("size cap");
     assert!(error.to_string().contains("byte read limit"), "{error}");
+    assert!(
+        error.to_string().contains("grep") && error.to_string().contains("sed -n"),
+        "the refusal names a next step: {error}"
+    );
 }
 
 #[test]
@@ -252,6 +256,15 @@ fn grep_respects_gitignore_and_supports_modes() {
         call(&fixture, "grep", json!({"pattern": "needle", "context": 1})).expect("context");
     assert!(context.contains("src/main.rs:1:fn main"), "{context}");
     assert!(context.contains("src/main.rs:3:}"), "{context}");
+}
+
+#[test]
+fn grep_refuses_a_parameter_it_does_not_have() {
+    let fixture = setup();
+    write(&fixture, "dots.txt", "a.c\nabc\n");
+    let error = call(&fixture, "grep", json!({"pattern": "a.c", "fixed": true}))
+        .expect_err("fixed is not a grep parameter");
+    assert!(error.to_string().contains("fixed"), "{error}");
 }
 
 #[test]

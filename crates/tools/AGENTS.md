@@ -4,8 +4,11 @@
 
 MCP tool server and tool implementations served to every harness over MCP.
 `emberloop-mcp --root <project> --spill <spill dir>` serves rmcp over stdio;
-`McpServer` implements `rmcp::ServerHandler` and is covered by tests. Tools,
-path jail, spill store and seen-line store:
+`McpServer` implements `rmcp::ServerHandler` and is covered by tests. Descriptions
+are the Prompt Store's `tool.<name>.description` texts: `McpServer::new` advertises
+the embedded defaults and the daemon overrides them with `with_descriptions`. Input
+schemas are inline in `mcp.rs`; `tests/contract.rs` checks each text against its
+schema. Tools, path jail, spill store and seen-line store:
 
 - `jail`: canonicalizes the Project root and refuses resolved paths outside it, symlinks included.
 - `read`: plain text, numbered lines, 2 MiB cap, `[path#TAG] (lines A-B)`; directories list; `ctx:<handle>:<range>` pages spilled output. An `http(s)://` or `www.` path is fetched instead of read from disk (`readurl`, no separate tool): direct HTTP, HTML-to-Markdown, JSON pretty-print, Jina reader fallback, loopback SSRF guard.

@@ -1,1 +1,1 @@
-Locate files, symbols and line ranges implementing a concept or behavior. Modes: search (lexical ranking + seen lines), outline, architecture, trace.
+Locate files, symbols and line ranges implementing a concept or behavior. `query` names the concept and `grep_keywords` adds keywords to match, as a list. `path` scopes the search, and `mode` is `search` (lexical ranking and seen lines), `outline`, `architecture` or `trace`. `limit` caps the hits.

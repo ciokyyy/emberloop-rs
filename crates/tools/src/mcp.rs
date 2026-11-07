@@ -27,15 +27,16 @@ impl Clone for McpServer {
 }
 
 impl McpServer {
+    /// A server that advertises the embedded Prompt Store texts.
     pub fn new(toolbox: Arc<Toolbox>) -> Self {
         Self {
             toolbox,
-            descriptions: Arc::new(HashMap::new()),
+            descriptions: Arc::new(default_descriptions()),
         }
     }
 
-    /// Tool descriptions rendered from the Prompt Store, keyed by tool name:
-    /// the web UI edits `tool.<name>.description` and this is where it lands.
+    /// Tool descriptions from the daemon's Prompt Store (user overrides included), keyed by
+    /// tool name: the web UI edits `tool.<name>.description` and this is where it lands.
     pub fn with_descriptions(mut self, descriptions: HashMap<String, String>) -> Self {
         self.descriptions = Arc::new(descriptions);
         self
@@ -46,11 +47,7 @@ impl McpServer {
             .into_iter()
             .filter_map(|spec| {
                 let name = spec.get("name")?.as_str()?.to_string();
-                let description = self
-                    .descriptions
-                    .get(&name)
-                    .cloned()
-                    .or_else(|| spec.get("description")?.as_str().map(str::to_string))?;
+                let description = self.descriptions.get(&name).cloned().unwrap_or_default();
                 let schema: Map<String, Value> =
                     serde_json::from_value(spec.get("inputSchema")?.clone()).ok()?;
                 Some(Tool::new(name, description, Arc::new(schema)))
@@ -99,15 +96,25 @@ impl ServerHandler for McpServer {
     }
 }
 
+/// Embedded Prompt Store texts for every tool, keyed by tool name.
+fn default_descriptions() -> HashMap<String, String> {
+    prompts::PROMPT_IDS
+        .iter()
+        .filter_map(|id| {
+            let name = prompts::tool_name(id)?;
+            Some((name.to_string(), prompts::default_text(id).to_string()))
+        })
+        .collect()
+}
+
 fn tool_specs() -> Vec<Value> {
     let specs = json!([
         {
             "name": "read",
-            "description": "Read a file with numbered lines and a 4-hex snapshot tag for edit. Large output spills to a ctx: handle.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File, directory or ctx:<handle> pointer."},
+                    "path": {"type": "string", "description": "File, directory, http(s) URL or ctx:<handle> pointer."},
                     "offset": {"type": "integer", "description": "First line, 1-based."},
                     "limit": {"type": "integer", "description": "Maximum lines."}
                 },
@@ -116,7 +123,6 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "grep",
-            "description": "Search files with regex, respecting .gitignore. Hits feed the seen-line store.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -133,7 +139,6 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "edit",
-            "description": "Apply line-anchored hashline edits. Header [path#TAG], ops PUT N.=M:, PUT <N:, PUT >N:, PUT >$:, CUT N, CUT N.=M; body lines start with '+'.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"input": {"type": "string"}},
@@ -142,7 +147,6 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "bash",
-            "description": "Run a shell command in the project root. Own process group, timeout, capped output.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -155,21 +159,19 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "background",
-            "description": "Manage background commands: list, read the log at an offset, wait, or stop.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["list", "read", "wait", "stop"]},
                     "id": {"type": "string"},
                     "offset": {"type": "integer"},
-                    "timeout": {"type": "integer"}
+                    "timeout": {"type": "integer", "description": "Seconds for wait, default 60, max 600."}
                 },
                 "required": ["action"]
             }
         },
         {
             "name": "write",
-            "description": "Write a whole file inside the project root, creating parent directories.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -181,7 +183,6 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "find",
-            "description": "Locate files, symbols and line ranges implementing a concept or behavior. Modes: search, outline, architecture, trace.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -195,7 +196,6 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "todo",
-            "description": "The plan for this turn: one ordered checklist with stable ids. read returns the full list with ids and counts; set replaces it whole and assigns t1…tN; add appends or inserts after an id; update patches items by id in one batch; remove deletes ids; clear empties. Statuses pending, in_progress, completed, cancelled; at most one in_progress.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -241,7 +241,6 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "websearch",
-            "description": "Search the web (Brave/Exa) with optional freshness and domain filters.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -257,7 +256,6 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "git",
-            "description": "Read-only git inspection: diff, log, show, blame, status, ls-files, grep, rev-parse, merge-base, cat-file, branch and tag listing. Takes args (a list of strings) run as git -C <root> --no-pager. Writing, executing and configuring flags (-c, -O, --output, --ext-diff, --textconv, --exec, --upload-pack, --open-files-in-pager, --filters, --show-signature and their abbreviations) are refused.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -269,7 +267,6 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "check",
-            "description": "Re-run one of the repo's named checks from .emberloop/check: name (default \"default\"), args substituted into the command's {args} slot. Shell metacharacters in args are refused.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -280,7 +277,6 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "ctx_search",
-            "description": "Search stored tool output (spilled ctx: handles): BM25-ranked term snippets with OR matching, each with its ctx:<id>:<start>-<end> range. Punctuation separates words; matching ignores case. Takes one or more queries, an optional source handle to scope the search, and a per-query limit (default 3). Page a hit with read ctx:<id>:<start>-<end>.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -293,36 +289,15 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "execute",
-            "description": "Run a Python script (stdlib only) that calls el tools via `import tools` over a local bridge.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "code": {"type": "string"},
-                    "timeout": {"type": "integer"}
+                    "code": {"type": "string", "description": "The Python script to run."},
+                    "timeout": {"type": "integer", "description": "Seconds, default 120, max 600."}
                 },
                 "required": ["code"]
             }
         }
     ]);
     serde_json::from_value(specs).unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn todo_schema_lists_every_action() {
-        let spec = tool_specs()
-            .into_iter()
-            .find(|spec| spec["name"] == "todo")
-            .expect("todo is advertised");
-        let actions = spec["inputSchema"]["properties"]["action"]["enum"]
-            .as_array()
-            .expect("action is an enum");
-        for action in ["read", "set", "add", "update", "remove", "clear"] {
-            assert!(actions.iter().any(|value| value == action));
-            assert!(spec["description"].as_str().unwrap().contains(action));
-        }
-    }
 }

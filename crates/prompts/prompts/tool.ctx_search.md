@@ -1,0 +1,1 @@
+Search stored tool output, the spilled `ctx:` handles, with BM25-ranked snippets. `queries` takes one or more search strings with OR matching, `source` scopes the search to one handle, and `limit` caps the matches per query (default 3). Matching ignores case and punctuation separates words. Page a hit with read `ctx:<id>:<start>-<end>`.

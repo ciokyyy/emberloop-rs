@@ -12,7 +12,9 @@ use crate::{ToolError, ToolResult, Toolbox};
 
 const DEFAULT_MAX_RESULTS: usize = 100;
 
+/// Unknown keys are refused: a parameter the schema does not declare must not run silently.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GrepArgs {
     pattern: String,
     #[serde(default)]
