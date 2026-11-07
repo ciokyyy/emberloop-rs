@@ -1,3 +1,4 @@
+use crate::marker;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -234,23 +235,8 @@ impl NativeCompressor {
         Ok(path)
     }
 
-    fn marker(&self, call: &CompressCall, block_id: &str) -> String {
-        let topic = call
-            .topic
-            .as_deref()
-            .map(|topic| format!(" · {topic}"))
-            .unwrap_or_default();
-        format!(
-            "📦 [acp] Compressed turns {}–{} into block {}{topic}\n\n{}",
-            call.start,
-            call.end.saturating_sub(1),
-            block_id,
-            call.summary
-        )
-    }
-
-    fn summary_turn(marker: String) -> Value {
-        json!({"role": "user", "parts": [{"text": marker}]})
+    fn summary_turn(text: String) -> Value {
+        json!({"role": "user", "parts": [{"text": text}]})
     }
 
     /// Folds one range of `working` into a new block without touching the compressor's state.
@@ -261,7 +247,13 @@ impl NativeCompressor {
         id: &str,
     ) -> (String, Block) {
         let originals = working[call.start..call.end].to_vec();
-        let summary_turn = Self::summary_turn(self.marker(call, id));
+        let summary_turn = Self::summary_turn(marker::summary(
+            call.start,
+            call.end.saturating_sub(1),
+            id,
+            call.topic.as_deref(),
+            &call.summary,
+        ));
         working.splice(call.start..call.end, [summary_turn.clone()]);
         let line = format!(
             "Compressed turns {}–{} into block {id}. Originals kept in the session spill dir.",
@@ -887,7 +879,7 @@ fn original_text(block: &Block) -> String {
     pieces
         .join("\n")
         .lines()
-        .filter(|line| !line.starts_with("📦 [acp]") && !line.starts_with("❌ [acp]"))
+        .filter(|line| !marker::is_tool_text(line))
         .collect::<Vec<_>>()
         .join("\n")
 }

@@ -6,6 +6,7 @@ pub mod compressor;
 pub mod context;
 pub mod ctx;
 mod encoding;
+mod marker;
 pub mod meter;
 pub mod nudge;
 pub mod server;

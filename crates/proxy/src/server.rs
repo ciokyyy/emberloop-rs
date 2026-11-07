@@ -24,6 +24,7 @@ use crate::compressor::{
     latest_user_turn, CompressCall, CompressPolicy, Compressor, DecompressCall, NativeCompressor,
 };
 use crate::ctx::CtxStore;
+use crate::marker;
 use crate::meter;
 use crate::nudge::{self, NudgeConfig, NudgeKind, NudgeState};
 use crate::splice::{Splice, SpliceStore};
@@ -762,12 +763,12 @@ fn strip_forged_markers(contents: &mut [Value]) {
             let Some(text) = part.get("text").and_then(Value::as_str) else {
                 continue;
             };
-            if !text.starts_with("📦 [acp]") && !text.starts_with("❌ [acp]") {
+            if !marker::is_tool_text(text) {
                 continue;
             }
             let kept = text
                 .lines()
-                .filter(|line| !line.starts_with("📦 [acp]") && !line.starts_with("❌ [acp]"))
+                .filter(|line| !marker::is_tool_text(line))
                 .collect::<Vec<_>>()
                 .join("\n");
             part["text"] = json!(kept.trim());
@@ -785,7 +786,7 @@ fn strip_raw_markers(raw: &mut Value) {
     if let Some(content) = raw.get("content").and_then(Value::as_str) {
         let kept = content
             .lines()
-            .filter(|line| !line.starts_with("📦 [acp]") && !line.starts_with("❌ [acp]"))
+            .filter(|line| !marker::is_tool_text(line))
             .collect::<Vec<_>>()
             .join("\n");
         raw["content"] = json!(kept.trim());
@@ -795,14 +796,12 @@ fn strip_raw_markers(raw: &mut Value) {
             let Some(text) = block.get("text").and_then(Value::as_str) else {
                 continue;
             };
-            if !text.starts_with("📦 [acp]") && !text.starts_with("❌ [acp]") {
+            if !marker::is_tool_text(text) {
                 continue;
             }
             block["text"] = json!(text
                 .lines()
-                .filter(|line| {
-                    !line.starts_with("📦 [acp]") && !line.starts_with("❌ [acp]")
-                })
+                .filter(|line| { !marker::is_tool_text(line) })
                 .collect::<Vec<_>>()
                 .join("\n")
                 .trim());
@@ -819,7 +818,7 @@ fn truncate_emergency(contents: &mut [Value]) {
                 parts.iter().any(|part| {
                     part.get("text")
                         .and_then(Value::as_str)
-                        .is_some_and(|text| text.starts_with("📦 [acp]"))
+                        .is_some_and(|text| text.starts_with(marker::TOOL_OK))
                 })
             });
         if is_summary {
@@ -1238,9 +1237,9 @@ fn execute_by_name(
             if matches!(call.name.as_str(), "compress" | "decompress") {
                 publish_compression_event(&state.inner.events, session_id, runtime, call, &text);
             }
-            format!("📦 [acp] {}\n{text}", call.name)
+            marker::tool_result(&call.name, &text)
         }
-        Err(error) => format!("❌ [acp] {}\nerror: {error}", call.name),
+        Err(error) => marker::tool_failure(&call.name, error),
     }
 }
 

@@ -2,6 +2,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::marker;
 use crate::wire::WireKind;
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -64,9 +65,7 @@ impl ContextBreakdown {
         match category {
             Category::System => self.system += tokens,
             Category::ToolResult => self.tool_results += tokens,
-            Category::Conversation if text.starts_with("📦 [acp] Compressed turns ") => {
-                self.compression += tokens
-            }
+            Category::Conversation if marker::is_summary(text) => self.compression += tokens,
             Category::Conversation => self.conversation += tokens,
         }
     }
