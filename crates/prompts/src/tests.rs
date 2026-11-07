@@ -346,6 +346,22 @@ fn nudge_ids_are_listed_and_emergency_has_its_own_header_over_the_pressure_body(
 }
 
 #[test]
+fn every_nudge_tells_the_model_to_carry_on_with_its_task_after_folding() {
+    for id in [
+        NUDGE_FIRST,
+        NUDGE_PRESSURE,
+        NUDGE_EMERGENCY,
+        NUDGE_TIER2,
+        NUDGE_TIER3,
+    ] {
+        assert!(
+            default_text(id).contains("then carry on with the task you were doing"),
+            "{id} lets the model stop after the fold"
+        );
+    }
+}
+
+#[test]
 fn nudges_fold_only_genuinely_consumed_ranges_and_define_protected_tools() {
     let all = [
         NUDGE_FIRST,

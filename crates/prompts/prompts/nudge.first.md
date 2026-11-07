@@ -52,3 +52,5 @@ Write dense, scannable bullets — not narrative prose. If the range spans disti
 {{ compressible_ranges }}
 
 💡 ONE call — fold every range you keep in a single compress call: `ranges` is a list with one entry per range, each with `start`, `end`, `summary` and an optional `topic`. `start` is the first turn to fold and `end` is the turn after the last one, so the range listed as turns 2–125 is start 2, end 126. Number every range against the conversation as it is now, and do not split the batch across separate calls. Ranges you still need can wait — they reappear in later nudges.
+
+This nudge is not a task. Fold what is consumed, then carry on with the task you were doing in the same turn; do not stop, summarise the fold or wait for a reply.
