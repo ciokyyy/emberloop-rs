@@ -17,6 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::tokens::text_tokens;
 use crate::wire::{response_text, set_response_text};
 
 /// Smallest result, in estimated tokens, that is replaced by a handle: the reference's
@@ -168,7 +169,7 @@ fn large_result(part: &Value) -> Option<LargeResult> {
     if text.starts_with(PREVIEW) {
         return None;
     }
-    let tokens = estimate(&text);
+    let tokens = text_tokens(&text);
     if tokens < MIN_TOKENS {
         return None;
     }
@@ -258,10 +259,6 @@ fn kind(name: &str) -> &'static str {
         "webfetch" | "fetch" | "curl" => "web fetch",
         _ => "tool result",
     }
-}
-
-fn estimate(text: &str) -> u64 {
-    u64::try_from(text.len() / 4).unwrap_or(u64::MAX)
 }
 
 fn placeholder(entry: &Entry) -> String {

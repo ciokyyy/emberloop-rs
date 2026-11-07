@@ -13,7 +13,7 @@ Model-facing text as files (`include_str!` defaults under `prompts/*.md`):
 - `filter_skill`: strips a skill's frontmatter and keeps only the requested level's intensity row and example lines.
 - `ponytail_text`: that filter for the Session's `ponytail_level`; `off` yields empty text.
 - `caveman_text`: the emberloop-go voice register, always ultra: banner, the filtered `caveman.md` (a byte-for-byte copy of the `caveman` plugin's `SKILL.md`), then its one-line reminder.
-- `policy` owns the shared edit/check/spill-search workflow: hashline edits for existing files, sequential patches after batched reads, preserved check exit status, and `ctx_search` versus compressed-summary `search_context`, and the search-before-`decompress` rule, which only `policy` states. `tool.edit` demonstrates valid replacement syntax and recovery; `tool.execute` routes mutations through `tools.edit` and distinguishes Python aliases from fully qualified MCP dispatch names.
+- `policy` owns the shared edit/check/spill-search workflow: hashline edits for existing files, sequential patches after batched reads, preserved check exit status, and `ctx_search` (spilled tool output) versus `search_context` (compressed history), and the search-before-`decompress` rule, which only `policy` states. `tool.edit` demonstrates valid replacement syntax and recovery; `tool.execute` routes mutations through `tools.edit` and distinguishes Python aliases from fully qualified MCP dispatch names.
 
 ## Attribution
 

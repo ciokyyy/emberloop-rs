@@ -2211,13 +2211,13 @@ async fn preflight_folds_until_the_request_fits_the_window() {
     let fixture = fixture().await;
     let runtime = fixture.state.runtime("ses_1").await.unwrap();
     let mut contents = (0..12)
-        .map(|index| json!({"role": "user", "parts": [{"text": format!("turn {index} with some text")}]}))
+        .map(|index| json!({"role": "user", "parts": [{"text": format!("turn {index} {}", "x".repeat(400))}]}))
         .collect::<Vec<_>>();
-    let before = estimate_tokens(&contents);
+    let before = turns_tokens(&contents);
     let settings = api::state::Settings::default();
     let folded = preflight_fold(&runtime, &mut contents, 20, &settings).unwrap();
     assert!(folded.is_some());
-    assert!(estimate_tokens(&contents) < before);
+    assert!(turns_tokens(&contents) < before);
     assert!(contents[1]["parts"][0]["text"]
         .as_str()
         .unwrap()
@@ -2285,7 +2285,9 @@ async fn a_chat_wire_nudge_arrives_as_a_user_message_and_the_tools_are_offered()
     let runtime = state.runtime("ses_1").await.unwrap();
     runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
 
-    let filler = "x".repeat(4_000);
+    // Four 8000-character results are 2000 reference tokens each; the old byte rule counted the
+    // `_raw` copy too and cleared the minimum compressible mass at 4000.
+    let filler = "x".repeat(8_000);
     let mut messages = vec![json!({"role": "system", "content": "Base system"})];
     for i in 0..4 {
         messages.push(json!({"role": "user", "content": format!("read file {i}")}));
