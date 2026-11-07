@@ -125,6 +125,61 @@ fn an_extra_field_other_than_raw_or_thought_signature_stops_a_match() {
 }
 
 #[test]
+fn refolding_repeated_identical_turns_folds_only_the_stored_position() {
+    // Two identical model turns; the stored fold is the second one. Refolding the raw history
+    // must fold the second "ok" and nothing else, once.
+    let raw = vec![
+        json!({"role": "model", "parts": [{"text": "ok"}]}),
+        json!({"role": "model", "parts": [{"text": "ok"}]}),
+        json!({"role": "user", "parts": [{"text": "final question"}]}),
+    ];
+    let (_dir, mut compressor) = fresh();
+    let mut folded = raw.clone();
+    compressor
+        .compress_batch(&mut folded, vec![fold(1, 2)], &CompressPolicy::default())
+        .unwrap();
+
+    let mut view = raw;
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 1);
+    assert_eq!(view, folded);
+    assert_eq!(text(&view[0]), "ok");
+    assert!(text(&view[1]).contains("block b1"));
+    assert_eq!(text(&view[2]), "final question");
+}
+
+#[test]
+fn a_repeated_turn_after_an_earlier_fold_in_the_same_batch_keeps_its_position() {
+    // Batch folds 1..3 (A, B) and 3..4 (the first "ok"). The 3..4 fold's stored start is 3 in
+    // the raw history, but the 1..3 fold shortens the history before it applies, so the first
+    // "ok" is now at 2. Matching must follow the shift, not the raw index, or the second "ok"
+    // gets folded instead.
+    let model = |text: &str| json!({"role": "model", "parts": [{"text": text}]});
+    let raw = vec![
+        json!({"role": "user", "parts": [{"text": "question"}]}),
+        model("A"),
+        model("B"),
+        model("ok"),
+        model("ok"),
+        json!({"role": "user", "parts": [{"text": "final question"}]}),
+    ];
+    let (_dir, mut compressor) = fresh();
+    let mut folded = raw.clone();
+    compressor
+        .compress_batch(
+            &mut folded,
+            vec![fold(1, 3), fold(3, 4)],
+            &CompressPolicy::default(),
+        )
+        .unwrap();
+
+    let mut view = raw;
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 2);
+    assert_eq!(view, folded);
+    assert!(text(&view[2]).contains("block b2"));
+    assert_eq!(text(&view[3]), "ok");
+}
+
+#[test]
 fn reapplying_a_fold_to_its_own_result_changes_nothing() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
