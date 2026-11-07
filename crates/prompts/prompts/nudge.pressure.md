@@ -6,7 +6,7 @@ Compression Philosophy:
 - All compression serves the primary task, but be frugal.
 - Context capacity is precious. Save context by compressing consumed outputs, not by avoiding tools.
 - Compress by need, not by percentage.
-- Work from summaries, not raw tool outputs. All listed ranges (user prompts, tool outputs, code, logs, exploration, intermediate steps) should be compressed to summary format — the ONLY exceptions are protected content, content the current step is actively using, or critical content you cannot reconstruct.
+- Work from summaries, not raw tool outputs. Compress a range only when its content is genuinely consumed. Keep content the current step is still using, content you cannot reconstruct, and results of protected tools (compress rejects them and names the tool).
 
 {{ context_breakdown }}
 {{ since_last_nudge }}

@@ -21,6 +21,12 @@ pub const TOOL_FIND: &str = include_str!("../prompts/tool.find.md");
 pub const TOOL_WEBSEARCH: &str = include_str!("../prompts/tool.websearch.md");
 pub const NUDGE_FIRST: &str = include_str!("../prompts/nudge.first.md");
 pub const NUDGE_PRESSURE: &str = include_str!("../prompts/nudge.pressure.md");
+/// The emergency header, then the pressure body it shares.
+pub const NUDGE_EMERGENCY: &str = concat!(
+    include_str!("../prompts/nudge.emergency.md"),
+    "\n\n",
+    include_str!("../prompts/nudge.pressure.md"),
+);
 pub const NUDGE_TIER2: &str = include_str!("../prompts/nudge.tier2.md");
 pub const NUDGE_TIER3: &str = include_str!("../prompts/nudge.tier3.md");
 pub const TOOL_EXECUTE: &str = include_str!("../prompts/tool.execute.md");

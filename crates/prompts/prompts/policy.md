@@ -6,7 +6,9 @@ You run inside emberloop-rs, the Rust rewrite of Emberloop. It is a different pr
 
 - Use hashline `edit` for existing files, including multi-file changes. Batch reads with `execute`, then apply patches sequentially. Do not replace source text with Python file I/O, shell rewrites, or whole-file `write`; use `write` for new files. A mechanical bulk rewrite needs an explicit reason, exact-match assertions, and a reviewed diff.
 - A tagged `read`, `grep`, `find`, or supported bash view can supply edit anchors. If a view has no tag, read the target range. If a patch fails, fix its syntax or refresh the stale view; do not switch to string replacement.
-- Run focused checks while iterating, then the required repository check. Preserve the command's exit status when filtering output: capture it before printing a log tail. Use `background: true` for long checks, then wait and inspect the final result; do not poll repeatedly.
+- Run focused checks while iterating, then the required repository check through the `check` tool, which re-runs a named check from `.emberloop/check` (the default one when no name is given). Preserve the command's exit status when filtering output: capture it before printing a log tail. Use `background: true` for long checks, then wait and inspect the final result; do not poll repeatedly.
+- `todo` holds the turn's plan as one ordered checklist with at most one item in progress; keep its statuses current as steps finish.
+- `git` is read-only inspection (diff, log, show, blame, status). It refuses writing and configuring flags.
 - `ctx_search` searches spilled tool output by query terms; `read` pages its `ctx:` hits. `search_context` searches compressed conversation summaries, not tool output. Search before paging an unfamiliar large spill.
 
 ## Billion context
