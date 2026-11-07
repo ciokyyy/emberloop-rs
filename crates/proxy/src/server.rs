@@ -186,6 +186,17 @@ impl SessionRuntime {
         nudge::save(&self.nudge_file, &gate)?;
         Ok(())
     }
+
+    /// Stores the gate a request observed. Called only once upstream has accepted the
+    /// request, so a failed or cancelled one leaves the gate open for the retry.
+    fn commit_nudge(&self, observed: NudgeState) -> Result<(), ProxyError> {
+        let mut gate = lock(&self.nudge)?;
+        if *gate != observed {
+            nudge::save(&self.nudge_file, &observed)?;
+            *gate = observed;
+        }
+        Ok(())
+    }
 }
 
 impl ProxyState {
@@ -456,6 +467,7 @@ async fn handle_generation(
         &settings,
         state.inner.config.codebase_memory,
     )?;
+    let observed_gate = outcome.gate.clone();
     publish_prepare_events(&state.inner.events, session_id, outcome);
     dump_request(session_id, "out", &request);
     let url = upstream_url(base, path, query);
@@ -475,6 +487,9 @@ async fn handle_generation(
         session_id,
     )
     .await;
+    if let Some(gate) = observed_gate.filter(|_| status.is_success()) {
+        runtime.commit_nudge(gate)?;
+    }
     let content_type = header_value(response.headers(), header::CONTENT_TYPE.as_str());
     if !status.is_success() {
         let bytes = response.bytes().await?;
@@ -595,6 +610,8 @@ async fn buffered_generation(
 
 struct PrepareOutcome {
     nudge: Option<NudgeReport>,
+    /// The nudge gate as this request left it; `handle_generation` commits it on success.
+    gate: Option<NudgeState>,
     preflight: Option<String>,
     /// Why no stored fold matched, when one was expected: the session log's only trace.
     unmatched: Option<String>,
@@ -617,6 +634,7 @@ fn prepare_request(
     let Some(mut contents) = extract_core_contents(wire, request) else {
         return Ok(PrepareOutcome {
             nudge: None,
+            gate: None,
             preflight: None,
             unmatched: None,
         });
@@ -645,10 +663,10 @@ fn prepare_request(
         None
     };
     // The nudge goes last, on the final contents, so its turn numbers match what compress sees.
-    let nudge = if settings.proxy_compression && settings.inject_nudge {
+    let (nudge, gate) = if settings.proxy_compression && settings.inject_nudge {
         inject_nudge(runtime, &mut contents, window, settings)?
     } else {
-        None
+        (None, None)
     };
     if nudge
         .as_ref()
@@ -659,6 +677,7 @@ fn prepare_request(
     write_core_contents(wire, request, contents);
     Ok(PrepareOutcome {
         nudge,
+        gate,
         preflight,
         unmatched,
     })
@@ -924,15 +943,16 @@ fn compressible_view(turns: &[Value], preserve_recent_messages: usize) -> Compre
 /// right after the newest tool result. It is transient: no splice stores it, so a later request
 /// carries it only when the gate fires again. Runs on the final contents, after the compressor
 /// and the splices, so its turn numbers are the ones `compress` will use. A turn without a tool
-/// result gets no nudge.
+/// result gets no nudge. The gate is decided on a copy and returned for the caller to commit once
+/// upstream accepts the request.
 fn inject_nudge(
     runtime: &SessionRuntime,
     contents: &mut Vec<Value>,
     window: usize,
     settings: &Settings,
-) -> Result<Option<NudgeReport>, ProxyError> {
+) -> Result<(Option<NudgeReport>, Option<NudgeState>), ProxyError> {
     let Some(result_index) = last_tool_result_index(contents) else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let preserve = settings.preserve_recent_messages as usize;
     let view = compressible_view(contents, preserve);
@@ -948,22 +968,16 @@ fn inject_nudge(
         tier2_trigger: u64::from(settings.tier2_trigger),
         tier3_trigger: u64::from(settings.tier3_trigger),
     };
-    let fired = {
-        let mut gate = lock(&runtime.nudge)?;
-        let fired = gate.observe_with(
-            tokens,
-            u64::try_from(window).unwrap_or(0),
-            view.tokens,
-            active_blocks,
-            &config,
-        );
-        if fired.is_some() {
-            nudge::save(&runtime.nudge_file, &gate)?;
-        }
-        fired
-    };
+    let mut gate = lock(&runtime.nudge)?.clone();
+    let fired = gate.observe_with(
+        tokens,
+        u64::try_from(window).unwrap_or(0),
+        view.tokens,
+        active_blocks,
+        &config,
+    );
     let Some(fired) = fired else {
-        return Ok(None);
+        return Ok((None, Some(gate)));
     };
     let id = match fired.kind {
         NudgeKind::First => NUDGE_FIRST,
@@ -985,11 +999,12 @@ fn inject_nudge(
         result_index + 1,
         json!({ "role": "user", "parts": [{ "text": text }], "_nudge": true }),
     );
-    Ok(Some(NudgeReport {
+    let report = NudgeReport {
         kind: fired.kind.name(),
         tokens,
         since_last: fired.since_last,
-    }))
+    };
+    Ok((Some(report), Some(gate)))
 }
 
 /// Index of the newest turn that carries a tool result: the anchor a nudge rides after.
