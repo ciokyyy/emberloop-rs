@@ -1030,6 +1030,55 @@ async fn pi_chat_requests_inject_prompts_tools_and_steers_and_are_metered() {
     assert!(saw_usage);
 }
 
+/// An Anthropic response reports its prompt as `input_tokens` plus cache reads and writes; the
+/// published context is the whole prompt, with the reads and writes also named on their own.
+#[tokio::test]
+async fn anthropic_usage_publishes_the_whole_prompt_and_its_cache_split() {
+    async fn messages() -> Response {
+        Response::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":2000,"cache_read_input_tokens":80000,"cache_creation_input_tokens":5000,"output_tokens":9}}"#,
+            ))
+            .unwrap()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = AxumRouter::new().route("/inference/go/anthropic/v1/messages", post(messages));
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+    let mut events = fixture.events.subscribe();
+    let body = json!({"model":"claude-sonnet","messages":[{"role":"user","content":"hello"}]});
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/proxy/{}/v1/v1/messages", fixture.token))
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let mut usage = None;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == EventKind::Usage {
+            usage = Some(event.data);
+        }
+    }
+    let usage = usage.expect("a usage event");
+    assert_eq!(usage["inputTokens"], 87000);
+    assert_eq!(usage["cachedTokens"], 80000);
+    assert_eq!(usage["cacheCreationTokens"], 5000);
+    assert_eq!(usage["outputTokens"], 9);
+}
+
 #[tokio::test]
 async fn a_key_provider_route_forwards_to_its_origin_with_the_clients_key() {
     let seen = Arc::new(Mutex::new(Vec::new()));

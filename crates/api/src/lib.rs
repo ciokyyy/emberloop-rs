@@ -7,6 +7,7 @@ pub mod routes;
 mod session_setup;
 pub mod sse;
 pub mod state;
+pub mod usage;
 
 pub use driver::{NoopDriver, SessionDriver};
 pub use routes::build_router;

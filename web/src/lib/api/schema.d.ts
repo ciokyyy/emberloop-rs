@@ -324,6 +324,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["session_usage_handler"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings": {
         parameters: {
             query?: never;
@@ -576,6 +592,34 @@ export interface components {
             currency: string;
             /** Format: double */
             remaining: number;
+        };
+        /**
+         * @description One model request of a Session. `inputTokens` is the whole prompt (the context size);
+         *     `freshInputTokens` is the part that was neither a cache read nor a cache write.
+         */
+        UsageRecord: {
+            /**
+             * Format: int64
+             * @description Epoch milliseconds when the event was recorded.
+             */
+            at: number;
+            /** Format: int64 */
+            cacheCreationTokens: number;
+            /** Format: int64 */
+            cachedTokens: number;
+            /** Format: int64 */
+            freshInputTokens: number;
+            /**
+             * Format: double
+             * @description `cachedTokens` as a percentage of the prompt (`cached + creation + fresh`); null when the prompt is empty.
+             */
+            hitPercent?: number | null;
+            /** Format: int64 */
+            inputTokens: number;
+            /** Format: int64 */
+            outputTokens: number;
+            /** Format: int64 */
+            seq: number;
         };
         /** @description Read-only quota data. Credentials never leave the daemon. */
         UsageView: {
@@ -1461,6 +1505,32 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    session_usage_handler: {
+        parameters: {
+            query?: {
+                /** @description newest requests to return, default 200, at most 1000 */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Session id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description usage history, oldest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageRecord"][];
+                };
             };
         };
     };

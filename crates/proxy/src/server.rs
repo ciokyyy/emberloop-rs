@@ -1548,6 +1548,7 @@ async fn publish_usage_event(
         "inputTokens": usage.input_tokens,
         "outputTokens": usage.output_tokens,
         "cachedTokens": usage.cached_tokens,
+        "cacheCreationTokens": usage.cache_creation_tokens,
         "breakdown": breakdown
     });
     if let Some(window) = window {
