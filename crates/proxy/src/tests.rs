@@ -24,6 +24,12 @@ struct FakeUpstream {
     bodies: Arc<Mutex<Vec<Value>>>,
     sse: Arc<Mutex<VecDeque<String>>>,
     hang: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    /// The next call answers 500 instead of its usual response.
+    fail_next: Arc<AtomicBool>,
+    /// Calls never answer while set, so a client that gives up cancels the request.
+    stall: Arc<AtomicBool>,
+    /// Signalled when a stalled call arrives, so a test knows the request is in flight.
+    arrived: Arc<tokio::sync::Notify>,
 }
 
 impl FakeUpstream {
@@ -33,6 +39,9 @@ impl FakeUpstream {
             bodies: Arc::new(Mutex::new(Vec::new())),
             sse: Arc::new(Mutex::new(VecDeque::new())),
             hang: Arc::new(Mutex::new(None)),
+            fail_next: Arc::new(AtomicBool::new(false)),
+            stall: Arc::new(AtomicBool::new(false)),
+            arrived: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -72,8 +81,15 @@ async fn fake_upstream(
             }))
             .unwrap();
     }
+    if fake.stall.load(Ordering::SeqCst) {
+        fake.arrived.notify_one();
+        std::future::pending::<()>().await;
+    }
     fake.calls.fetch_add(1, Ordering::SeqCst);
     fake.bodies.lock().unwrap().push(body);
+    if fake.fail_next.swap(false, Ordering::SeqCst) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "upstream failed").into_response();
+    }
     if let Some(response) = fake.sse.lock().unwrap().pop_front() {
         return Response::builder()
             .header(header::CONTENT_TYPE, "text/event-stream")
@@ -1714,6 +1730,71 @@ async fn a_compress_drops_the_stale_usage_so_the_next_request_does_not_renudge()
         runtime.last_input_tokens.load(Ordering::Relaxed),
         0,
         "tokens from before the fold must not reopen the nudge gate"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_upstream_request_does_not_spend_the_first_nudge() {
+    let fake = text_only_fake();
+    fake.fail_next.store(true, Ordering::SeqCst);
+    let fixture = fixture_with(fake).await;
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(heavy_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(nudge_text(&fixture.fake.body(0)).is_some());
+
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(heavy_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        nudge_text(&fixture.fake.body(1)).is_some(),
+        "the model never saw the failed request's nudge, so the first nudge fires again"
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_upstream_request_does_not_spend_the_first_nudge() {
+    let fake = text_only_fake();
+    fake.stall.store(true, Ordering::SeqCst);
+    let fixture = fixture_with(fake.clone()).await;
+    let state = fixture.state.clone();
+    let token = fixture.token.clone();
+    let request = tokio::spawn(async move {
+        send(
+            &state,
+            &token,
+            "v1internal:generateContent",
+            body(heavy_conversation()),
+        )
+        .await
+    });
+    // The upstream has the request, so prepare ran and the request is in flight.
+    fake.arrived.notified().await;
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+
+    fake.stall.store(false, Ordering::SeqCst);
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(heavy_conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        nudge_text(&fixture.fake.body(0)).is_some(),
+        "the cancelled request gave the model no answer, so the nudge fires on the retry"
     );
 }
 
