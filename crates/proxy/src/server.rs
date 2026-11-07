@@ -22,7 +22,6 @@ use tokio::time::timeout;
 
 use crate::compressor::{
     latest_user_turn, CompressCall, CompressPolicy, Compressor, DecompressCall, NativeCompressor,
-    SearchHit,
 };
 use crate::ctx::CtxStore;
 use crate::meter;
@@ -1324,10 +1323,10 @@ fn execute_tool(
         "search_context" => {
             let query = string_arg(&call.args, "query")?;
             let limit = call.args.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
-            let hits: Vec<SearchHit> = lock(&runtime.compressor)
+            let report = lock(&runtime.compressor)
                 .map_err(|error| error.to_string())?
                 .search_context(&query, limit)?;
-            serde_json::to_string_pretty(&hits).map_err(|error| error.to_string())
+            Ok(report.render())
         }
         "acp_status" => {
             let status = lock(&runtime.compressor)
