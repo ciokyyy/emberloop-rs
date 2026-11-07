@@ -2985,3 +2985,64 @@ async fn a_preflight_fold_clears_the_sticky_emergency_flag() {
     assert!(outcome.preflight.is_some(), "the preflight fold ran");
     assert!(!runtime.emergency_truncated.load(Ordering::Relaxed));
 }
+
+/// The text of the result a harness call id answered, as a request body carries it.
+fn result_text(body: &Value, call_id: &str) -> Option<String> {
+    body["contents"]
+        .as_array()?
+        .iter()
+        .flat_map(|turn| turn["parts"].as_array().cloned().unwrap_or_default())
+        .find(|part| part["functionResponse"]["id"].as_str() == Some(call_id))
+        .and_then(|part| {
+            part["functionResponse"]["response"]["result"]
+                .as_str()
+                .map(str::to_string)
+        })
+}
+
+/// Emergency truncation shortens what the model is sent, never what a compress keeps: a compress
+/// run in an emergency request stores the full results, so decompress restores them byte for byte.
+#[tokio::test]
+async fn a_compress_during_an_emergency_restores_the_full_results() {
+    let fixture = fixture_with(echoed_usage_fake()).await;
+    {
+        let mut settings = fixture.settings.try_write().unwrap();
+        settings.emergency_threshold_percent = 1;
+        settings.preserve_recent_messages = 0;
+    }
+    let mut history = warm_history(4);
+    history.push(json!({ "role": "user", "parts": [{ "text": "continue" }] }));
+    let end = history.len() - 1;
+    fixture.fake.script.lock().unwrap().extend([
+        json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
+            "functionCall": {"id": "call_c", "name": "compress",
+                "args": {"start": 1, "end": end, "summary": "old steps"}},
+            "thoughtSignature": "SIG-C"
+        }]}}]}}),
+        json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
+            "functionCall": {"id": "call_d", "name": "decompress", "args": {"blockId": "b1"}},
+            "thoughtSignature": "SIG-D"
+        }]}}]}}),
+        json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{ "text": "done" }]}}]}}),
+    ]);
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(Value::Array(history)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let full = format!("0:{}", "x".repeat(STEP_RESULT_CHARS));
+    assert!(
+        result_text(&fixture.fake.body(0), "call_0")
+            .is_some_and(|text| text.contains("emergency truncation")),
+        "the emergency request sent the first result truncated"
+    );
+    assert_eq!(
+        result_text(&fixture.fake.body(2), "call_0").as_deref(),
+        Some(full.as_str()),
+        "decompress restores the result as the harness sent it"
+    );
+}

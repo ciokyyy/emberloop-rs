@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -479,7 +480,8 @@ async fn handle_generation(
     publish_prepare_events(&state.inner.events, session_id, outcome);
     dump_request(session_id, "out", &request);
     let url = upstream_url(base, path, query);
-    let response = match send_stream(&state.inner.client, &url, headers, &request).await {
+    let sent = outgoing_body(&runtime, wire, &request);
+    let response = match send_stream(&state.inner.client, &url, headers, &sent).await {
         Ok(response) => response,
         Err(error) => {
             settle_steer(&queue, &injected, None, &state.inner.events, session_id).await;
@@ -587,7 +589,10 @@ async fn buffered_generation(
     for _ in 0..MAX_TOOL_ROUNDS {
         let (status, content_type, bytes) = match current.take() {
             Some(response) => response,
-            None => send_generation(&state.inner.client, &url, headers, &request).await?,
+            None => {
+                let sent = outgoing_body(&runtime, wire, &request);
+                send_generation(&state.inner.client, &url, headers, &sent).await?
+            }
         };
         if !status.is_success() {
             return Ok(response_with(status, content_type.as_deref(), bytes));
@@ -612,7 +617,8 @@ async fn buffered_generation(
     let Some((status, content_type, bytes)) = final_response else {
         return Err(ProxyError::ToolRoundLimit);
     };
-    publish_usage(state, session_id, &runtime, &bytes, wire, &request).await;
+    let sent = outgoing_body(&runtime, wire, &request);
+    publish_usage(state, session_id, &runtime, &bytes, wire, &sent).await;
     Ok(response_with(status, content_type.as_deref(), bytes))
 }
 
@@ -684,9 +690,6 @@ fn prepare_request(
         .is_some_and(|report| report.kind == NudgeKind::Emergency.name())
     {
         runtime.emergency_truncated.store(true, Ordering::Relaxed);
-    }
-    if runtime.emergency_truncated.load(Ordering::Relaxed) {
-        truncate_emergency(&mut contents);
     }
     write_core_contents(wire, request, contents);
     Ok(PrepareOutcome {
@@ -809,6 +812,25 @@ fn strip_raw_markers(raw: &mut Value) {
                 .trim());
         }
     }
+}
+
+/// The body as it goes upstream. While an emergency holds, older results are cut short on this
+/// copy only: the stored request keeps every result, so a compress or decompress run in it works
+/// on the full text.
+fn outgoing_body<'a>(
+    runtime: &SessionRuntime,
+    wire: WireKind,
+    request: &'a Value,
+) -> Cow<'a, Value> {
+    if !runtime.emergency_truncated.load(Ordering::Relaxed) {
+        return Cow::Borrowed(request);
+    }
+    let mut body = request.clone();
+    if let Some(mut contents) = extract_core_contents(wire, request_body_mut(&mut body)) {
+        truncate_emergency(&mut contents);
+        write_core_contents(wire, request_body_mut(&mut body), contents);
+    }
+    Cow::Owned(body)
 }
 
 fn truncate_emergency(contents: &mut [Value]) {
@@ -1751,19 +1773,18 @@ impl SseState {
             &self.proxy,
             &self.session_id,
             usage,
-            crate::context::ContextBreakdown::from_request(self.wire, &self.request),
+            crate::context::ContextBreakdown::from_request(
+                self.wire,
+                &outgoing_body(&self.runtime, self.wire, &self.request),
+            ),
         )
         .await;
     }
 
     async fn follow_up(&mut self) -> Result<(), ProxyError> {
-        let response = send_stream(
-            &self.proxy.inner.client,
-            &self.url,
-            &self.headers,
-            &self.request,
-        )
-        .await?;
+        let sent = outgoing_body(&self.runtime, self.wire, &self.request);
+        let response =
+            send_stream(&self.proxy.inner.client, &self.url, &self.headers, &sent).await?;
         self.stream = Some(response.bytes_stream().boxed());
         self.published = None;
         self.step_signature = None;
