@@ -27,7 +27,7 @@ use crate::compressor::{
 use crate::ctx::CtxStore;
 use crate::meter;
 use crate::nudge::{self, NudgeConfig, NudgeKind, NudgeState};
-use crate::splice::{Splice, SpliceStore};
+use crate::splice::{turn_key, Splice, SpliceStore};
 use crate::token::{TokenError, TokenSigner};
 use crate::wire::{
     extract_core_contents, extract_proxy_call_from_payload, inject_prompts_for_wire,
@@ -596,7 +596,7 @@ async fn buffered_generation(
             final_response = Some((status, content_type, bytes));
             break;
         };
-        let turns = run_proxy_tool(
+        let (turns, after) = run_proxy_tool(
             state,
             session_id,
             &runtime,
@@ -606,7 +606,7 @@ async fn buffered_generation(
             &settings,
             window,
         )?;
-        store_proxy_splice(&runtime, &turns)?;
+        store_proxy_splice(&runtime, &turns, after)?;
     }
 
     let Some((status, content_type, bytes)) = final_response else {
@@ -660,7 +660,7 @@ fn prepare_request(
     } else {
         None
     };
-    lock(&runtime.splices)?.apply(&mut contents);
+    lock(&runtime.splices)?.apply(&mut contents)?;
     if wire == WireKind::Google {
         crate::splice::sign_unsigned_calls(&mut contents);
     }
@@ -1067,6 +1067,7 @@ async fn inject_steer(
         marker: String::new(),
         turns: vec![json!({ "role": "user", "parts": [{ "text": text }] })],
         append_parts: Vec::new(),
+        after_turn: None,
     };
     if let Ok(mut splices) = lock(&runtime.splices) {
         let _ = splices.insert(splice);
@@ -1207,9 +1208,11 @@ fn run_proxy_tool(
     call: ProxyCall,
     settings: &Settings,
     window: usize,
-) -> Result<Vec<Value>, ProxyError> {
+) -> Result<(Vec<Value>, Option<String>), ProxyError> {
     let request = request_body_mut(request);
     let mut contents = extract_core_contents(wire, request).ok_or(ProxyError::NoContents)?;
+    // Read before the tool runs: a `compress` in this call rewrites the contents it would be read from.
+    let after = splice_anchor(&contents);
     let text = execute_by_name(
         state,
         session_id,
@@ -1222,7 +1225,17 @@ fn run_proxy_tool(
     let turns = proxy_pair(&call, &text, &format!("emberloop-splice:{}", call.id));
     contents.extend(turns.clone());
     write_core_contents(wire, request, contents);
-    Ok(turns)
+    Ok((turns, after))
+}
+
+/// The turn a proxy pair follows: the newest turn of the request that the harness resends. The
+/// transient nudge is skipped, because no later request carries it.
+fn splice_anchor(contents: &[Value]) -> Option<String> {
+    contents
+        .iter()
+        .rev()
+        .find(|turn| turn.get("_nudge").is_none())
+        .and_then(turn_key)
 }
 
 fn execute_by_name(
@@ -1281,7 +1294,11 @@ fn proxy_pair(call: &ProxyCall, text: &str, marker: &str) -> Vec<Value> {
     ]
 }
 
-fn store_proxy_splice(runtime: &SessionRuntime, turns: &[Value]) -> Result<String, ProxyError> {
+fn store_proxy_splice(
+    runtime: &SessionRuntime,
+    turns: &[Value],
+    after: Option<String>,
+) -> Result<String, ProxyError> {
     let marker = turns
         .first()
         .and_then(|turn| turn.get("parts"))
@@ -1302,7 +1319,9 @@ fn store_proxy_splice(runtime: &SessionRuntime, turns: &[Value]) -> Result<Strin
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let splice = Splice::new(&anchor, turns.to_vec()).with_marker(marker);
+    let splice = Splice::new(&anchor, turns.to_vec())
+        .with_marker(marker)
+        .with_after_turn(after);
     lock(&runtime.splices)?.insert(splice)?;
     Ok(anchor)
 }
@@ -1779,10 +1798,14 @@ impl SseState {
             .first()
             .map(|completed| completed.call.id.clone())
             .unwrap_or_default();
-        let splice = Splice::new(&anchor, turns.clone()).with_marker(&marker);
-        lock(&self.runtime.splices)?.insert(splice)?;
         let req_body = request_body_mut(&mut self.request);
-        if let Some(mut contents) = extract_core_contents(self.wire, req_body) {
+        let contents = extract_core_contents(self.wire, req_body);
+        let after = contents.as_deref().and_then(splice_anchor);
+        let splice = Splice::new(&anchor, turns.clone())
+            .with_marker(&marker)
+            .with_after_turn(after);
+        lock(&self.runtime.splices)?.insert(splice)?;
+        if let Some(mut contents) = contents {
             contents.extend(turns);
             write_core_contents(self.wire, req_body, contents);
         }

@@ -1859,6 +1859,7 @@ async fn nudge_turn_numbers_match_the_final_contents_after_a_stored_steer() {
             marker: String::new(),
             turns: vec![json!({ "role": "user", "parts": [{ "text": "steer: keep the tests" }] })],
             append_parts: Vec::new(),
+            after_turn: None,
         })
         .unwrap();
 
@@ -2778,7 +2779,6 @@ async fn prefix_is_stable_across_the_first_nudge() {
 }
 
 #[tokio::test]
-#[ignore = "splice.rs replay_index re-attaches a proxy-only compress pair before the newest model turn, so the pair moves every request"]
 async fn prefix_is_stable_across_a_mid_run_compress() {
     let fixture = fixture_with(echoed_usage_fake()).await;
     let folded_at = 5;
