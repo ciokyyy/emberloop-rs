@@ -1,4 +1,5 @@
 use crate::marker;
+use crate::tokens;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -515,7 +516,7 @@ impl Compressor for NativeCompressor {
                 .blocks
                 .iter()
                 .filter(|block| !block.restored)
-                .map(|block| token_count(&block.originals))
+                .map(|block| tokens::turns_tokens(&block.originals))
                 .sum(),
             spill_dir: self.spill_dir.to_string_lossy().to_string(),
         }
@@ -705,13 +706,6 @@ fn turn_tool_names(turn: &Value) -> impl Iterator<Item = &str> {
         .into_iter()
         .flatten()
         .filter_map(|part| part_call(part)?.get("name").and_then(Value::as_str))
-}
-
-fn token_count(turns: &[Value]) -> u64 {
-    turns
-        .iter()
-        .map(|turn| u64::try_from(turn.to_string().len() / 4).unwrap_or(u64::MAX))
-        .sum()
 }
 
 /// Most turns a stored steer or a proxy pair may add between two folded turns. They are put back

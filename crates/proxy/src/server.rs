@@ -29,6 +29,7 @@ use crate::meter;
 use crate::nudge::{self, NudgeConfig, NudgeKind, NudgeState};
 use crate::splice::{Splice, SpliceStore};
 use crate::token::{TokenError, TokenSigner};
+use crate::tokens::turns_tokens;
 use crate::wire::{
     extract_core_contents, extract_proxy_call_from_payload, inject_prompts_for_wire,
     inject_tools_for_wire, write_core_contents, WireKind,
@@ -712,7 +713,7 @@ fn preflight_fold(
     let policy = compress_policy(settings);
     let mut folded = None;
     for _ in 0..4 {
-        if estimate_tokens(contents) <= u64::try_from(window).unwrap_or(u64::MAX) {
+        if turns_tokens(contents) <= u64::try_from(window).unwrap_or(u64::MAX) {
             break;
         }
         let keep = policy.preserve_recent_messages.min(contents.len());
@@ -902,14 +903,6 @@ async fn context_window(state: &ProxyState, session_id: &str) -> usize {
     }
 }
 
-/// Tokens by the chars / 4 rule the reference uses, over the serialised turns.
-fn estimate_tokens(turns: &[Value]) -> u64 {
-    turns
-        .iter()
-        .map(|turn| u64::try_from(turn.to_string().len() / 4).unwrap_or(u64::MAX))
-        .sum()
-}
-
 fn kilo(tokens: u64) -> String {
     format!("{:.1}K", tokens as f64 / 1000.0)
 }
@@ -923,7 +916,7 @@ struct CompressibleView {
 fn compressible_view(turns: &[Value], preserve_recent_messages: usize) -> CompressibleView {
     let end = turns.len().saturating_sub(preserve_recent_messages);
     let (tokens, count) = if end > 1 {
-        (estimate_tokens(&turns[1..end]), end - 1)
+        (turns_tokens(&turns[1..end]), end - 1)
     } else {
         (0, 0)
     };
@@ -965,7 +958,7 @@ fn inject_nudge(
     let preserve = settings.preserve_recent_messages as usize;
     let view = compressible_view(contents, preserve);
     let tokens = match runtime.last_input_tokens.load(Ordering::Relaxed) {
-        0 => estimate_tokens(contents),
+        0 => turns_tokens(contents),
         used => used,
     };
     let active_blocks = lock(&runtime.compressor)?.status().active_blocks as u64;
@@ -1351,7 +1344,7 @@ fn acp_status_text(
 ) -> String {
     let view = compressible_view(contents, settings.preserve_recent_messages as usize);
     format_acp_status(
-        estimate_tokens(contents),
+        turns_tokens(contents),
         window,
         status.active_blocks,
         status.blocks,

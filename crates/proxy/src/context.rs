@@ -3,6 +3,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::marker;
+use crate::tokens::{json_tokens, text_tokens};
 use crate::wire::WireKind;
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -34,7 +35,7 @@ impl ContextBreakdown {
             .unwrap_or(request);
         let mut out = Self::default();
         if let Some(tools) = body.get("tools") {
-            out.tool_definitions = estimate_json(tools);
+            out.tool_definitions = json_tokens(tools);
         }
         match wire {
             WireKind::Google => {
@@ -61,7 +62,7 @@ impl ContextBreakdown {
     }
 
     fn text(&mut self, text: &str, category: Category) {
-        let tokens = (text.len() as u64).div_ceil(4);
+        let tokens = text_tokens(text);
         match category {
             Category::System => self.system += tokens,
             Category::ToolResult => self.tool_results += tokens,
@@ -72,8 +73,8 @@ impl ContextBreakdown {
 
     fn content(&mut self, value: &Value, category: Category) {
         if matches!(category, Category::ToolResult) {
-            let (bytes, images) = result_size(value);
-            self.tool_results += bytes.div_ceil(4);
+            let (tokens, images) = result_tokens(value);
+            self.tool_results += tokens;
             self.image_count += images;
             return;
         }
@@ -96,7 +97,7 @@ impl ContextBreakdown {
             return;
         }
         if matches!(kind, "tool_use" | "function_call") || value.get("functionCall").is_some() {
-            self.tool_calls += estimate_json(value);
+            self.tool_calls += json_tokens(value);
             return;
         }
         if let Some(response) = value.get("functionResponse") {
@@ -118,7 +119,7 @@ impl ContextBreakdown {
             _ => category,
         };
         if let Some(calls) = value.get("tool_calls") {
-            self.tool_calls += estimate_json(calls);
+            self.tool_calls += json_tokens(calls);
         }
         // Traverse content fields only: roles, signatures, ids, and image data are not text.
         for key in [
@@ -137,17 +138,11 @@ fn is_image(value: &Value, kind: &str) -> bool {
         || value.get("fileData").is_some()
 }
 
-fn estimate_json(value: &Value) -> u64 {
-    serde_json::to_vec(value)
-        .map(|bytes| (bytes.len() as u64).div_ceil(4))
-        .unwrap_or(0)
-}
-
-// Account arbitrary structured tool output while excluding embedded image payloads.
-fn result_size(value: &Value) -> (u64, u64) {
+// Account arbitrary structured tool output in tokens, excluding embedded image payloads.
+fn result_tokens(value: &Value) -> (u64, u64) {
     match value {
         Value::Null => (0, 0),
-        Value::Array(items) => items.iter().map(result_size).fold((0, 0), sum_sizes),
+        Value::Array(items) => items.iter().map(result_tokens).fold((0, 0), sum_counts),
         Value::Object(fields) => {
             if is_image(value, value["type"].as_str().unwrap_or("")) {
                 return (0, 1);
@@ -155,16 +150,16 @@ fn result_size(value: &Value) -> (u64, u64) {
             fields
                 .iter()
                 .map(|(key, value)| {
-                    let (bytes, images) = result_size(value);
-                    (key.len() as u64 + bytes + 3, images)
+                    let (tokens, images) = result_tokens(value);
+                    (text_tokens(key) + tokens, images)
                 })
-                .fold((0, 0), sum_sizes)
+                .fold((0, 0), sum_counts)
         }
-        Value::String(text) => (text.len() as u64, 0),
-        other => (other.to_string().len() as u64, 0),
+        Value::String(text) => (text_tokens(text), 0),
+        other => (text_tokens(&other.to_string()), 0),
     }
 }
 
-fn sum_sizes(a: (u64, u64), b: (u64, u64)) -> (u64, u64) {
+fn sum_counts(a: (u64, u64), b: (u64, u64)) -> (u64, u64) {
     (a.0 + b.0, a.1 + b.1)
 }
