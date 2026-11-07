@@ -104,10 +104,11 @@ fn openai_usage(root: &Value) -> Option<Usage> {
     })
 }
 
-/// The prompt size of a request. Anthropic's `input_tokens` leaves out its cache reads and
-/// writes, so the total adds them back; OpenAI counts its cached tokens inside the input total
-/// already. Gemini: `cachedContentTokenCount` is left out of the total on purpose. Whether
-/// `promptTokenCount` includes it is UNVERIFIED, so the reported count is kept as it is.
+/// The prompt size of a request. Anthropic's `input_tokens` excludes its cache reads and writes,
+/// so the total is input + cache reads + cache writes. OpenAI totals (Chat and Responses) already
+/// include their cached tokens. Gemini with explicit cachedContent: `promptTokenCount` includes
+/// `cachedContentTokenCount`, so the count is taken as reported. Gemini implicit caching: that
+/// inclusion is inferred, not verified.
 fn input_total(usage: &Value) -> u64 {
     if !is_anthropic(usage) {
         return number(usage, "prompt_tokens").max(number(usage, "input_tokens"));
@@ -303,6 +304,36 @@ mod tests {
                 output_tokens: 14,
                 cached_tokens: 80000,
                 cache_creation_tokens: 5000
+            })
+        );
+    }
+
+    #[test]
+    fn gemini_prompt_count_includes_the_cached_content_tokens() {
+        // Explicit cachedContent: promptTokenCount is the whole prompt and already holds the cached part.
+        let body = r#"{"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":7,"totalTokenCount":127,"cachedContentTokenCount":100}}"#;
+        assert_eq!(
+            extract_usage(body.as_bytes()),
+            Some(Usage {
+                input_tokens: 120,
+                output_tokens: 7,
+                cached_tokens: 100,
+                cache_creation_tokens: 0
+            })
+        );
+    }
+
+    #[test]
+    fn openai_responses_input_is_the_whole_prompt_with_its_cached_part() {
+        // Responses reports input_tokens (the total, cached included) and its cached part under details.
+        let body = "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":52,\"input_tokens_details\":{\"cached_tokens\":30},\"output_tokens\":8,\"total_tokens\":60}}}\n\n";
+        assert_eq!(
+            extract_usage(body.as_bytes()),
+            Some(Usage {
+                input_tokens: 52,
+                output_tokens: 8,
+                cached_tokens: 30,
+                cache_creation_tokens: 0
             })
         );
     }
