@@ -1,1 +1,1 @@
-Search the web (Brave/Exa) with optional freshness and domain filters and a 15-minute cache.
+Search the web with `query`, with a 15-minute cache. `count` sets the number of results. `freshness` (`day`, `week`, `month` or `year`) and `domains` filter the results, `provider` picks `auto`, `brave`, `exa` or `deepseek`, and `fresh` skips the cache.

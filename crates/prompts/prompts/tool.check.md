@@ -1,0 +1,1 @@
+Re-run one of the repo's named checks from `.emberloop/check`. `name` picks the check, and leaving it out runs the default one. `args` fills the command's `{args}` slot; shell metacharacters in it are refused. The answer is a passed, FAILED or TIMED OUT verdict with the last 60 lines of output.

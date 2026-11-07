@@ -22,6 +22,7 @@ reqwest = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+prompts = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

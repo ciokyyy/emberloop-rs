@@ -1,4 +1,4 @@
-Run a Python script (stdlib only, `python3 -I`) that calls el tools as functions, so one call replaces many and only what the script prints enters context.
+Run the Python script in `code` (stdlib only, `python3 -I`) that calls el tools as functions, so one call replaces many and only what the script prints enters context. `timeout` is in seconds, default 120, max 600.
 
 Searching code: use find for concepts and symbols, grep for exact strings and regex, and execute to batch the exploration (loops over grep/read, filtering output).
 
@@ -15,7 +15,7 @@ MCP tools use fully qualified names in `tools.call` and `tools.parallel`, for ex
 
 Use execute when one result feeds the next, when you loop over many items, or when you need only a slice of big output. Independent calls: run them together with tools.parallel in one script, so the whole batch costs one model turn. A script with one tool call and no loop is a wasted turn: call that tool natively, or add the next independent call. Example, first look at code: print(*tools.parallel([("grep", {"pattern": "X"}), ("read", {"path": "a.rs"}), ("bash", {"command": "git status --short"})])).
 
-Use `tools.edit(input=...)` for changes to existing files, including several sites or files; call edits sequentially, not through `tools.parallel`. Use `tools.write` for new files. Python file I/O is for analysis, not a shortcut around hashline validation.
+Use `tools.edit(input=...)` for changes to existing files, including several sites or files; call edits sequentially, not through `tools.parallel`. Use `tools.write` for new files.
 
 Filter before you print. A script that prints a whole document, log or file only moves it into context. Compute the answer in the script and print that.
 

@@ -38,6 +38,9 @@ pub const TOOL_FIND: &str = "tool.find.description";
 pub const TOOL_WEBSEARCH: &str = "tool.websearch.description";
 pub const TOOL_EXECUTE: &str = "tool.execute.description";
 pub const TOOL_TODO: &str = "tool.todo.description";
+pub const TOOL_GIT: &str = "tool.git.description";
+pub const TOOL_CHECK: &str = "tool.check.description";
+pub const TOOL_CTX_SEARCH: &str = "tool.ctx_search.description";
 /// Billion-context nudges (ticket 20). Derived from the reference wording; the
 /// emergency id shares the pressure body. Raw templates: see `PinnedPrompts::pin`.
 pub const NUDGE_FIRST: &str = "nudge.first";
@@ -65,6 +68,9 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_WEBSEARCH,
     TOOL_EXECUTE,
     TOOL_TODO,
+    TOOL_GIT,
+    TOOL_CHECK,
+    TOOL_CTX_SEARCH,
     SKILL_CODEBASE_MEMORY,
     NUDGE_FIRST,
     NUDGE_PRESSURE,
@@ -104,6 +110,9 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_WEBSEARCH => defaults::TOOL_WEBSEARCH,
         TOOL_EXECUTE => defaults::TOOL_EXECUTE,
         TOOL_TODO => defaults::TOOL_TODO,
+        TOOL_GIT => defaults::TOOL_GIT,
+        TOOL_CHECK => defaults::TOOL_CHECK,
+        TOOL_CTX_SEARCH => defaults::TOOL_CTX_SEARCH,
         SKILL_CODEBASE_MEMORY => defaults::SKILL_CODEBASE_MEMORY,
         NUDGE_FIRST => defaults::NUDGE_FIRST,
         NUDGE_PRESSURE | NUDGE_EMERGENCY => defaults::NUDGE_PRESSURE,

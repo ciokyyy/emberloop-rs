@@ -162,7 +162,7 @@ fn tool_specs() -> Vec<Value> {
                     "action": {"type": "string", "enum": ["list", "read", "wait", "stop"]},
                     "id": {"type": "string"},
                     "offset": {"type": "integer"},
-                    "timeout": {"type": "integer"}
+                    "timeout": {"type": "integer", "description": "Seconds for wait, default 60, max 600."}
                 },
                 "required": ["action"]
             }
@@ -297,8 +297,8 @@ fn tool_specs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "code": {"type": "string"},
-                    "timeout": {"type": "integer"}
+                    "code": {"type": "string", "description": "The Python script to run."},
+                    "timeout": {"type": "integer", "description": "Seconds, default 120, max 600."}
                 },
                 "required": ["code"]
             }
