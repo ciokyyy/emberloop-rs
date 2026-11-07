@@ -78,10 +78,8 @@ pub async fn session_usage_handler(
     let Ok(log) = state.get_event_log(&session_id).await else {
         return Json(Vec::new());
     };
-    let Ok(events) = log.replay(None).await else {
+    let Ok(events) = log.kind_tail(&EventKind::Usage, limit).await else {
         return Json(Vec::new());
     };
-    let mut records: Vec<UsageRecord> = events.iter().filter_map(record_from).collect();
-    let start = records.len().saturating_sub(limit);
-    Json(records.split_off(start))
+    Json(events.iter().filter_map(record_from).collect())
 }
