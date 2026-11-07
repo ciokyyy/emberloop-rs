@@ -589,7 +589,7 @@ pub fn tool_descriptions(prompts: &PromptStore) -> HashMap<String, String> {
     prompts::PROMPT_IDS
         .iter()
         .filter_map(|id| {
-            let name = id.strip_prefix("tool.")?.strip_suffix(".description")?;
+            let name = prompts::tool_name(id)?;
             let text = prompts.text(id)?;
             Some((name.to_string(), text))
         })

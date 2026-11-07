@@ -20,14 +20,16 @@ fn prompt_descriptions() -> HashMap<String, String> {
         .collect()
 }
 
-fn advertised() -> Vec<Tool> {
+fn server() -> McpServer {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().join("project");
     std::fs::create_dir(&root).expect("root");
     let toolbox = Toolbox::new(ToolConfig::new(&root, dir.path().join("spill"))).expect("toolbox");
     McpServer::new(Arc::new(toolbox))
-        .with_descriptions(prompt_descriptions())
-        .tools()
+}
+
+fn advertised() -> Vec<Tool> {
+    server().with_descriptions(prompt_descriptions()).tools()
 }
 
 fn schema(tool: &Tool) -> Value {
@@ -185,4 +187,30 @@ fn every_timeout_states_its_unit_in_seconds() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn a_bare_server_advertises_the_prompt_store_defaults() {
+    for tool in server().tools() {
+        let id = format!("tool.{}.description", tool.name);
+        assert_eq!(
+            description(&tool),
+            prompts::default_text(&id),
+            "{} must not carry its own description text",
+            tool.name
+        );
+    }
+}
+
+#[test]
+fn read_path_names_every_form_read_accepts() {
+    let tools = advertised();
+    let read = tools.iter().find(|tool| tool.name == "read").expect("read");
+    let path = schema(read)["properties"]["path"]["description"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    for form in ["directory", "URL", "ctx:<handle>"] {
+        assert!(path.contains(form), "read path text lacks {form}: {path}");
+    }
 }

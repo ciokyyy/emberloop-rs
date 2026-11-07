@@ -90,6 +90,11 @@ pub const ALLOWED_PLACEHOLDERS: &[&str] = &[
     "compressible_ranges",
 ];
 
+/// The tool a `tool.<name>.description` id describes.
+pub fn tool_name(id: &str) -> Option<&str> {
+    id.strip_prefix("tool.")?.strip_suffix(".description")
+}
+
 pub fn default_text(id: &str) -> &'static str {
     match id {
         PONYTAIL => defaults::PONYTAIL,

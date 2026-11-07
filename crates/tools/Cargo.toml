@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+prompts = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -22,7 +23,6 @@ reqwest = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
-prompts = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]
