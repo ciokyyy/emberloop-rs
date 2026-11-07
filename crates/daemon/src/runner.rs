@@ -31,6 +31,7 @@ pub struct SessionRunner {
     settings: Arc<RwLock<Settings>>,
     reminders: Arc<Mutex<HashMap<String, Cycle>>>,
     titles: Option<crate::titles::Titles>,
+    config_root: Option<std::path::PathBuf>,
 }
 
 fn log_failure(error: Option<impl std::fmt::Display>, what: &str) {
@@ -74,7 +75,13 @@ impl SessionRunner {
             settings,
             reminders: Arc::new(Mutex::new(HashMap::new())),
             titles: None,
+            config_root: None,
         }
+    }
+
+    pub(crate) fn with_config_root(mut self, root: std::path::PathBuf) -> Self {
+        self.config_root = Some(root);
+        self
     }
 
     pub(crate) fn with_titles(mut self, titles: crate::titles::Titles) -> Self {
@@ -90,14 +97,20 @@ impl SessionRunner {
     ) -> HarnessWiring {
         let spill = self.data_root.session_spill_dir(session_id);
         let mcp_command = crate::daemon_exe().map(|exe| {
-            vec![
-                exe.display().to_string(),
+            // The Session's HOME is a harness pi-home, so name the daemon's real config root.
+            let mut argv = vec![exe.display().to_string()];
+            if let Some(config_root) = &self.config_root {
+                argv.push("--config-root".to_string());
+                argv.push(config_root.display().to_string());
+            }
+            argv.extend([
                 "mcp".to_string(),
                 "--root".to_string(),
                 root.display().to_string(),
                 "--spill".to_string(),
                 spill.display().to_string(),
-            ]
+            ]);
+            argv
         });
         HarnessWiring {
             proxy_url: format!(

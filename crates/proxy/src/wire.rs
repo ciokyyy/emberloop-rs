@@ -32,9 +32,13 @@ impl WireKind {
     }
 }
 
-pub fn prompt_text(pins: &PinnedPrompts) -> String {
+pub fn prompt_text(pins: &PinnedPrompts, codebase_memory: bool) -> String {
+    let mut ids = vec![prompts::POLICY, prompts::PONYTAIL, prompts::CAVEMAN];
+    if codebase_memory {
+        ids.push(prompts::SKILL_CODEBASE_MEMORY);
+    }
     let mut text = String::new();
-    for id in [prompts::POLICY, prompts::PONYTAIL, prompts::CAVEMAN] {
+    for id in ids {
         let Some(part) = pins.text(id).filter(|t| !t.trim().is_empty()) else {
             continue;
         };
@@ -46,8 +50,13 @@ pub fn prompt_text(pins: &PinnedPrompts) -> String {
     text
 }
 
-pub fn inject_prompts_for_wire(wire: WireKind, request: &mut Value, pins: &PinnedPrompts) {
-    let text = prompt_text(pins);
+pub fn inject_prompts_for_wire(
+    wire: WireKind,
+    request: &mut Value,
+    pins: &PinnedPrompts,
+    codebase_memory: bool,
+) {
+    let text = prompt_text(pins, codebase_memory);
     if text.is_empty() {
         return;
     }
@@ -872,4 +881,28 @@ pub(crate) fn set_response_text(part: &mut Value, text: &str) {
         return;
     };
     response.insert("result".to_string(), Value::String(text.to_string()));
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use prompts::{PromptStore, PromptVars};
+
+    #[test]
+    fn the_graph_skill_joins_the_system_prompt_only_when_the_graph_is_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let pins =
+            PinnedPrompts::pin(&PromptStore::new(dir.path()), &PromptVars::default()).unwrap();
+        let without = prompt_text(&pins, false);
+        let with = prompt_text(&pins, true);
+        assert!(!without.contains("Codebase memory"));
+        assert!(with.starts_with(&without));
+        assert_eq!(
+            with.strip_prefix(&without)
+                .unwrap()
+                .trim_start_matches("\n\n"),
+            pins.text(prompts::SKILL_CODEBASE_MEMORY).unwrap()
+        );
+    }
 }

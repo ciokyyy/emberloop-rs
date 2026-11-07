@@ -16,6 +16,7 @@
   import SessionDialog from '$lib/components/SessionDialog.svelte';
   import Composer from '$lib/components/Composer.svelte';
   import Feed from '$lib/components/Feed.svelte';
+  import ModelPicker from '$lib/components/ModelPicker.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
   import Providers from '$lib/components/Providers.svelte';
@@ -26,7 +27,7 @@
   import { applyEvent, applySnapshot, emptyFeedState, type FeedState } from '$lib/feed';
   import { chosenWindow } from '$lib/contextMeter';
   import { toPromptImage } from '$lib/images';
-  import { newSessionProjects, sessionPath, viewOf, viewPath, type View } from '$lib/route';
+  import { newPath, newSessionProjects, sessionPath, viewOf, viewPath, type View } from '$lib/route';
 
   let { children } = $props();
   let projects = $state<Project[]>([]);
@@ -65,6 +66,11 @@
   // The dialog asks for a Session by default; the "New project" button asks for
   // a path instead.
   let newProject = $state(false);
+  // The draft: the model and level picked before a Session exists. `draftProject` remembers which
+  // Project's draft already took the defaults, so a model pick does not reset the level.
+  let draftModel = $state('');
+  let draftLevel = $state('full');
+  let draftProject: string | null = null;
   let drawer = $state(false);
   let settingsSaving = $state(false);
 
@@ -84,6 +90,8 @@
   const scope = $derived(page.params.project ?? null);
   const listed = $derived(newSessionProjects(scope, projects));
   const projectOf = $derived(projects.find((project) => project.id === current?.projectId) ?? null);
+  const scopeProject = $derived(projects.find((project) => project.id === scope) ?? null);
+  const draftOf = $derived(models.find((model) => model.id === draftModel) ?? null);
   const working = $derived(feed.status === 'working');
   // activeTool names the call the trailing run of the feed is making right now.
   const activeTool = $derived.by(() => {
@@ -231,7 +239,7 @@
   }
 
   // openView keeps Settings and Providers on a Project's URL, so Back returns to its Session.
-  function openView(next: Exclude<View, 'session'>) {
+  function openView(next: Exclude<View, 'session' | 'new'>) {
     drawer = false;
     void goto(viewPath(projectOf?.id ?? projects[0]?.id ?? null, next));
   }
@@ -249,11 +257,35 @@
     return () => closeStream();
   });
 
-  // A Project URL only preselects the Project. The dialog still opens, because the
-  // model is a choice the create request needs.
+  // New Session opens the draft page: no Session exists until the first prompt. Without a
+  // Project there is nowhere to hang the draft, so the dialog asks for one by path.
   function startSession() {
-    newProject = false;
+    const projectId = scope ?? projects[0]?.id ?? null;
+    if (projectId) return void goto(newPath(projectId));
+    newProject = true;
     newOpen = true;
+  }
+
+  // A draft starts from the first model and the default level, once per Project.
+  $effect(() => {
+    if (view !== 'new' || !models.length || draftProject === scope) return;
+    draftProject = scope;
+    draftModel = models[0].id;
+    draftLevel = settings.ponytail_default_level;
+  });
+
+  // The draft's first prompt creates the Session, then sends: the URL moves to the real one.
+  async function sendDraft(text: string, files: File[]) {
+    const projectId = scope ?? projects[0]?.id;
+    if (!projectId) throw new Error('Choose a Project first.');
+    if (!draftModel) throw new Error('Choose a model first.');
+    const images = await Promise.all(files.map(toPromptImage));
+    const created = await api.createSession(projectId, undefined, draftLevel, draftModel);
+    sessions = [created, ...sessions];
+    await api.prompt(created.id, text, images);
+    // The draft's text is spent; the new Session keeps its own.
+    try { localStorage.removeItem(`emberloop-rs:draft:draft:${projectId}`); } catch { /* no storage */ }
+    await goto(sessionPath(projectId, created.id));
   }
 
   async function createSession(input: {
@@ -271,17 +303,18 @@
       projectId = project.id;
     }
     if (!projectId) throw new Error('Choose a Project or enter a path.');
-    const created = await api.createSession(
-      projectId,
-      undefined,
-      input.ponytailLevel,
-      input.model,
-      input.thoughtLevel
-    );
-    sessions = [created, ...sessions];
-    await goto(sessionPath(projectId, created.id));
+    await goto(newPath(projectId));
   }
 
+  // Switching Project lands on its most recent Session; with none, on its Settings, since a
+  // Session URL needs an id.
+  function selectProject(id: string) {
+    const latest = sessions
+      .filter((session) => session.projectId === id)
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    const page = view === 'session' || view === 'new' ? 'settings' : view;
+    void goto(latest ? sessionPath(id, latest.id) : viewPath(id, page));
+  }
   async function renameSession(session: Session) {
     const title = window.prompt('Rename session', session.title)?.trim();
     if (!title || title === session.title) return;
@@ -364,24 +397,24 @@
 
   <aside class="drawer w-[280px] shrink-0 {drawer ? 'open' : ''}">
     <Sidebar
-      projects={listed}
+      {projects}
+      projectId={scope}
       {sessions}
       {models}
       {statuses}
       selectedId={view === 'session' ? selected : null}
+      draftModel={view === 'new' && scope ? draftModel : null}
+      ondraft={() => { if (scope) void goto(newPath(scope)); }}
       settingsActive={view === 'settings'}
       providersActive={view === 'providers'}
       usageActive={view === 'usage'}
       onselect={select}
+      onselectproject={selectProject}
       onnew={startSession}
-      onnewproject={
-        scope
-          ? () => {
-              newProject = true;
-              newOpen = true;
-            }
-          : undefined
-      }
+      onnewproject={() => {
+        newProject = true;
+        newOpen = true;
+      }}
       onrename={(session) => void renameSession(session)}
       ondelete={(session) => void deleteSession(session)}
       onsettings={() => openView('settings')}
@@ -395,8 +428,10 @@
       <button class="btn md:hidden" aria-label="Open sessions" onclick={() => (drawer = true)}>☰</button>
       <div class="min-w-0 flex-1">
         <h1 class="truncate font-semibold tracking-[-0.01em]">
-          {view === 'settings'
-            ? 'Settings'
+          {view === 'new'
+            ? 'New session'
+            : view === 'settings'
+              ? 'Settings'
             : view === 'providers'
               ? 'Providers'
               : view === 'usage'
@@ -404,7 +439,9 @@
                 : (current?.title ?? 'Emberloop')}
         </h1>
         <div class="truncate text-[12px] text-fg-3">
-          {view === 'session' && projectOf ? `${projectOf.name} · ${projectOf.root}` : ''}
+          {view === 'new'
+            ? scopeProject ? `${scopeProject.name} · ${scopeProject.root}` : ''
+            : view === 'session' && projectOf ? `${projectOf.name} · ${projectOf.root}` : ''}
         </div>
       </div>
 
@@ -434,6 +471,37 @@
       <Usage />
     {:else if loading}
       <div class="grid flex-1 place-items-center text-[13px] text-fg-3">Loading…</div>
+    {:else if view === 'new'}
+      <!-- The draft page: the harness and model are picked here, and the Session starts with the
+           first prompt. Its row in the sidebar wears the harness color of this pick. -->
+      <div class="grid flex-1 place-items-center px-4">
+        <div class="flex w-full max-w-[420px] flex-col gap-4">
+          <p class="text-[13px] text-fg-3">
+            Pick the harness and model. The Session starts with your first prompt.
+          </p>
+          <ModelPicker {models} bind:value={draftModel} />
+          <div class="flex flex-col gap-1.5 text-[13px] text-fg-3">
+            Ponytail level
+            <div class="seg self-start">
+              {#each ['off', 'lite', 'full', 'ultra'] as option (option)}
+                <button type="button" aria-pressed={draftLevel === option} onclick={() => (draftLevel = option)}>
+                  {option}
+                </button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </div>
+      {#key scope}
+        <Composer
+          sessionId={`draft:${scope ?? ''}`}
+          model={draftOf?.label ?? draftModel}
+          contextSize={chosenWindow(draftOf?.context_window, 0)}
+          imageInput={draftOf?.image_input ?? false}
+          onsubmit={sendDraft}
+          oncancel={() => {}}
+        />
+      {/key}
     {:else if current}
       <Feed {feed} {hasMore} {loadingMore} onloadmore={loadEarlier} />
       <!-- The plan card and the turn line sit in the composer's own column, right above it. -->

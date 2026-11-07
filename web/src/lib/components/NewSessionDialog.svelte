@@ -118,6 +118,7 @@
           <input class="field font-mono" bind:value={root} placeholder="/home/you/Projects/name" />
         </label>
 
+        {#if !newProject}
         <ModelPicker searchable {models} bind:value={model} />
         {#if efforts.length}
           <label class="flex flex-col gap-1.5 text-[12px] text-fg-3">
@@ -138,6 +139,8 @@
             {/each}
           </div>
         </div>
+
+        {/if}
 
         {#if error}<p class="text-[12px] text-status-failed">{error}</p>{/if}
 

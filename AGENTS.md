@@ -2,6 +2,8 @@
 
 Project preamble: emberloop-rs is a Rust rewrite of Emberloop, started fresh and not a port. Tools are served over MCP, and one proxy owns everything on the model wire (billion context, Ponytail text, steering). Every harness plugs into both through one small trait. Phase 1 is `agy` only, with Projects, Sessions, `read`/`edit`/`bash`/`background`/`grep` and a trimmed copy of the Emberloop UI (SvelteKit, Tailwind v4, shadcn-svelte). The Go Emberloop at `~/Projects/emberloop` is the reference for behaviour and is not changed from here. The spec is the source of truth; implementation lives in `crates/` and `web/`.
 
+Web tooling is bun: `bun`, `bunx` and `bun.lock` everywhere, never npm or another package manager. Every control in `web/` is a shadcn-svelte component over `bits-ui`: add one with `bunx shadcn-svelte add <name>` and use it as generated, never a native `<select>`-style widget or a hand-rolled one.
+
 ## DOX contract
 
 - `AGENTS.md` files are binding work contracts for their subtrees. A path must stay understandable from its nearest `AGENTS.md` plus every parent above it.
@@ -18,12 +20,18 @@ One command, `scripts/check`, is the repo check and must pass before any change 
 - `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` with the `[workspace.lints]` table (including `cognitive_complexity`, its threshold in `clippy.toml`);
 - `cargo nextest run --workspace` and `cargo test --doc`;
 - `cargo deny check` and `cargo machete`;
-- in `web/`: `npm ci`, `svelte-check` (which covers `tsc`), a blocking Fallow complexity check with the Go repo's thresholds, the web tests and `npm run build`, because the daemon embeds `web/build/` at compile time and `crates/daemon/tests/web_bundle.rs` fails on a bundle older than `web/src`;
+- in `web/`: `bun install --frozen-lockfile`, `svelte-check --incremental` (which covers `tsc`), a blocking Fallow complexity check with the Go repo's thresholds, the web tests and `bun run build`, because the daemon embeds `web/build/` at compile time and `crates/daemon/tests/web_bundle.rs` fails on a bundle older than `web/src`;
 - the OpenAPI document is dumped, the TypeScript client regenerated, and `git diff --exit-code` passes.
 
 The check has a time budget (spec decision O): the loop check 30 s or less, the full check 3 minutes or less. A slow test, a real sleep or a real harness in the check is a defect. No stage is skipped, softened with `|| true`, or guarded by "if the tool exists".
 
+The web stage is skipped when `web/`'s input tree hashes the same as the green run before it and `web/build/` exists: same inputs, same result. A missing or stale build always runs it. Every other stage always runs.
+
 A threshold is never raised to make a change pass; the function is split instead.
+
+## Local update
+
+Run `scripts/check`, then `scripts/dev-update` from this checkout. The update builds the daemon with the next release version and queues a safe restart when called inside a Session. The check builds the embedded web bundle when its inputs change. Do not stop the daemon to force the update. See `crates/daemon/AGENTS.md` for the update, resume, and verification contract.
 
 ## Test-first
 
@@ -44,6 +52,7 @@ Only after the User picks does implementation start, test-first. This does not a
 - A harness is one implementation of the harness trait. It never composes model-facing text; the proxy and the one policy text own it. A new capability is declared once and read by every harness, never added as a per-harness branch.
 - Plugins are compiled-in workspace crates on a Cordis-style Context tree. No dylib, WASM or runtime plugin loading until a second plugin author exists.
 - Tools reach a harness over MCP only. The proxy never executes a workspace tool; it runs only its own pure tools (compress, decompress, search_context).
+- A third-party stdio MCP server listed in `<config root>/mcp.json` is reachable only from the `execute` tool, never declared to a harness, and the proxy only adds its skill text when the daemon reports the code graph usable.
 - Pre-0.1 releases are 0.0.x. Until v0.1, an update may drop Sessions and data-root layout without migration; that is not a defect and needs no compatibility code.
 - No auth, loopback bind only. A non-loopback bind needs an explicit flag.
 - Claude subscription traffic stays on the real `claude` binary. The proxy never holds a subscription token or talks upstream with one.

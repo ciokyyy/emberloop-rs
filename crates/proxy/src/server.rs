@@ -55,6 +55,8 @@ pub struct ProxyConfig {
     pub opencode_upstream: String,
     /// Replaces every key provider's origin on `x/<id>/…` routes; tests point it at a fake.
     pub provider_origin: Option<String>,
+    /// The `execute` tool can reach the code graph, so the skill is worth the tokens.
+    pub codebase_memory: bool,
 }
 
 impl ProxyConfig {
@@ -64,6 +66,7 @@ impl ProxyConfig {
             token_secret: token_secret.into(),
             opencode_upstream: DEFAULT_OPENCODE_UPSTREAM.to_string(),
             provider_origin: None,
+            codebase_memory: false,
         }
     }
 
@@ -83,6 +86,11 @@ impl ProxyConfig {
 impl ProxyConfig {
     pub fn with_provider_origin(mut self, origin: impl Into<String>) -> Self {
         self.provider_origin = Some(origin.into());
+        self
+    }
+
+    pub fn with_codebase_memory(mut self, codebase_memory: bool) -> Self {
+        self.codebase_memory = codebase_memory;
         self
     }
 }
@@ -113,6 +121,8 @@ pub enum ProxyError {
     Timeout,
     #[error("splice store: {0}")]
     Splice(#[from] std::io::Error),
+    #[error("compression store: {0}")]
+    Compression(String),
     #[error("lock poisoned")]
     Lock,
 }
@@ -152,19 +162,21 @@ impl SessionRuntime {
         pins: PinnedPrompts,
         spill_dir: std::path::PathBuf,
         splices_file: std::path::PathBuf,
-    ) -> Self {
+    ) -> Result<Self, ProxyError> {
         let nudge_file = splices_file.with_file_name("nudge.json");
         let ctx_file = splices_file.with_file_name("ctx.jsonl");
         let ctx = CtxStore::open(&spill_dir, ctx_file);
-        Self {
+        Ok(Self {
             pins,
             nudge: Mutex::new(nudge::load(&nudge_file)),
             nudge_file,
             splices: Mutex::new(SpliceStore::open(splices_file)),
             ctx: Mutex::new(ctx),
-            compressor: Mutex::new(Box::new(NativeCompressor::new(spill_dir))),
+            compressor: Mutex::new(Box::new(
+                NativeCompressor::new(spill_dir).map_err(ProxyError::Compression)?,
+            )),
             last_input_tokens: AtomicU64::new(0),
-        }
+        })
     }
 
     /// A compress or a conversation restart closes the first-nudge gate (ticket 20).
@@ -216,9 +228,18 @@ impl ProxyState {
     /// compressed blocks stored for the old one no longer fit its history.
     pub async fn reset_history(&self, session_id: &str) -> Result<(), ProxyError> {
         let runtime = self.runtime(session_id).await?;
-        lock(&runtime.splices)?.reset()?;
         let spill = self.inner.data_root.session_spill_dir(session_id);
-        *lock(&runtime.compressor)? = Box::new(NativeCompressor::new(spill));
+        let mut compressor = lock(&runtime.compressor)?;
+        let blocks = spill.join("blocks");
+        if blocks.exists() {
+            let mut generation = 1;
+            while spill.join(format!("blocks-reset-{generation}")).exists() {
+                generation += 1;
+            }
+            std::fs::rename(&blocks, spill.join(format!("blocks-reset-{generation}")))?;
+        }
+        *compressor = Box::new(NativeCompressor::new(spill).map_err(ProxyError::Compression)?);
+        lock(&runtime.splices)?.reset()?;
         runtime.close_nudge_gate()?;
         Ok(())
     }
@@ -259,7 +280,7 @@ impl ProxyState {
         }
         let spill = self.inner.data_root.session_spill_dir(session_id);
         let splices = self.inner.data_root.session_splices_file(session_id);
-        let runtime = Arc::new(SessionRuntime::new(pins, spill, splices));
+        let runtime = Arc::new(SessionRuntime::new(pins, spill, splices)?);
 
         let mut runtimes = self.inner.runtimes.write().map_err(|_| ProxyError::Lock)?;
         Ok(runtimes
@@ -427,7 +448,14 @@ async fn handle_generation(
     let injected = inject_steer(&runtime, wire, &mut request, &queue).await;
     let window = context_window(state, session_id).await;
     let settings = state.inner.settings.read().await.clone();
-    let outcome = prepare_request(&runtime, wire, &mut request, window, &settings)?;
+    let outcome = prepare_request(
+        &runtime,
+        wire,
+        &mut request,
+        window,
+        &settings,
+        state.inner.config.codebase_memory,
+    )?;
     publish_prepare_events(&state.inner.events, session_id, outcome);
     dump_request(session_id, "out", &request);
     let url = upstream_url(base, path, query);
@@ -578,13 +606,14 @@ fn prepare_request(
     request: &mut Value,
     window: usize,
     settings: &Settings,
+    codebase_memory: bool,
 ) -> Result<PrepareOutcome, ProxyError> {
     let request = request_body_mut(request);
 
     if settings.proxy_compression && settings.inject_tool {
         inject_tools_for_wire(wire, request, &runtime.pins);
     }
-    inject_prompts_for_wire(wire, request, &runtime.pins);
+    inject_prompts_for_wire(wire, request, &runtime.pins, codebase_memory);
     let Some(mut contents) = extract_core_contents(wire, request) else {
         return Ok(PrepareOutcome {
             nudge: None,
@@ -1561,6 +1590,7 @@ fn error_response(error: &ProxyError) -> Response<Body> {
         | ProxyError::ToolRoundLimit
         | ProxyError::Timeout
         | ProxyError::Splice(_)
+        | ProxyError::Compression(_)
         | ProxyError::Lock => StatusCode::BAD_GATEWAY,
         ProxyError::Upstream(_) => StatusCode::BAD_GATEWAY,
     };

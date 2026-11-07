@@ -54,7 +54,7 @@ pub async fn read_url(
     let (body, content_type, tier, notes) = match fetch_direct(&client, &normalized, raw_mode).await
     {
         Ok(res) => res,
-        Err(direct_err) => fetch_jina(&client, &normalized)
+        Err(direct_err) => fetch_jina(toolbox, &client, &normalized)
             .await
             .map_err(|_| direct_err)?,
     };
@@ -165,6 +165,7 @@ async fn fetch_direct(
 }
 
 async fn fetch_jina(
+    toolbox: &Toolbox,
     client: &reqwest::Client,
     url: &str,
 ) -> ToolResult<(String, String, &'static str, Vec<String>)> {
@@ -179,9 +180,7 @@ async fn fetch_jina(
     };
     let mut req = client.get(&jina_url);
     let mut notes = Vec::new();
-    let jina_key = std::env::var("JINA_API_KEY")
-        .ok()
-        .filter(|k| !k.trim().is_empty());
+    let jina_key = toolbox.tool_key("JINA_API_KEY");
     if let Some(key) = jina_key {
         req = req.bearer_auth(key.trim());
     } else {

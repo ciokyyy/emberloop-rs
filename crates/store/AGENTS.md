@@ -10,6 +10,7 @@ Filesystem persistence and storage layer:
 - `BlobStore`: content-addressed blobs, one file per sha256
 - `EventCoalescer` and `CoalescedWriter`: assistant-text buffer and one-event writes
 - `ArchivalSweeper`: active -> archived -> restored lifecycle
+- `tool_keys`: the JSON file Settings writes tool keys into (`{ "BRAVE_API_KEY": "…" }`); `NAMES`/`variable` map the three Settings names to their stored names, `set` stores or removes one key, files are written atomically with 0600 because they hold keys.
 
 ## Event log
 

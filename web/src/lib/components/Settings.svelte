@@ -1,8 +1,11 @@
 <script lang="ts">
-  import type { Model, Settings } from '$lib/api/types';
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api';
+  import type { Model, Settings, ToolKey } from '$lib/api/types';
   import { rise } from '$lib/motion';
   import ModelPicker from './ModelPicker.svelte';
   import Prompts from './Prompts.svelte';
+  import Button from './ui/button.svelte';
   import Switch from './ui/switch.svelte';
 
   let {
@@ -16,6 +19,38 @@
     saving?: boolean;
     onsave: (settings: Settings) => void;
   } = $props();
+
+  // Tool keys live in the runtime env file the tool shells source, so a saved key applies to the
+  // next command with no restart. The API never returns a stored value, only whether one is set.
+  let toolKeys = $state<ToolKey[]>([]);
+  let drafts = $state<Record<string, string>>({});
+  let toolError = $state('');
+  let toolSaving = $state('');
+  onMount(() => void loadToolKeys());
+
+  async function loadToolKeys() {
+    try {
+      toolKeys = await api.listToolKeys();
+      toolError = '';
+    } catch (cause) {
+      toolError = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
+  async function saveToolKey(name: string) {
+    toolSaving = name;
+    try {
+      await api.setToolKey(name, drafts[name] ?? '');
+      drafts = { ...drafts, [name]: '' };
+      await loadToolKeys();
+    } catch (cause) {
+      toolError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      toolSaving = '';
+    }
+  }
+
+  const labels: Record<string, string> = { brave: 'Brave search', exa: 'Exa search', jina: 'Jina reader' };
 
   const levels = ['off', 'lite', 'full', 'ultra'];
   const subagents = [
@@ -33,6 +68,36 @@
         {#if saving}<span class="text-fg-3"> Saving…</span>{/if}
       </p>
     </div>
+
+    <section class="flex flex-col gap-3">
+      <h3 class="text-[1.0625rem] font-semibold">Tool keys</h3>
+      <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
+        <p class="text-[13px] text-fg-3">
+          Saved here, not exported in a shell: the tool shells read them from the runtime env file
+          on their next command. An empty value removes a key.
+        </p>
+        {#each toolKeys as key (key.name)}
+          <div class="flex items-end gap-2">
+            <label class="flex min-w-0 flex-1 flex-col gap-1 text-[12px] text-fg-3">
+              {labels[key.name] ?? key.name} <span class="font-mono text-fg-4">{key.variable}</span>
+              ({key.set ? 'set' : 'not set'})
+              <input
+                class="field"
+                type="password"
+                autocomplete="off"
+                placeholder={key.set ? 'Replace saved key' : 'Paste key'}
+                bind:value={drafts[key.name]}
+              />
+            </label>
+            <Button
+              disabled={toolSaving === key.name || !(drafts[key.name] ?? '').trim()}
+              onclick={() => void saveToolKey(key.name)}
+            >Save</Button>
+          </div>
+        {/each}
+        {#if toolError}<p class="text-[13px] text-status-failed">{toolError}</p>{/if}
+      </div>
+    </section>
 
     <section class="flex flex-col gap-3">
       <h3 class="text-[1.0625rem] font-semibold">Session titles</h3>

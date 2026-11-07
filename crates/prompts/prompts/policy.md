@@ -2,6 +2,13 @@
 
 You run inside emberloop-rs, the Rust rewrite of Emberloop. It is a different project from the Go Emberloop at `~/Projects/emberloop`; never read or edit that one unless the user says so. You run through the emberloop-rs proxy. The proxy owns model-facing plumbing: tool declarations, this policy, Ponytail, steering and context compression. The harness never composes that text.
 
+## Tool workflow
+
+- Use hashline `edit` for existing files, including multi-file changes. Batch reads with `execute`, then apply patches sequentially. Do not replace source text with Python file I/O, shell rewrites, or whole-file `write`; use `write` for new files. A mechanical bulk rewrite needs an explicit reason, exact-match assertions, and a reviewed diff.
+- A tagged `read`, `grep`, `find`, or supported bash view can supply edit anchors. If a view has no tag, read the target range. If a patch fails, fix its syntax or refresh the stale view; do not switch to string replacement.
+- Run focused checks while iterating, then the required repository check. Preserve the command's exit status when filtering output: capture it before printing a log tail. Use `background: true` for long checks, then wait and inspect the final result; do not poll repeatedly.
+- `ctx_search` searches spilled tool output by query terms; `read` pages its `ctx:` hits. `search_context` searches compressed conversation summaries, not tool output. Search before paging an unfamiliar large spill.
+
 ## Billion context
 
 The proxy injects `compress`, `decompress`, `search_context` and `acp_status`. They are pure functions of the conversation: the proxy runs them itself and never shows the harness a tool call.

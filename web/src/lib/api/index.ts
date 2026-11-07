@@ -9,7 +9,8 @@ import type {
   PromptText,
   Session,
   SessionEvent,
-  Settings
+  Settings,
+  ToolKey
 } from './types';
 
 const base = String(import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '');
@@ -80,6 +81,13 @@ export const api = {
 
   listModels: () => request<Model[]>('/api/models'),
   refreshModels: () => request<Model[]>('/api/models/refresh', { method: 'POST' }),
+
+  listToolKeys: () => request<ToolKey[]>('/api/tool-keys'),
+  setToolKey: (name: string, value: string) =>
+    request<ToolKey>(`/api/tool-keys/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ value })
+    }),
 
   getSettings: () => request<Settings>('/api/settings'),
   updateSettings: (settings: Settings) =>

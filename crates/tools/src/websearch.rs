@@ -82,8 +82,10 @@ pub async fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| ToolError::msg(format!("http client: {e}")))?;
-    let (items, answered_by, notes) =
-        execute_providers(&client, &query, count, &freshness, &domains, &provider).await?;
+    let (items, answered_by, notes) = execute_providers(
+        toolbox, &client, &query, count, &freshness, &domains, &provider,
+    )
+    .await?;
     let rendered = render_results(&query, &items, &answered_by, &notes);
     let _ = fs::create_dir_all(toolbox.spill_dir());
     let _ = fs::write(&cache_path, &rendered);
@@ -91,6 +93,7 @@ pub async fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
 }
 
 async fn execute_providers(
+    toolbox: &Toolbox,
     client: &reqwest::Client,
     query: &str,
     count: usize,
@@ -108,7 +111,7 @@ async fn execute_providers(
     for name in chain {
         match name {
             "brave" => {
-                let key = std::env::var("BRAVE_API_KEY").unwrap_or_default();
+                let key = toolbox.tool_key("BRAVE_API_KEY").unwrap_or_default();
                 if key.trim().is_empty() {
                     if provider == "brave" {
                         return Err(ToolError::msg("BRAVE_API_KEY is not set"));
@@ -128,7 +131,7 @@ async fn execute_providers(
                 }
             }
             "exa" => {
-                let key = std::env::var("EXA_API_KEY").unwrap_or_default();
+                let key = toolbox.tool_key("EXA_API_KEY").unwrap_or_default();
                 if key.trim().is_empty() {
                     if provider == "exa" {
                         return Err(ToolError::msg("EXA_API_KEY is not set"));

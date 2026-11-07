@@ -7,9 +7,12 @@ pub mod edit;
 pub mod execute;
 pub mod find;
 pub mod git;
+pub mod graph;
 pub mod grep;
+pub mod intercept;
 pub mod jail;
 pub mod mcp;
+pub mod mcpclient;
 pub mod overflow;
 pub mod read;
 pub mod readurl;
@@ -26,6 +29,7 @@ use serde_json::Value;
 
 pub use jail::ProjectJail;
 pub use mcp::McpServer;
+pub use mcpclient::McpTool;
 pub use overflow::OverflowStore;
 pub use seen::SeenLines;
 
@@ -57,8 +61,14 @@ pub struct ToolConfig {
     pub max_read_bytes: usize,
     /// Foreground `bash` output is truncated at this many bytes.
     pub max_output_bytes: usize,
+    /// Sourced by every shell, so a new `PATH` entry applies to the next command without a
+    /// rebuild or a daemon restart. Tool keys do not live here.
+    pub env_file: Option<PathBuf>,
+    /// The JSON file Settings writes tool keys into; the tools read it on every call.
+    pub tool_keys_file: Option<PathBuf>,
+    /// `<config root>/mcp.json`: the stdio MCP servers `execute` can reach.
+    pub mcp_file: Option<PathBuf>,
 }
-
 impl ToolConfig {
     pub fn new(root: impl Into<PathBuf>, spill_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -67,8 +77,21 @@ impl ToolConfig {
             overflow_threshold: 10 * 1024,
             max_read_bytes: 2 * 1024 * 1024,
             max_output_bytes: 1024 * 1024,
+            env_file: default_env_file(),
+            tool_keys_file: None,
+            mcp_file: None,
         }
     }
+}
+
+/// `$XDG_CONFIG_HOME/emberloop-rs/env`, or `~/.config/emberloop-rs/env`: the User's runtime
+/// environment. The daemon names `<config root>/env` explicitly, because a Session's `HOME` is a
+/// harness pi-home.
+fn default_env_file() -> Option<PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(config.join("emberloop-rs").join("env"))
 }
 
 #[derive(Clone)]
@@ -78,6 +101,7 @@ pub struct Toolbox {
     seen: Arc<SeenLines>,
     overflow: Arc<OverflowStore>,
     background: Arc<background::BackgroundManager>,
+    mcp: Arc<mcpclient::McpRegistry>,
 }
 impl Toolbox {
     pub fn new(config: ToolConfig) -> io::Result<Self> {
@@ -92,12 +116,17 @@ impl Toolbox {
         ));
         let jail = ProjectJail::new(&config.root)?;
         let background = Arc::new(background::BackgroundManager::new(spill_dir, &config.root));
+        let mcp = Arc::new(mcpclient::McpRegistry::load(
+            &config.root,
+            config.mcp_file.as_deref(),
+        ));
         Ok(Self {
             background,
             config,
             jail,
             seen: Arc::new(SeenLines::open(seen_dir)),
             overflow,
+            mcp,
         })
     }
 
@@ -149,6 +178,32 @@ impl Toolbox {
         self.config.max_read_bytes
     }
 
+    /// tool_key reads a stored tool key from the file Settings writes, so a key saved in the UI
+    /// reaches the next tool call without a shell, an export or a restart.
+    pub fn tool_key(&self, variable: &str) -> Option<String> {
+        let path = self.config.tool_keys_file.as_ref()?;
+        let bytes = std::fs::read(path).ok()?;
+        let keys: std::collections::BTreeMap<String, String> =
+            serde_json::from_slice(&bytes).ok()?;
+        keys.get(variable)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    /// The MCP tools `execute` exposes; connects the servers on first use.
+    pub async fn mcp_tools(&self) -> ToolResult<Vec<McpTool>> {
+        self.mcp.tools().await
+    }
+
+    /// The shell prelude that loads the runtime env file; empty when there is none.
+    pub fn env_prelude(&self) -> String {
+        let Some(path) = &self.config.env_file else {
+            return String::new();
+        };
+        let path = path.display().to_string().replace('\'', "'\\''");
+        format!("[ -f '{path}' ] && . '{path}'\n")
+    }
+
     pub fn max_output_bytes(&self) -> usize {
         self.config.max_output_bytes
     }
@@ -184,6 +239,7 @@ impl Toolbox {
             "bash" => bash::run(self, args).await,
             "background" => self.background.run(args).await,
             "websearch" => websearch::run(self, args).await,
+            other if other.contains('.') => self.mcp.call(other, args).await,
             other => Err(ToolError::msg(format!("unknown tool {other:?}"))),
         }
     }

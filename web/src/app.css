@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 /* Dark-only tokens from the approved mock and the Go app's app.css. */
 @theme inline {
@@ -17,6 +18,16 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-sidebar: var(--sidebar);
+
+  /* shadcn-svelte component tokens, pointed at the dark palette above. */
+  --color-background: var(--surface-0);
+  --color-foreground: var(--fg-1);
+  --color-popover: var(--surface-1);
+  --color-popover-foreground: var(--fg-1);
+  --color-accent: var(--surface-3);
+  --color-accent-foreground: var(--fg-1);
+  --color-muted-foreground: var(--fg-3);
+  --color-destructive: var(--status-failed);
 
   --color-status-working: var(--status-working);
   --color-status-needs: var(--status-needs);
@@ -124,6 +135,17 @@
 
   .sel {
     background: var(--surface-3);
+  }
+
+  /* A folded Session title slides to its tail and back while its row is hovered or selected. */
+  .marquee {
+    animation: marquee-x var(--marquee-dur, 6s) ease-in-out infinite alternate;
+    animation-play-state: paused;
+  }
+
+  .row:hover .marquee,
+  .sel .marquee {
+    animation-play-state: running;
   }
 
   .icon-btn {
@@ -478,6 +500,21 @@
   opacity: 0.7;
   user-select: none;
 }
+@keyframes marquee-x {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(var(--marquee-shift, 0px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee {
+    animation: none;
+  }
+}
+
 .running-dot {
   animation: running-dot 900ms infinite ease-in-out;
 }

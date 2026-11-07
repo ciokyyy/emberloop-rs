@@ -10,7 +10,7 @@
 // and from MCP servers, so family() normalizes both to one vocabulary before
 // anything is read from the input JSON. Free of Svelte, so the tests pin it.
 export const CHIP_LIMIT = 3;
-export const FEED_TAIL_LINES = 60;
+const FEED_TAIL_LINES = 60;
 
 // One row per family; both spellings land on the same entry, so a pig Session
 // and a Claude Session render a shell call the same way.
@@ -98,7 +98,7 @@ export function family(name: any = '', input: any = '') {
 // toolInput parses the arguments a tool was called with. Harnesses send JSON;
 // anything that does not parse is kept as the raw text so a plain command
 // string still has somewhere to come from.
-export function toolInput(input: any = '') {
+function toolInput(input: any = '') {
   const text = String(input ?? '').trim();
   if (!text) return { json: null, raw: '' };
   try {
@@ -415,7 +415,7 @@ export function resultMeta({ name = '', status = '', output = '', elapsedMs = 0 
 // looksDiff tells a unified diff from a file the agent just wrote: a real diff
 // carries hunk headers and signed lines, while the result of a write is the
 // file itself (numbered, since el hands back the lines it changed).
-export function looksDiff(text: any = '') {
+function looksDiff(text: any = '') {
   const body = String(text ?? '');
   if (/^(?:diff --git |@@ )/m.test(body)) return true;
   return /^\+/m.test(body) && /^-/m.test(body);
@@ -423,7 +423,7 @@ export function looksDiff(text: any = '') {
 
 // numberedSource tells a result that is a file the tool printed with its own
 // line numbers ("  40→  const x = 1", the shape el and claude both use).
-export function numberedSource(text: any = '') {
+function numberedSource(text: any = '') {
   return /^\s*\d+\s*→/m.test(String(text ?? ''));
 }
 
@@ -478,7 +478,7 @@ export function executeCode(input: any = '') {
 
 // bashSingleFileView returns the single target file path if the bash run was classified
 // as a single-file read/view operation, otherwise empty string.
-export function bashSingleFileView(run: any = {}) {
+function bashSingleFileView(run: any = {}) {
   const kind = run?.display?.kind;
   if (kind !== 'read') return '';
   const parts = run?.display?.parts;

@@ -26,6 +26,7 @@ use rust_embed::RustEmbed;
 use store::{DataRoot, ProjectsStore, SessionsStore};
 use tools::{McpServer, ToolConfig, Toolbox};
 
+mod codegraph;
 pub mod codex;
 pub mod login;
 pub mod runner;
@@ -216,7 +217,11 @@ fn is_loopback(host: &str) -> bool {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "emberloop-daemon", version, about = "emberloop-rs daemon")]
+#[command(
+    name = "emberloop-daemon",
+    version = crate::update::VERSION,
+    about = "emberloop-rs daemon"
+)]
 pub struct Cli {
     #[arg(long)]
     pub port: Option<u16>,
@@ -257,6 +262,16 @@ pub enum Command {
         /// Point `current` at the release before it instead of fetching one.
         #[arg(long)]
         rollback: bool,
+        /// Install a binary already on this machine (a local build), one version up; the last
+        /// number steps by one unless `--major` is given.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Step the first number instead of the last: 0.0.12 becomes 1.0.0.
+        #[arg(long)]
+        major: bool,
+        /// Print the version the next release would carry, then exit.
+        #[arg(long)]
+        next_version: bool,
     },
 }
 
@@ -323,11 +338,14 @@ impl Daemon {
             Arc::clone(&events),
             Arc::clone(&prompts),
         )
-        .with_models(models);
+        .with_models(models)
+        .with_tool_keys_file(config.config_root.join("tool-keys.json"));
         app_state.models.spawn_refresher();
 
         let updated = announce_update(&app_state, &events, &data_root).await;
-        let mut proxy_config = ProxyConfig::new(random_secret());
+        let codebase_memory = codegraph::ensure(&config.config_root);
+        let mut proxy_config =
+            ProxyConfig::new(random_secret()).with_codebase_memory(codebase_memory);
         if let Some(upstream) = &config.upstream {
             proxy_config = proxy_config.with_upstream(upstream.clone());
         }
@@ -380,7 +398,8 @@ impl Daemon {
                 Arc::clone(&events),
                 keys_file,
                 pi_auth,
-            )),
+            ))
+            .with_config_root(config.config_root.clone()),
         );
         let resume = updated.and_then(|pending| {
             let session = pending.session.clone()?;
@@ -444,10 +463,10 @@ impl Daemon {
         let Some(project) = self.projects.get(&meta.project_id).await else {
             return Ok(None);
         };
-        let toolbox = Toolbox::new(ToolConfig::new(
-            project.root,
-            self.data_root.session_spill_dir(session_id),
-        ))?;
+        let toolbox = Toolbox::new(ToolConfig {
+            mcp_file: Some(self.config.config_root.join("mcp.json")),
+            ..ToolConfig::new(project.root, self.data_root.session_spill_dir(session_id))
+        })?;
         toolbox.flush_notices().await?;
         Ok(Some(toolbox))
     }
@@ -477,6 +496,8 @@ impl Daemon {
         let mcp_command = daemon_exe().map(|exe| {
             vec![
                 exe.display().to_string(),
+                "--config-root".to_string(),
+                self.config.config_root.display().to_string(),
                 "mcp".to_string(),
                 "--root".to_string(),
                 project.root.display().to_string(),
@@ -578,7 +599,15 @@ pub fn tool_descriptions(prompts: &PromptStore) -> HashMap<String, String> {
 
 pub async fn run_mcp(root: PathBuf, spill: PathBuf, config_root: PathBuf) -> anyhow::Result<()> {
     let descriptions = tool_descriptions(&PromptStore::new(config_root.join("prompts")));
-    let toolbox = Toolbox::new(ToolConfig::new(root, spill))?;
+    // The Session's HOME is a harness pi-home, so the runtime env file and the tool keys hang off
+    // the config root instead.
+    let config = ToolConfig {
+        env_file: Some(config_root.join("env")),
+        tool_keys_file: Some(config_root.join("tool-keys.json")),
+        mcp_file: Some(config_root.join("mcp.json")),
+        ..ToolConfig::new(root, spill)
+    };
+    let toolbox = Toolbox::new(config)?;
     toolbox.flush_notices().await?;
     Arc::new(McpServer::new(Arc::new(toolbox)).with_descriptions(descriptions))
         .serve_stdio()
@@ -733,18 +762,38 @@ pub struct UpdateRequest {
     pub check: bool,
     pub rollback: bool,
     pub data_root: PathBuf,
+    pub file: Option<PathBuf>,
+    pub major: bool,
+    pub next_version: bool,
 }
 
 /// run_update installs the newest release under `releases/` and switches `current` to it. Inside
 /// a Session it only queues the request and tells the model to go idle: the daemon installs,
 /// restarts and re-prompts that Session once nothing is running.
 pub async fn run_update(request: UpdateRequest) -> anyhow::Result<()> {
-    let root = update::install_root();
+    let inside = update::in_session(
+        std::env::var_os("EMBERLOOP_SESSION_DIR")
+            .map(PathBuf::from)
+            .as_deref(),
+    );
+    // Inside a Session `HOME` is a harness pi-home, so the Session's data root is the install root.
+    let root = inside
+        .as_ref()
+        .map(|found| found.data_root.clone())
+        .unwrap_or_else(update::install_root);
     let launcher = update::launcher_path();
+    if request.next_version {
+        let base = update::current_version(&root).unwrap_or_else(|| update::VERSION.to_string());
+        println!("{}", update::next_version(&base, request.major));
+        return Ok(());
+    }
     if request.rollback {
         let version = update::rollback(&root)?;
         println!("rolled back to {version}; restart the daemon to run it");
         return Ok(());
+    }
+    if let Some(file) = &request.file {
+        return install_local_update(&request, &root, &launcher, file, inside.as_ref());
     }
     let latest = update::fetch(&request.manifest_url).await?;
     if !update::is_newer(&latest.version, update::VERSION) {
@@ -767,15 +816,11 @@ pub async fn run_update(request: UpdateRequest) -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    let inside = update::in_session(
-        std::env::var_os("EMBERLOOP_SESSION_DIR")
-            .map(PathBuf::from)
-            .as_deref(),
-    );
     if let Some(found) = &inside {
         let queued = update::InstallRequest {
             to: latest.version.clone(),
-            artifact: artifact.clone(),
+            artifact: Some(artifact.clone()),
+            file: None,
             session: request.session.or(Some(found.id.clone())),
         };
         update::write_request(&found.data_root, &queued)?;
@@ -801,6 +846,47 @@ pub async fn run_update(request: UpdateRequest) -> anyhow::Result<()> {
         "{}",
         update::installed_message(update::VERSION, &latest.version, false)
     );
+    Ok(())
+}
+
+/// install_local_update queues a local build for the idle daemon, or installs it now outside a
+/// Session. No manifest and no download: the version steps forward on its own.
+fn install_local_update(
+    request: &UpdateRequest,
+    root: &std::path::Path,
+    launcher: &std::path::Path,
+    file: &std::path::Path,
+    inside: Option<&update::InSession>,
+) -> anyhow::Result<()> {
+    // The build names its own version (`EMBERLOOP_BUILD_VERSION`), so the release matches the
+    // binary instead of the other way round.
+    let base = update::current_version(root).unwrap_or_else(|| update::VERSION.to_string());
+    let version = update::binary_version(file)?;
+    if let Some(found) = inside {
+        update::write_request(
+            &found.data_root,
+            &update::InstallRequest {
+                to: version.clone(),
+                artifact: None,
+                file: Some(update::absolute(file)?),
+                session: request.session.clone().or(Some(found.id.clone())),
+            },
+        )?;
+        println!("{}", update::installed_message(&base, &version, true));
+        return Ok(());
+    }
+    update::install_local(file, &version, root)?;
+    update::activate(root, &version)?;
+    update::link_launcher(launcher, root)?;
+    update::write_pending(
+        &request.data_root,
+        &update::PendingUpdate {
+            from: update::VERSION.to_string(),
+            to: version.clone(),
+            session: request.session.clone(),
+        },
+    )?;
+    println!("{}", update::installed_message(&base, &version, false));
     Ok(())
 }
 

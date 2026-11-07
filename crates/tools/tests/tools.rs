@@ -732,3 +732,150 @@ fn ctx_search_finds_spilled_output() {
     let found = call(&fixture, "ctx_search", json!({"queries": ["needle"]})).expect("search");
     assert!(found.contains("needle sits here"), "{found}");
 }
+
+fn fixture_with_env_file(content: &str) -> Fixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("project");
+    fs::create_dir(&root).expect("project root");
+    let spill = dir.path().join("spill");
+    let env_file = dir.path().join("env");
+    fs::write(&env_file, content).expect("env file");
+    let config = ToolConfig {
+        env_file: Some(env_file),
+        ..ToolConfig::new(&root, spill)
+    };
+    let toolbox = Arc::new(Toolbox::new(config).expect("toolbox"));
+    Fixture {
+        _dir: dir,
+        root,
+        toolbox,
+    }
+}
+
+#[test]
+fn a_saved_tool_key_reaches_the_tool_without_any_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let root_dir = dir.path().join("project");
+    fs::create_dir(&root_dir).expect("project root");
+    let keys = dir.path().join("tool-keys.json");
+    fs::write(&keys, r#"{"EXA_API_KEY":"from-file"}"#).expect("keys file");
+    let config = ToolConfig {
+        tool_keys_file: Some(keys),
+        ..ToolConfig::new(&root_dir, dir.path().join("spill"))
+    };
+    let toolbox = Toolbox::new(config).expect("toolbox");
+    assert_eq!(
+        toolbox.tool_key("EXA_API_KEY"),
+        Some("from-file".to_string())
+    );
+    assert_eq!(toolbox.tool_key("BRAVE_API_KEY"), None);
+}
+
+#[test]
+fn bash_loads_the_runtime_env_file_on_every_command() {
+    let fixture = fixture_with_env_file("export EMBERLOOP_TEST_TOKEN=abc\n");
+    let output = call(
+        &fixture,
+        "bash",
+        json!({"command": "printf %s \"$EMBERLOOP_TEST_TOKEN\""}),
+    )
+    .expect("bash env");
+    assert!(output.contains("abc"), "{output}");
+}
+
+#[test]
+fn background_loads_the_runtime_env_file_too() {
+    let fixture = fixture_with_env_file("export EMBERLOOP_TEST_TOKEN=abc\n");
+    let started = call(
+        &fixture,
+        "bash",
+        json!({"command": "printf %s \"$EMBERLOOP_TEST_TOKEN\"", "background": true}),
+    )
+    .expect("background env");
+    assert!(started.contains("abc"), "{started}");
+}
+
+#[test]
+fn bash_routes_python_to_execute() {
+    let fixture = setup();
+    let error = call(
+        &fixture,
+        "bash",
+        json!({"command": "python3 -c 'print(1)'"}),
+    )
+    .expect_err("python -c");
+    assert!(error.to_string().contains("Blocked:"), "{error}");
+    assert!(error.to_string().contains("execute tool"), "{error}");
+    let heredoc = call(
+        &fixture,
+        "bash",
+        json!({"command": "python3 <<'PY'\nprint(1)\nPY"}),
+    )
+    .expect_err("python heredoc");
+    assert!(heredoc.to_string().contains("execute tool"), "{heredoc}");
+}
+
+#[test]
+fn bash_leaves_ordinary_python_runs_alone() {
+    let fixture = setup();
+    let output =
+        call(&fixture, "bash", json!({"command": "python3 --version"})).expect("python version");
+    assert!(output.contains("Python"), "{output}");
+}
+
+#[test]
+fn bash_routes_in_place_editors_to_edit() {
+    let fixture = setup();
+    write(&fixture, "notes.txt", "one\n");
+    for command in [
+        "sed -i 's/one/two/' notes.txt",
+        "perl -pi -e 's/one/two/' notes.txt",
+        "awk -i inplace '{print}' notes.txt",
+    ] {
+        let error = call(&fixture, "bash", json!({"command": command})).expect_err(command);
+        assert!(
+            error.to_string().contains("edit tool"),
+            "{command}: {error}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("notes.txt")).unwrap(),
+        "one\n"
+    );
+}
+
+#[test]
+fn bash_routes_file_writes_to_write_and_leaves_quoted_arrows_alone() {
+    let fixture = setup();
+    let error =
+        call(&fixture, "bash", json!({"command": "echo hi > out.txt"})).expect_err("redirect");
+    assert!(error.to_string().contains("write tool"), "{error}");
+    assert!(!fixture.root.join("out.txt").exists());
+    let error = call(
+        &fixture,
+        "bash",
+        json!({"command": "echo hi | tee out.txt"}),
+    )
+    .expect_err("tee");
+    assert!(error.to_string().contains("write tool"), "{error}");
+    let output = call(
+        &fixture,
+        "bash",
+        json!({"command": "echo 'a -> b'; ls missing 2>/dev/null; true"}),
+    )
+    .expect("quoted arrow");
+    assert!(output.contains("a -> b"), "{output}");
+}
+
+#[test]
+fn bash_routes_long_running_commands_to_background() {
+    let fixture = setup();
+    for command in ["nohup sleep 1", "sleep 5 &"] {
+        let error = call(&fixture, "bash", json!({"command": command})).expect_err(command);
+        assert!(
+            error.to_string().contains("background tool"),
+            "{command}: {error}"
+        );
+    }
+    call(&fixture, "bash", json!({"command": "true && true"})).expect("plain chain");
+}

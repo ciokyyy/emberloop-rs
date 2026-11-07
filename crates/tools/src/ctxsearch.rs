@@ -25,7 +25,7 @@ struct Hit {
     handle: String,
     start: usize,
     end: usize,
-    score: usize,
+    score: f64,
     snippet: String,
 }
 
@@ -93,49 +93,87 @@ fn blobs(toolbox: &Toolbox, only: Option<&str>) -> Vec<(String, String)> {
     blobs
 }
 
-/// Chunks scored by how often query terms occur; best `limit` chunks, each as a window around the best line.
+// shortcut: no Porter stemming or persistent index; use FTS5 when per-call spill scans become too slow.
+fn tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// BM25 over spill chunks, with OR semantics for query terms, as in Go's FTS5 search.
 fn search(blobs: &[(String, String)], query: &str, limit: usize) -> Vec<Hit> {
-    let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let mut terms = tokens(query);
+    terms.sort();
+    terms.dedup();
     if terms.is_empty() {
         return Vec::new();
     }
-    let mut hits = Vec::new();
+    let mut chunks = Vec::new();
     for (handle, text) in blobs {
         let lines: Vec<&str> = text.lines().collect();
         for (chunk, group) in lines.chunks(CHUNK_LINES).enumerate() {
             let base = chunk * CHUNK_LINES;
-            let scores: Vec<usize> = group
-                .iter()
-                .map(|line| {
-                    let line = line.to_lowercase();
-                    terms
-                        .iter()
-                        .filter(|term| line.contains(term.as_str()))
-                        .count()
-                })
-                .collect();
-            let score: usize = scores.iter().sum();
-            if score == 0 {
-                continue;
-            }
-            let best = scores
+            let best = group
                 .iter()
                 .enumerate()
-                .max_by_key(|(i, s)| (**s, usize::MAX - i))
+                .max_by_key(|(i, line)| {
+                    let words = tokens(line);
+                    (
+                        terms.iter().filter(|term| words.contains(term)).count(),
+                        usize::MAX - i,
+                    )
+                })
                 .map_or(0, |(i, _)| i)
                 + base;
             let start = best.saturating_sub(CONTEXT_LINES);
             let end = (best + CONTEXT_LINES + 1).min(lines.len());
-            hits.push(Hit {
-                handle: handle.clone(),
-                start: start + 1,
-                end,
-                score,
-                snippet: lines[start..end].join(" ⏎ "),
-            });
+            chunks.push((
+                Hit {
+                    handle: handle.clone(),
+                    start: start + 1,
+                    end,
+                    score: 0.0,
+                    snippet: lines[start..end].join(" ⏎ "),
+                },
+                tokens(&group.join("\n")),
+            ));
         }
     }
-    hits.sort_by_key(|hit| std::cmp::Reverse(hit.score));
+    let count = chunks.len() as f64;
+    if count == 0.0 {
+        return Vec::new();
+    }
+    let average =
+        (chunks.iter().map(|(_, words)| words.len()).sum::<usize>() as f64 / count).max(1.0);
+    let weights: Vec<f64> = terms
+        .iter()
+        .map(|term| {
+            let frequency = chunks
+                .iter()
+                .filter(|(_, words)| words.contains(term))
+                .count() as f64;
+            ((count - frequency + 0.5) / (frequency + 0.5))
+                .ln()
+                .max(1e-6)
+        })
+        .collect();
+    let mut hits: Vec<Hit> = chunks
+        .into_iter()
+        .filter_map(|(mut hit, words)| {
+            let normalization = 1.2 * (0.25 + 0.75 * words.len() as f64 / average);
+            hit.score = terms
+                .iter()
+                .zip(&weights)
+                .map(|(term, weight)| {
+                    let frequency = words.iter().filter(|word| *word == term).count() as f64;
+                    weight * frequency * 2.2 / (frequency + normalization)
+                })
+                .sum();
+            (hit.score > 0.0).then_some(hit)
+        })
+        .collect();
+    hits.sort_by(|a, b| b.score.total_cmp(&a.score));
     hits.truncate(limit);
     hits
 }
@@ -155,6 +193,30 @@ mod tests {
             toolbox.overflow.write(spill).unwrap();
         }
         (dir, toolbox)
+    }
+
+    #[test]
+    fn bm25_ranks_rare_terms_above_repeated_common_terms() {
+        let blobs = vec![
+            ("spam".into(), "common\n".repeat(20)),
+            ("rare".into(), "common rare\n".into()),
+            ("other".into(), "common\n".into()),
+        ];
+        let hits = search(&blobs, "common rare", 3);
+        assert_eq!(hits[0].handle, "rare");
+        assert_eq!(hits.len(), 3);
+    }
+
+    #[test]
+    fn bm25_normalizes_length_and_tokenizes_query_punctuation() {
+        let blobs = vec![
+            ("long".into(), format!("needle {}", "noise ".repeat(1000))),
+            ("short".into(), "needle needle\n".into()),
+        ];
+        assert_eq!(search(&blobs, "needle", 1)[0].handle, "short");
+        assert_eq!(search(&blobs, "NEEDLE,", 1)[0].handle, "short");
+        assert!(search(&blobs, "need", 3).is_empty());
+        assert!(search(&blobs, "! : ()", 3).is_empty());
     }
 
     #[test]

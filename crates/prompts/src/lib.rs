@@ -21,6 +21,8 @@ use sha2::{Digest, Sha256};
 pub const PONYTAIL: &str = "ponytail";
 pub const CAVEMAN: &str = "caveman";
 pub const POLICY: &str = "policy";
+/// The `execute`-only code graph skill, injected when the graph server is up.
+pub const SKILL_CODEBASE_MEMORY: &str = "skill.codebase-memory";
 pub const COMPRESS: &str = "compress";
 pub const DECOMPRESS: &str = "decompress";
 pub const SEARCH_CONTEXT: &str = "search_context";
@@ -63,6 +65,7 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_WEBSEARCH,
     TOOL_EXECUTE,
     TOOL_TODO,
+    SKILL_CODEBASE_MEMORY,
     NUDGE_FIRST,
     NUDGE_PRESSURE,
     NUDGE_EMERGENCY,
@@ -101,6 +104,7 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_WEBSEARCH => defaults::TOOL_WEBSEARCH,
         TOOL_EXECUTE => defaults::TOOL_EXECUTE,
         TOOL_TODO => defaults::TOOL_TODO,
+        SKILL_CODEBASE_MEMORY => defaults::SKILL_CODEBASE_MEMORY,
         NUDGE_FIRST => defaults::NUDGE_FIRST,
         NUDGE_PRESSURE | NUDGE_EMERGENCY => defaults::NUDGE_PRESSURE,
         NUDGE_TIER2 => defaults::NUDGE_TIER2,

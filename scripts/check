@@ -71,19 +71,36 @@ run_stage clippy cargo clippy --workspace --all-targets -- -D warnings
 wait_stage
 
 echo "==> nextest"
-run_stage nextest bash -c 'cargo nextest run --workspace 2>&1 | tee target/nextest-tests.log'
+run_stage nextest bash -o pipefail -c 'cargo nextest run --workspace 2>&1 | tee target/nextest-tests.log'
 wait_stage
 
 echo "==> doc tests"
 run_stage doc cargo test --doc
 wait_stage
 
-echo "==> web"
-run_stage web bash -c 'cd web && npm ci && npx svelte-check --tsconfig ./tsconfig.json && npx fallow health --score --min-score 87.9 && npm test && npm run build'
-wait_stage
+# The web stage is the slowest (install, type-check, tests, build) and its whole input is one
+# directory tree, so an unchanged tree reuses the green run before it. The stamp is only written
+# after the stage passes, and a missing build always runs it, because the daemon embeds web/build.
+web_inputs() {
+    {
+        find web/src -type f
+        printf '%s\n' web/package.json web/bun.lock web/svelte.config.js web/vite.config.ts web/tsconfig.json
+    } | sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1
+}
+
+web_stamp=target/web-inputs.sha
+web_hash="$(web_inputs)"
+if [ "$(cat "$web_stamp" 2>/dev/null)" = "$web_hash" ] && [ -f web/build/index.html ]; then
+    echo "==> web unchanged (${web_hash:0:12}); skipped"
+else
+    echo "==> web"
+    run_stage web bash -c 'cd web && bun install --frozen-lockfile && bunx svelte-check --tsconfig ./tsconfig.json --incremental && bunx fallow health --score --min-score 87.9 && bun run test && bun run build'
+    wait_stage
+    printf '%s\n' "$web_hash" > "$web_stamp"
+fi
 
 echo "==> openapi"
-run_stage openapi bash -c 'cargo run -p api --bin dump_openapi && npm --prefix web run generate:api'
+run_stage openapi bash -c 'cargo run -p api --bin dump_openapi && cd web && bun run generate:api'
 wait_stage
 
 echo "==> generated files are committed"

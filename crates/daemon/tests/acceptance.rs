@@ -267,7 +267,7 @@ async fn acceptance_8_background_process_is_adopted_after_restart() {
     let (_, session_id) = project_and_session(&env.daemon, &root).await;
 
     let toolbox = env.daemon.toolbox_for(&session_id).await.unwrap().unwrap();
-    let started = toolbox.background().spawn("sleep 30").await.unwrap();
+    let started = toolbox.background().spawn("sleep 30", "").await.unwrap();
     let id = started
         .split_whitespace()
         .find(|word| word.starts_with("bg_"))
@@ -412,7 +412,8 @@ async fn harness_wiring_carries_a_signed_proxy_url_and_mcp_command() {
         .proxy_url
         .contains(&env.daemon.token_for(&session_id)));
     let command = wiring.mcp_command.unwrap();
-    assert_eq!(command.get(1).map(String::as_str), Some("mcp"));
+    assert!(command.iter().any(|arg| arg == "mcp"));
+    assert!(command.iter().any(|arg| arg == "--config-root"));
     assert!(command.iter().any(|arg| arg == "--root"));
     assert!(command.iter().any(|arg| arg == "--spill"));
 }

@@ -26,3 +26,9 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+# A scripted stdio MCP server, driven by env vars, for the client tests.
+[[bin]]
+name = "fake-mcp"
+path = "fake/fake_mcp.rs"
+test = false

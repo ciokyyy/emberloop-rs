@@ -9,10 +9,12 @@ Exposes axum REST API, SSE event endpoints and the model catalogue with utoipa O
 - `/api/sessions/:id/steer`: steer input queue
 - `/api/sessions/:id/cancel`: cancel current execution
 - `/api/sessions/:id/events`: SSE event stream with `?after=<seq>` replay. A first load (`?limit=N`, no cursor) sends the tail window, then one named `snapshot` frame (`{status, usage, todos}`: the newest status, usage (including the proxy breakdown) and todo-list event data, however old), so a long working Session does not open as idle and its plan card survives a reload. The frame has no seq and never appears in history pages.
+- `/api/tool-keys`: `GET` lists `brave`, `exa` and `jina` with the shell variable each sets and whether it is set (never the value); `PUT /api/tool-keys/{name}` with `{ value }` stores or, on an empty value, clears that key in `<config root>/tool-keys.json` (`store::tool_keys`, 0600); the tools read that file on every call, so no environment variable and no restart are involved. Unknown names are 404; a daemon without a config root answers 409.
 - `/api/settings`: get and update system settings, including the ticket-20 Context keys (`max_context_limit`, `min_pressure_benefit_tokens`, `emergency_threshold_percent`, `preserve_recent_messages`, `protected_tools`, `inject_tool`, `inject_nudge`, `tier2_trigger`, `tier3_trigger`); `serde(default)` fills them for older saved settings.
 - `/api/prompts`: list prompt ids with default/override/active hashes; `PUT/DELETE /api/prompts/:id` writes or removes an override
 - `/api/models`: merged model catalogue; `POST /api/models/refresh` forces the configured sources to refresh
 - `/api/providers`: list providers, Antigravity login flow, and `PUT`/`DELETE /api/providers/:id/key` for API-key providers (`opencode-go` and the `emberloop_core::providers` registry; any other id is 404). `ProviderView.auth` is `login` or `key`
+- `/api/version`: reports `EMBERLOOP_BUILD_VERSION` when supplied at build time, otherwise the crate version, matching the daemon release version.
 - `/openapi.json`: OpenAPI 3.0 specification
 - `AppState::new` reads prompts from `<data root>/prompts`; `AppState::with_prompts` and `AppState::with_models` let the daemon pass the config-root prompt store and multi-source model catalogue.
 

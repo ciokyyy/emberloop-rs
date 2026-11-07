@@ -7,6 +7,7 @@ pub mod data_root;
 pub mod event_log;
 pub mod projects;
 pub mod sessions;
+pub mod tool_keys;
 
 pub use archive::{ArchivalConfig, ArchivalError, ArchivalSweeper, SweepReport};
 pub use blobs::{BlobError, BlobRef, BlobStore};

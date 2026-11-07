@@ -79,7 +79,7 @@ function isReadOnlyFam(fam: any, run: any) {
 }
 
 // isReadOnly reports whether a run is a successful read-only exploration call.
-export function isReadOnly(run: any) {
+function isReadOnly(run: any) {
   if (!run) return false;
   const mcp = parseMcpName(run.name);
   if (mcp && mcp.server !== 'el') return false;

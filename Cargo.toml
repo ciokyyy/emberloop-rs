@@ -46,7 +46,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 utoipa = { version = "6.0", features = ["axum_extras"] }
 utoipa-axum = "0.3"
 agent-client-protocol = "=5.0.0"
-rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-io"] }
+rmcp = { version = "=3.9.0", default-features = false, features = ["server", "client", "transport-io", "transport-child-process"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"

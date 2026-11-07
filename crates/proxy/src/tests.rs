@@ -1812,6 +1812,34 @@ async fn the_nudge_gate_survives_a_runtime_rebuild() {
     assert!(saved.contains("\"first_fired\":true"), "{saved}");
 }
 
+#[tokio::test]
+async fn conversation_reset_archives_blocks_without_reloading_or_overwriting_them() {
+    let fixture = fixture_with(text_only_fake()).await;
+    let spill = fixture.data_root.session_spill_dir("ses_1");
+    for generation in 1..=2 {
+        let mut compressor = NativeCompressor::new(&spill).unwrap();
+        let mut contents = vec![json!({"role": "user", "parts": [{"text": "original"}]})];
+        compressor
+            .compress(
+                &mut contents,
+                CompressCall {
+                    start: 0,
+                    end: 1,
+                    summary: "saved plan".into(),
+                    topic: None,
+                },
+            )
+            .unwrap();
+        let bytes = std::fs::read(spill.join("blocks/b1.json")).unwrap();
+        fixture.state.reset_history("ses_1").await.unwrap();
+        assert_eq!(NativeCompressor::new(&spill).unwrap().status().blocks, 0);
+        assert_eq!(
+            std::fs::read(spill.join(format!("blocks-reset-{generation}/b1.json"))).unwrap(),
+            bytes
+        );
+    }
+}
+
 #[test]
 fn compress_args_accept_a_ranges_array_or_the_single_form() {
     let batch = parse_compress_calls(&json!({

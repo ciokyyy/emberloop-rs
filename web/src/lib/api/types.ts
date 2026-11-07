@@ -144,3 +144,10 @@ export interface UsageView {
   balance: { currency: string; remaining: number } | null;
   error: string | null;
 }
+
+/** A tool key Settings stores in the runtime env file the shells source. */
+export interface ToolKey {
+  name: string;
+  variable: string;
+  set: boolean;
+}

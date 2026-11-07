@@ -24,8 +24,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// The version this build was compiled as.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The version this build reports: `EMBERLOOP_BUILD_VERSION` when the builder set one, otherwise
+/// the crate version. `build.rs` bakes it in.
+pub const VERSION: &str = env!("EMBERLOOP_BUILD_VERSION");
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
@@ -151,6 +152,70 @@ pub fn current_binary(root: &Path) -> PathBuf {
 
 /// store_release writes the binary into a scratch directory and renames that into place, so a
 /// release directory is either whole or absent. A version already stored is left as it is.
+/// next_version steps a release version forward: the last number by default, the first one for a
+/// major bump. Any pre-release suffix is dropped.
+pub fn next_version(version: &str, major: bool) -> String {
+    let numbers: Vec<u64> = version
+        .split('.')
+        .map(|part| {
+            part.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .map(|digits| digits.parse().unwrap_or(0))
+        .collect();
+    let mut parts = [0, 0, 0];
+    for (slot, number) in parts.iter_mut().zip(numbers) {
+        *slot = number;
+    }
+    if major {
+        return format!("{}.0.0", parts[0] + 1);
+    }
+    parts[2] += 1;
+    format!("{}.{}.{}", parts[0], parts[1], parts[2])
+}
+
+/// binary_version asks a binary on this machine which version it was built as, so a local build
+/// needs no manifest and no version bump.
+pub fn binary_version(binary: &Path) -> anyhow::Result<String> {
+    let output = std::process::Command::new(binary)
+        .arg("--version")
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{} --version failed",
+        binary.display()
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version = text.trim().rsplit(' ').next().unwrap_or_default();
+    anyhow::ensure!(
+        !version.is_empty(),
+        "{} printed no version",
+        binary.display()
+    );
+    Ok(version.to_string())
+}
+
+/// absolute resolves a local build's path once, because the daemon that installs it later runs
+/// from its own working directory, not the caller's.
+pub fn absolute(binary: &Path) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(
+        binary.is_file(),
+        "{} is not a file to install",
+        binary.display()
+    );
+    Ok(std::fs::canonicalize(binary)?)
+}
+
+/// install_local keeps a binary already on this machine as `releases/<version>/`, replacing a
+/// release of the same version so a rebuilt build lands.
+pub fn install_local(source: &Path, version: &str, root: &Path) -> anyhow::Result<()> {
+    let bytes = std::fs::read(source)?;
+    let _ = std::fs::remove_dir_all(releases_dir(root).join(version));
+    store_release(root, version, &bytes)?;
+    Ok(())
+}
+
 pub fn store_release(root: &Path, version: &str, bytes: &[u8]) -> anyhow::Result<PathBuf> {
     let final_dir = releases_dir(root).join(version);
     if final_dir.exists() {
@@ -303,7 +368,12 @@ pub fn installed_message(from: &str, to: &str, in_session: bool) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallRequest {
     pub to: String,
-    pub artifact: Artifact,
+    /// A release to download; `None` for a binary already on this machine (`file`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<Artifact>,
+    /// A local build, installed as `releases/<to>` without any download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
 }
@@ -331,7 +401,11 @@ pub async fn apply_request(root: &Path, data_root: &Path) -> anyhow::Result<Opti
         return Ok(None);
     };
     let _ = std::fs::remove_file(request_path(data_root));
-    install(&request.artifact, &request.to, root).await?;
+    match (&request.artifact, &request.file) {
+        (_, Some(file)) => install_local(file, &request.to, root)?,
+        (Some(artifact), None) => install(artifact, &request.to, root).await?,
+        (None, None) => anyhow::bail!("update request for {} names nothing to install", request.to),
+    }
     activate(root, &request.to)?;
     prune(root, 3)?;
     let pending = PendingUpdate {
@@ -540,9 +614,85 @@ mod tests {
     fn request_for(url: String, sha256: String) -> InstallRequest {
         InstallRequest {
             to: "0.0.9".into(),
-            artifact: Artifact { url, sha256 },
+            artifact: Some(Artifact { url, sha256 }),
+            file: None,
             session: Some("ses_1".into()),
         }
+    }
+
+    fn script(dir: &Path, name: &str, version: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\necho \"emberloop-daemon {version}\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_queued_local_binary_is_stored_as_an_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = script(dir.path(), "built", "0.0.7");
+        assert!(absolute(&binary).unwrap().is_absolute());
+        assert!(absolute(&dir.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn a_version_steps_forward_unless_a_major_bump_is_asked_for() {
+        assert_eq!(next_version("0.0.12", false), "0.0.13");
+        assert_eq!(next_version("0.0.12", true), "1.0.0");
+        assert_eq!(next_version("1.4.9", false), "1.4.10");
+        assert_eq!(next_version("1.0.0-rc.1", false), "1.0.1");
+    }
+
+    #[test]
+    fn a_local_binary_names_its_own_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = script(dir.path(), "built", "0.0.7");
+        assert_eq!(binary_version(&binary).unwrap(), "0.0.7");
+    }
+
+    #[test]
+    fn a_local_install_replaces_a_release_of_the_same_version() {
+        let root = tempfile::tempdir().unwrap();
+        store_release(root.path(), "0.0.7", b"old").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("built");
+        std::fs::write(&binary, b"new").unwrap();
+        install_local(&binary, "0.0.7", root.path()).unwrap();
+        activate(root.path(), "0.0.7").unwrap();
+        assert_eq!(std::fs::read(current_binary(root.path())).unwrap(), b"new");
+    }
+
+    #[tokio::test]
+    async fn applying_a_local_request_skips_the_download() {
+        let root = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("built");
+        std::fs::write(&binary, b"local").unwrap();
+        write_request(
+            data.path(),
+            &InstallRequest {
+                to: "0.0.8".into(),
+                artifact: None,
+                file: Some(binary),
+                session: Some("ses_1".into()),
+            },
+        )
+        .unwrap();
+        let applied = apply_request(root.path(), data.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(applied.to, "0.0.8");
+        assert_eq!(
+            std::fs::read(current_binary(root.path())).unwrap(),
+            b"local"
+        );
     }
 
     #[tokio::test]

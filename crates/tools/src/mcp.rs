@@ -280,7 +280,7 @@ fn tool_specs() -> Vec<Value> {
         },
         {
             "name": "ctx_search",
-            "description": "Search stored tool output (spilled ctx: handles): ranked snippets, each with its ctx:<id>:<start>-<end> range. Takes one or more queries, an optional source handle to scope the search, and a per-query limit (default 3). Page a hit with read ctx:<id>:<start>-<end>.",
+            "description": "Search stored tool output (spilled ctx: handles): BM25-ranked term snippets with OR matching, each with its ctx:<id>:<start>-<end> range. Punctuation separates words; matching ignores case. Takes one or more queries, an optional source handle to scope the search, and a per-query limit (default 3). Page a hit with read ctx:<id>:<start>-<end>.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

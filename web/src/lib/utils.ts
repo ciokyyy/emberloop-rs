@@ -4,3 +4,8 @@ import { twMerge } from 'tailwind-merge';
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
+
+// shadcn-svelte component prop helpers.
+export type WithoutChild<T> = T extends { child?: unknown } ? Omit<T, "child"> : T;
+export type WithoutChildren<T> = T extends { children?: unknown } ? Omit<T, "children"> : T;
+export type WithoutChildrenOrChild<T> = WithoutChildren<WithoutChild<T>>;

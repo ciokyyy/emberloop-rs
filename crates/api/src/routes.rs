@@ -32,6 +32,8 @@ use crate::state::{AppState, Settings};
         cancel_session,
         get_settings,
         update_settings,
+        list_tool_keys,
+        set_tool_key,
         list_prompts,
         update_prompt,
         delete_prompt,
@@ -63,6 +65,8 @@ use crate::state::{AppState, Settings};
             PromptImageDto,
             SteerRequest,
             Settings,
+            ToolKeyDto,
+            ToolKeyRequest,
             PromptDto,
             UpdatePromptRequest,
             PromptTextDto,
@@ -636,6 +640,87 @@ pub async fn update_settings(
 
 #[derive(Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct ToolKeyDto {
+    /// Settings key name: `brave`, `exa` or `jina`.
+    pub name: String,
+    /// The stored key name the tools read.
+    pub variable: String,
+    pub set: bool,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ToolKeyRequest {
+    pub value: String,
+}
+
+fn tool_key_dto(name: &str, variable: &str, set: bool) -> ToolKeyDto {
+    ToolKeyDto {
+        name: name.to_string(),
+        variable: variable.to_string(),
+        set,
+    }
+}
+
+fn tool_keys_file_of(state: &AppState) -> Result<PathBuf, (StatusCode, String)> {
+    state.tool_keys_file.clone().ok_or((
+        StatusCode::CONFLICT,
+        "This daemon has no config root, so tool keys cannot be saved.".to_string(),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/tool-keys",
+    responses(
+        (status = 200, description = "Tool keys and whether each is set", body = [ToolKeyDto]),
+        (status = 409, description = "No config root")
+    )
+)]
+pub async fn list_tool_keys(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ToolKeyDto>>, (StatusCode, String)> {
+    let path = tool_keys_file_of(&state)?;
+    let stored = store::tool_keys::read(&path)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let keys = store::tool_keys::NAMES
+        .iter()
+        .map(|(name, variable)| tool_key_dto(name, variable, stored.contains_key(*variable)))
+        .collect();
+    Ok(Json(keys))
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/tool-keys/{name}",
+    request_body = ToolKeyRequest,
+    params(("name" = String, Path, description = "brave, exa or jina")),
+    responses(
+        (status = 200, description = "Key saved; the next tool call uses it", body = ToolKeyDto),
+        (status = 400, description = "Value too long"),
+        (status = 404, description = "Unknown tool key"),
+        (status = 409, description = "No config root")
+    )
+)]
+pub async fn set_tool_key(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(payload): Json<ToolKeyRequest>,
+) -> Result<Json<ToolKeyDto>, (StatusCode, String)> {
+    let path = tool_keys_file_of(&state)?;
+    let Some(variable) = store::tool_keys::variable(&name) else {
+        return Err((StatusCode::NOT_FOUND, format!("Unknown tool key {name}")));
+    };
+    let value = payload.value.trim();
+    if value.len() > 4096 {
+        return Err((StatusCode::BAD_REQUEST, "Key is too long".into()));
+    }
+    store::tool_keys::set(&path, variable, value)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(tool_key_dto(&name, variable, !value.is_empty())))
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PromptDto {
     pub id: String,
     pub default_hash: String,
@@ -819,9 +904,15 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/version",
-            get(|| async { Json(serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })) }),
+            get(|| async {
+                Json(serde_json::json!({
+                    "version": option_env!("EMBERLOOP_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+                }))
+            }),
         )
         .route("/api/settings", get(get_settings).put(update_settings))
+        .route("/api/tool-keys", get(list_tool_keys))
+        .route("/api/tool-keys/{name}", axum::routing::put(set_tool_key))
         .route("/api/models", get(list_models))
         .route("/api/models/refresh", post(refresh_models))
         .route("/api/prompts", get(list_prompts))
@@ -877,6 +968,120 @@ mod prompt_routes_tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn version_reports_the_build_version() {
+        let response = app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/api/version")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json(response).await["version"],
+            option_env!("EMBERLOOP_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_keys_are_listed_written_and_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_root = DataRoot::new(dir.path());
+        let keys_file = dir.path().join("config/tool-keys.json");
+        let projects = ProjectsStore::load(data_root.projects_file())
+            .await
+            .unwrap();
+        let sessions = SessionsStore::load(data_root.clone()).await.unwrap();
+        let app = build_router(
+            AppState::new(data_root, projects, sessions, Arc::new(EventBus::default()))
+                .with_tool_keys_file(&keys_file),
+        );
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/tool-keys")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let listed = json(listed).await;
+        assert_eq!(listed.as_array().unwrap().len(), 3, "{listed}");
+        assert!(listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|key| key["set"] == false));
+
+        let written = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/tool-keys/brave")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"secret"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(written.status(), StatusCode::OK);
+        assert_eq!(json(written).await["set"], true);
+        let text = std::fs::read_to_string(&keys_file).unwrap();
+        assert!(text.contains("\"BRAVE_API_KEY\": \"secret\""), "{text}");
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/tool-keys")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let listed = json(listed).await;
+        assert_eq!(listed[0]["name"], "brave");
+        assert_eq!(listed[0]["set"], true);
+
+        let cleared = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/tool-keys/brave")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":""}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(json(cleared).await["set"], false);
+        assert!(!std::fs::read_to_string(&keys_file)
+            .unwrap()
+            .contains("BRAVE_API_KEY"));
+
+        let unknown = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/tool-keys/nope")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"x"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

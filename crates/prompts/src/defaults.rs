@@ -5,6 +5,7 @@
 pub const PONYTAIL: &str = include_str!("../prompts/ponytail.md");
 pub const CAVEMAN: &str = include_str!("../prompts/caveman.md");
 pub const POLICY: &str = include_str!("../prompts/policy.md");
+pub const SKILL_CODEBASE_MEMORY: &str = include_str!("../prompts/skill.codebase-memory.md");
 pub const COMPRESS: &str = include_str!("../prompts/compress.md");
 pub const DECOMPRESS: &str = include_str!("../prompts/decompress.md");
 pub const SEARCH_CONTEXT: &str = include_str!("../prompts/search_context.md");

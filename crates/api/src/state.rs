@@ -6,6 +6,7 @@ use emberloop_core::steer::SteerQueues;
 use prompts::PromptStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use store::{DataRoot, EventLog, ProjectsStore, SessionsStore};
 use tokio::sync::RwLock;
@@ -79,6 +80,8 @@ pub struct AppState {
     pub steers: SteerQueues,
     pub driver: Arc<dyn SessionDriver>,
     pub provider_login: Option<Arc<dyn ProviderLogin>>,
+    /// The file Settings writes tool keys into; `None` disables that screen.
+    pub tool_keys_file: Option<PathBuf>,
 }
 
 impl AppState {
@@ -116,7 +119,13 @@ impl AppState {
             steers,
             driver: Arc::new(NoopDriver),
             provider_login: None,
+            tool_keys_file: None,
         }
+    }
+
+    pub fn with_tool_keys_file(mut self, tool_keys_file: impl Into<PathBuf>) -> Self {
+        self.tool_keys_file = Some(tool_keys_file.into());
+        self
     }
 
     pub fn with_driver(mut self, driver: Arc<dyn SessionDriver>) -> Self {

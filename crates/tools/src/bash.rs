@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 
+use crate::intercept;
 use crate::tag::{content_hash, line_count, lines_of};
 use crate::{ToolError, ToolResult, Toolbox};
 
@@ -28,8 +29,21 @@ pub async fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     if args.command.trim().is_empty() {
         return Err(ToolError::msg("command is required"));
     }
+    // A command that belongs to another tool is refused before anything runs, and the reply names
+    // the tool that does it. Reads never match, so their views still feed the seen-line store.
+    if let Some(rule) = intercept::blocked(&args.command) {
+        return Err(ToolError::msg(format!(
+            "Blocked: {}\nCommand not run: {}\nUse the {} tool instead.",
+            rule.message,
+            args.command.trim(),
+            rule.tool
+        )));
+    }
     if args.background {
-        return toolbox.background().spawn(&args.command).await;
+        return toolbox
+            .background()
+            .spawn(&args.command, &toolbox.env_prelude())
+            .await;
     }
     let timeout = args
         .timeout
@@ -47,7 +61,7 @@ pub(crate) async fn foreground(
 ) -> ToolResult<String> {
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c")
-        .arg(format!("exec 2>&1\n{command}"))
+        .arg(format!("{}exec 2>&1\n{command}", toolbox.env_prelude()))
         .current_dir(toolbox.root())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

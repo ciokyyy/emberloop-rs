@@ -19,6 +19,15 @@ fn write_override(dir: &Path, id: &str, text: &str) {
 }
 
 #[test]
+fn tool_guidance_keeps_edits_anchored_and_graph_calls_discoverable() {
+    assert!(default_text(POLICY).contains("Use hashline `edit` for existing files"));
+    assert!(default_text(TOOL_EDIT).contains("PUT 4.=4:"));
+    assert!(!default_text(TOOL_EXECUTE).contains("open(\"notes.md\", \"w\")"));
+    assert!(default_text(SKILL_CODEBASE_MEMORY).contains("tools.call('graph.search_graph'"));
+    assert!(default_text(SKILL_CODEBASE_MEMORY).contains("not a complete runtime call graph"));
+}
+
+#[test]
 fn default_used_when_no_override_exists() {
     let dir = tempdir().unwrap();
     let store = PromptStore::new(dir.path());

@@ -19,6 +19,9 @@ async fn main() -> anyhow::Result<()> {
             session,
             check,
             rollback,
+            file,
+            major,
+            next_version,
         }) => {
             emberloop_daemon::run_update(emberloop_daemon::UpdateRequest {
                 manifest_url: manifest
@@ -27,6 +30,9 @@ async fn main() -> anyhow::Result<()> {
                 check,
                 rollback,
                 data_root: config.data_root.clone(),
+                file,
+                major,
+                next_version,
             })
             .await
         }

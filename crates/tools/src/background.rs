@@ -77,14 +77,14 @@ impl BackgroundManager {
     // Real waits: a short one so a quick command's first line lands in the
     // reply, and a 100 ms poll of a pid outside our process tree.
     #[allow(clippy::disallowed_methods)]
-    pub async fn spawn(&self, command: &str) -> ToolResult<String> {
+    pub async fn spawn(&self, command: &str, prelude: &str) -> ToolResult<String> {
         fs::create_dir_all(&self.dir)?;
         let id = self.next_id();
         let log = self.dir.join(format!("{id}.log"));
         let file = File::create(&log)?;
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c")
-            .arg(format!("exec 2>&1\n{command}"))
+            .arg(format!("{prelude}exec 2>&1\n{command}"))
             .current_dir(&self.root)
             .stdin(Stdio::null())
             .stdout(Stdio::from(file))

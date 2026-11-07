@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -6,12 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Command;
 
-use crate::{ToolError, ToolResult, Toolbox};
+use crate::{McpTool, ToolError, ToolResult, Toolbox};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 600;
@@ -287,7 +287,16 @@ pub async fn run(toolbox: Arc<Toolbox>, args: &Value) -> ToolResult<String> {
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
     let tmp_dir = create_bridge_dir()?;
-    let result = run_in_bridge(Arc::clone(&toolbox), &tmp_dir, &args.code, timeout_secs).await;
+    // An MCP failure costs the MCP tools only: the builtin ones stay.
+    let mcp = toolbox.mcp_tools().await.unwrap_or_default();
+    let result = run_in_bridge(
+        Arc::clone(&toolbox),
+        &tmp_dir,
+        &args.code,
+        timeout_secs,
+        &mcp,
+    )
+    .await;
     let _ = fs::remove_dir_all(&tmp_dir);
     result
 }
@@ -307,9 +316,10 @@ async fn run_in_bridge(
     dir: &Path,
     code: &str,
     timeout_secs: u64,
+    mcp: &[McpTool],
 ) -> ToolResult<String> {
     let sock_path = dir.join("sock");
-    let stub = build_tools_py(&sock_path);
+    let stub = build_tools_py(&sock_path, &mcp_stub(mcp));
     fs::write(dir.join("tools.py"), stub)?;
     let main_path = dir.join("main.py");
     fs::write(&main_path, code)?;
@@ -332,8 +342,14 @@ async fn run_in_bridge(
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "python3".to_string());
-    let mut cmd = Command::new(py);
-    cmd.arg("-I")
+    // The runtime env file must reach this process too, not only `bash`: `PATH` additions are
+    // useless here if a script's own `subprocess` cannot find the command.
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
+        .arg(format!("{}exec \"$@\"", toolbox.env_prelude()))
+        .arg("sh")
+        .arg(&py)
+        .arg("-I")
         .arg("-c")
         .arg(LAUNCHER)
         .arg(dir)
@@ -502,7 +518,34 @@ fn tail_lines(s: &str, n: usize) -> String {
     lines[lines.len() - n..].join("\n")
 }
 
-fn build_tools_py(sock_path: &Path) -> String {
+/// The MCP tool list `tools.py` loads: specs for `search`/`help`, summaries for
+/// `servers()`, and a bare alias for each name only one server exposes.
+fn mcp_stub(tools: &[McpTool]) -> String {
+    let mut specs = Map::new();
+    let mut servers = Map::new();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for tool in tools {
+        specs.insert(
+            tool.call_name.clone(),
+            json!({"sig": tool.signature, "desc": tool.description}),
+        );
+        servers
+            .entry(tool.server.clone())
+            .or_insert_with(|| json!(tool.summary));
+        *counts.entry(tool.name.as_str()).or_default() += 1;
+    }
+    let mut aliases = Map::new();
+    for tool in tools {
+        if counts.get(tool.name.as_str()) == Some(&1) {
+            aliases.insert(tool.name.clone(), json!(tool.call_name));
+        }
+    }
+    let payload = json!({"specs": specs, "servers": servers, "aliases": aliases}).to_string();
+    // A JSON string literal is also a Python one, so the stub can json.loads it.
+    serde_json::to_string(&payload).unwrap_or_else(|_| "\"{}\"".to_string())
+}
+
+fn build_tools_py(sock_path: &Path, mcp_json: &str) -> String {
     let sock_json = serde_json::to_string(&sock_path.to_string_lossy().to_string())
         .unwrap_or_else(|_| "\"\"".to_string());
     format!(
@@ -534,6 +577,9 @@ _SPECS = {{
     "find": {{"sig": "find(query, grep_keywords, limit, mode, path)", "desc": "Semantic/lexical code finder with modes."}},
     "websearch": {{"sig": "websearch(query, count, domains, fresh, freshness, provider)", "desc": "Search the web."}},
 }}
+
+_MCP = _json.loads({mcp_json})
+_SPECS.update(_MCP["specs"])
 
 def _next():
     global _next_id
@@ -624,7 +670,7 @@ def scripts():
     return _json.loads(_op("scripts", {{}}))
 
 def servers():
-    return []
+    return _MCP["servers"]
 
 def run(name, **args):
     global _run_depth
@@ -651,10 +697,17 @@ def search(query=""):
     return "\n".join(out)
 
 def help(name):
+    name = _MCP["aliases"].get(name, name)
     spec = _SPECS.get(name)
     if spec is None:
         return "unknown tool %r; available: %s" % (name, ", ".join(sorted(_SPECS)))
     return "%s:\n%s" % (spec["sig"], spec["desc"])
+
+def __getattr__(name):
+    target = _MCP["aliases"].get(name)
+    if target is None:
+        raise AttributeError("module %r has no attribute %r" % (__name__, name))
+    return lambda **kwargs: _call(target, kwargs)
 "#
     )
 }
@@ -709,5 +762,28 @@ mod tests {
         .unwrap();
         assert!(out.contains("hello"), "got: {out}");
         assert!(out.contains("ToolError"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn execute_loads_the_runtime_env_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let spill = tempfile::tempdir().unwrap();
+        let env = dir.path().join("env");
+        fs::write(&env, "export EMBERLOOP_TEST_TOKEN=abc\n").unwrap();
+        let tb = Arc::new(
+            Toolbox::new(ToolConfig {
+                env_file: Some(env),
+                ..ToolConfig::new(dir.path(), spill.path())
+            })
+            .unwrap(),
+        );
+
+        let out = run(
+            Arc::clone(&tb),
+            &json!({"code": "import os\nprint(os.environ.get('EMBERLOOP_TEST_TOKEN'))"}),
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("abc"), "got: {out}");
     }
 }
