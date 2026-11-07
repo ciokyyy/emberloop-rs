@@ -14,6 +14,7 @@
   } from '$lib/api/types';
   import { fadeAt, slideDown } from '$lib/motion';
   import SessionDialog from '$lib/components/SessionDialog.svelte';
+  import CacheView from '$lib/components/CacheView.svelte';
   import Composer from '$lib/components/Composer.svelte';
   import Feed from '$lib/components/Feed.svelte';
   import ModelPicker from '$lib/components/ModelPicker.svelte';
@@ -27,7 +28,7 @@
   import { applyEvent, applySnapshot, emptyFeedState, type FeedState } from '$lib/feed';
   import { chosenWindow } from '$lib/contextMeter';
   import { toPromptImage } from '$lib/images';
-  import { newPath, newSessionProjects, sessionPath, viewOf, viewPath, type View } from '$lib/route';
+  import { cachePath, newPath, newSessionProjects, sessionPath, viewOf, viewPath, type Page, type View } from '$lib/route';
 
   let { children } = $props();
   let projects = $state<Project[]>([]);
@@ -239,9 +240,16 @@
   }
 
   // openView keeps Settings and Providers on a Project's URL, so Back returns to its Session.
-  function openView(next: Exclude<View, 'session' | 'new'>) {
+  function openView(next: Page) {
     drawer = false;
     void goto(viewPath(projectOf?.id ?? projects[0]?.id ?? null, next));
+  }
+
+  // The cache page is one level under the Session: its details dialog closes as the URL changes.
+  function openCache() {
+    if (!current) return;
+    detailsOpen = false;
+    void goto(cachePath(current.projectId, current.id));
   }
 
   // The stream follows the URL: a new Session id tears the old stream down and starts a new one.
@@ -312,7 +320,7 @@
     const latest = sessions
       .filter((session) => session.projectId === id)
       .sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    const page = view === 'session' || view === 'new' ? 'settings' : view;
+    const page = view === 'session' || view === 'new' || view === 'cache' ? 'settings' : view;
     void goto(latest ? sessionPath(id, latest.id) : viewPath(id, page));
   }
   async function renameSession(session: Session) {
@@ -402,7 +410,7 @@
       {sessions}
       {models}
       {statuses}
-      selectedId={view === 'session' ? selected : null}
+      selectedId={view === 'session' || view === 'cache' ? selected : null}
       draftModel={view === 'new' && scope ? draftModel : null}
       ondraft={() => { if (scope) void goto(newPath(scope)); }}
       settingsActive={view === 'settings'}
@@ -471,6 +479,8 @@
       <Usage />
     {:else if loading}
       <div class="grid flex-1 place-items-center text-[13px] text-fg-3">Loading…</div>
+    {:else if view === 'cache' && current}
+      <CacheView sessionId={current.id} status={feed.status} />
     {:else if view === 'new'}
       <!-- The draft page: the harness and model are picked here, and the Session starts with the
            first prompt. Its row in the sidebar wears the harness color of this pick. -->
@@ -531,7 +541,7 @@
         <SessionDialog bind:open={detailsOpen} bind:tab={detailsTab} {models}
           model={current.model} thoughtLevel={current.thoughtLevel ?? ''}
           used={feed.usage?.used ?? null} size={contextSize} breakdown={feed.usage?.breakdown ?? null}
-          disabled={working} onapply={applyModel} />
+          disabled={working} onapply={applyModel} oncache={openCache} />
       {/key}
     {:else}
       <div class="grid flex-1 place-items-center">

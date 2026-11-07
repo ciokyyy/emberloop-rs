@@ -7,10 +7,11 @@
   import Button from './ui/button.svelte';
 
   let { open = $bindable(false), tab = $bindable<'model' | 'context'>('model'), models = [],
-    model = '', thoughtLevel = '', used = null, size = 0, breakdown = null, disabled = false, onapply }: {
+    model = '', thoughtLevel = '', used = null, size = 0, breakdown = null, disabled = false, onapply, oncache }: {
     open?: boolean; tab?: 'model' | 'context'; models?: Model[]; model?: string;
     thoughtLevel?: string; used?: number | null; size?: number; breakdown?: ContextBreakdown | null;
     disabled?: boolean; onapply: (input: { model: string; thoughtLevel: string }) => Promise<void> | void;
+    oncache?: () => void;
   } = $props();
   let picked = $state('');
   let effort = $state('');
@@ -88,7 +89,7 @@
         </div>
       {:else}
         <div id="session-context-panel" role="tabpanel" aria-labelledby="session-context-tab" in:slideDown>
-          <ContextDetails {used} {size} {breakdown} />
+          <ContextDetails {used} {size} {breakdown} {oncache} />
         </div>
       {/if}
         </div>

@@ -71,6 +71,20 @@ describe('feed reducer', () => {
     expect(state.items[0]).toMatchObject({ kind: 'steer', text: 'hold on', route: 'injected' });
   });
 
+  it('carries the prompt-cache counts of the latest request', () => {
+    const state = run(
+      ev('usage', { inputTokens: 1000, cachedTokens: 600, cacheCreationTokens: 100, contextWindow: 1_000_000 })
+    );
+    expect(state.usage).toEqual({ used: 1000, window: 1_000_000, cachedTokens: 600, cacheCreationTokens: 100 });
+  });
+
+  it('leaves the cache counts out when the provider reports none', () => {
+    expect(run(ev('usage', { inputTokens: 1000, contextWindow: 1_000_000 })).usage).toEqual({
+      used: 1000,
+      window: 1_000_000
+    });
+  });
+
   it('tracks status and usage', () => {
     const state = run(
       ev('status', { state: 'working' }),
@@ -200,6 +214,13 @@ describe('open snapshot', () => {
   it('keeps what the window said when the snapshot has nothing', () => {
     const windowed = run(ev('status', { state: 'working' }));
     expect(applySnapshot(windowed, { status: null, usage: null })).toEqual(windowed);
+  });
+
+  it('carries the prompt-cache counts of the latest request', () => {
+    const state = applySnapshot(run(ev('status', { state: 'working' })), {
+      usage: { inputTokens: 1000, cachedTokens: 600, cacheCreationTokens: 100, contextWindow: 1_000_000 }
+    });
+    expect(state.usage).toEqual({ used: 1000, window: 1_000_000, cachedTokens: 600, cacheCreationTokens: 100 });
   });
 
   it('does not close the live row when the snapshot says working', () => {

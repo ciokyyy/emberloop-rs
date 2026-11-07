@@ -1,3 +1,5 @@
+import type { components } from './schema';
+
 export interface Project {
   id: string;
   name: string;
@@ -138,6 +140,9 @@ export interface ContextBreakdown {
   imageCount: number;
   estimatedTokens: number;
 }
+
+/** One model request of a Session, from `GET /api/sessions/{id}/usage`. */
+export type UsageRecord = components['schemas']['UsageRecord'];
 
 export interface UsageView {
   windows: { label: string; usedPercent: number; resetsAt: string | null }[];

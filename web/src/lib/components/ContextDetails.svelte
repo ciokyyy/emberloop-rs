@@ -1,8 +1,9 @@
 <script lang="ts">
   import type { ContextBreakdown } from '$lib/api/types';
   import { formatTokens } from '$lib/contextMeter';
-  let { used = null, size = 0, breakdown = null }: {
-    used?: number | null; size?: number; breakdown?: ContextBreakdown | null;
+  import Button from './ui/button.svelte';
+  let { used = null, size = 0, breakdown = null, oncache }: {
+    used?: number | null; size?: number; breakdown?: ContextBreakdown | null; oncache?: () => void;
   } = $props();
   const categories = [
     ['system', 'System prompts', '#ab9df2'],
@@ -24,6 +25,9 @@
       <p class="mt-1 text-xl font-semibold tabular-nums">{count(used)} <span class="text-[13px] font-normal text-fg-3">tokens</span></p>
     {/if}
     <p class="mt-1 text-[12px] text-fg-3">{size > 0 ? `${formatTokens(size)} context window` : 'Context window unknown'}</p>
+    {#if oncache}
+      <Button class="mt-3" onclick={() => oncache()}>Prompt cache</Button>
+    {/if}
   </div>
   {#if breakdown}
     <div>
