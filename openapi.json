@@ -948,6 +948,78 @@
           }
         }
       }
+    },
+    "/api/tool-keys": {
+      "get": {
+        "tags": [],
+        "operationId": "list_tool_keys",
+        "responses": {
+          "200": {
+            "description": "Tool keys and whether each is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ToolKeyDto"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No config root"
+          }
+        }
+      }
+    },
+    "/api/tool-keys/{name}": {
+      "put": {
+        "tags": [],
+        "operationId": "set_tool_key",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "brave, exa or jina",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Key saved; the next tool call uses it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolKeyDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Value too long"
+          },
+          "404": {
+            "description": "Unknown tool key"
+          },
+          "409": {
+            "description": "No config root"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1443,6 +1515,38 @@
         ],
         "properties": {
           "text": {
+            "type": "string"
+          }
+        }
+      },
+      "ToolKeyDto": {
+        "type": "object",
+        "required": [
+          "name",
+          "variable",
+          "set"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Settings key name: `brave`, `exa` or `jina`."
+          },
+          "set": {
+            "type": "boolean"
+          },
+          "variable": {
+            "type": "string",
+            "description": "The stored key name the tools read."
+          }
+        }
+      },
+      "ToolKeyRequest": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
             "type": "string"
           }
         }

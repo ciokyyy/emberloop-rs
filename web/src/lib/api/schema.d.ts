@@ -340,6 +340,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tool-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_tool_keys"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tool-keys/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["set_tool_key"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -517,6 +549,16 @@ export interface components {
         };
         SteerRequest: {
             text: string;
+        };
+        ToolKeyDto: {
+            /** @description Settings key name: `brave`, `exa` or `jina`. */
+            name: string;
+            set: boolean;
+            /** @description The stored key name the tools read. */
+            variable: string;
+        };
+        ToolKeyRequest: {
+            value: string;
         };
         UpdateProjectRequest: {
             name?: string | null;
@@ -1466,6 +1508,81 @@ export interface operations {
             };
             /** @description Invalid title model */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_tool_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tool keys and whether each is set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolKeyDto"][];
+                };
+            };
+            /** @description No config root */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_tool_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description brave, exa or jina */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Key saved; the next tool call uses it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolKeyDto"];
+                };
+            };
+            /** @description Value too long */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown tool key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No config root */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
