@@ -337,25 +337,38 @@ impl Compressor for NativeCompressor {
     }
 
     fn search_context(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>, String> {
-        let needle = query.trim().to_lowercase();
-        if needle.is_empty() {
-            return Err("query must not be empty".into());
-        }
-        let hits = self
+        let terms = search_terms(query)?;
+        let mut ranked: Vec<(usize, usize)> = self
             .blocks
             .iter()
-            .filter(|block| {
-                block.summary.to_lowercase().contains(&needle)
-                    || block
-                        .topic
-                        .as_deref()
-                        .is_some_and(|topic| topic.to_lowercase().contains(&needle))
+            .enumerate()
+            .filter_map(|(index, block)| {
+                let haystack = format!(
+                    "{}\n{}",
+                    block.topic.as_deref().unwrap_or(""),
+                    block.summary
+                )
+                .to_lowercase();
+                let score = term_score(&haystack, &terms);
+                (score > 0).then_some((score, index))
             })
+            .collect();
+        // Best score first; equal scores keep history order.
+        ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let hits = ranked
+            .into_iter()
             .take(limit.max(1))
-            .map(|block| SearchHit {
-                block_id: block.id.clone(),
-                topic: block.topic.clone(),
-                snippet: snippet_for(&block.summary, &needle),
+            .map(|(_, index)| {
+                let block = &self.blocks[index];
+                let term = terms
+                    .iter()
+                    .find(|term| block.summary.to_lowercase().contains(term.as_str()))
+                    .map_or("", String::as_str);
+                SearchHit {
+                    block_id: block.id.clone(),
+                    topic: block.topic.clone(),
+                    snippet: snippet_for(&block.summary, term),
+                }
             })
             .collect();
         Ok(hits)
@@ -703,6 +716,27 @@ fn contains_window(contents: &[Value], window: &[Value]) -> bool {
     find_span(contents, window).is_some()
 }
 
+/// Lowercased whitespace-separated query terms; an empty query is an error.
+fn search_terms(query: &str) -> Result<Vec<String>, String> {
+    let terms: Vec<String> = query
+        .to_lowercase()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    if terms.is_empty() {
+        return Err("query must not be empty".into());
+    }
+    Ok(terms)
+}
+
+/// Sum over the terms of their non-overlapping occurrence counts in `haystack` (lowercase).
+fn term_score(haystack: &str, terms: &[String]) -> usize {
+    terms
+        .iter()
+        .map(|term| haystack.matches(term.as_str()).count())
+        .sum()
+}
+
 fn snippet_for(summary: &str, needle: &str) -> String {
     let Some((match_start, match_end)) = find_lowercase(summary, needle) else {
         return summary.chars().take(160).collect();
@@ -714,10 +748,13 @@ fn snippet_for(summary: &str, needle: &str) -> String {
     summary[start..end].trim().to_string()
 }
 
-/// Byte range in `text` of the first case-insensitive match of `needle_lower` (already lowercase,
-/// non-empty). Lowercasing can change the byte length, so the match is located in the lowercased
-/// text and mapped back to the original characters that produced it.
+/// Byte range in `text` of the first case-insensitive match of `needle_lower` (already lowercase).
+/// An empty needle matches nothing. Lowercasing can change the byte length, so the match is
+/// located in the lowercased text and mapped back to the original characters that produced it.
 fn find_lowercase(text: &str, needle_lower: &str) -> Option<(usize, usize)> {
+    if needle_lower.is_empty() {
+        return None;
+    }
     let mut lower = String::with_capacity(text.len());
     let mut spans = Vec::with_capacity(text.len());
     for (start, ch) in text.char_indices() {
@@ -1381,6 +1418,49 @@ mod tests {
             assert_eq!(hits.len(), 1);
             assert!(hits[0].snippet.contains("target"), "{}", hits[0].snippet);
         }
+    }
+
+    fn six_turns() -> Vec<Value> {
+        (0..6)
+            .map(|i| {
+                let role = if i == 5 { "user" } else { "model" };
+                json!({"role": role, "parts": [{"text": format!("turn {i}")}]})
+            })
+            .collect()
+    }
+
+    #[test]
+    fn search_ranks_the_block_matching_more_terms_first_without_needing_the_phrase() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let mut contents = six_turns();
+        let calls = vec![
+            CompressCall {
+                start: 1,
+                end: 2,
+                summary: "alpha only".into(),
+                topic: None,
+            },
+            CompressCall {
+                start: 3,
+                end: 5,
+                summary: "beta and alpha".into(),
+                topic: None,
+            },
+        ];
+        compressor
+            .compress_batch(&mut contents, calls, &CompressPolicy::default())
+            .unwrap();
+
+        // "alpha beta" is not a phrase in either summary: both match, the one with both terms first.
+        let hits = compressor.search_context("alpha beta", 5).unwrap();
+        let ids: Vec<&str> = hits.iter().map(|hit| hit.block_id.as_str()).collect();
+        assert_eq!(ids, ["b2", "b1"]);
+
+        // The limit applies after ranking, so the best block survives a limit of one.
+        let top = compressor.search_context("alpha beta", 1).unwrap();
+        assert_eq!(top[0].block_id, "b2");
+        assert!(compressor.search_context("  ", 5).is_err());
     }
 
     #[test]
