@@ -13,9 +13,14 @@ fn vars() -> PromptVars {
     }
 }
 
+/// Replaces the override in one rename. A plain write truncates the file first, and the
+/// polling watcher can read that empty file: an empty override is the default text, so the
+/// watcher would fall back to the default instead of keeping the last good text.
 fn write_override(dir: &Path, id: &str, text: &str) {
     std::fs::create_dir_all(dir).unwrap();
-    std::fs::write(dir.join(format!("{id}.md")), text).unwrap();
+    let staged = dir.join(format!(".{id}.md.staged"));
+    std::fs::write(&staged, text).unwrap();
+    std::fs::rename(&staged, dir.join(format!("{id}.md"))).unwrap();
 }
 
 #[test]
