@@ -114,6 +114,9 @@ impl NudgeState {
         if window == 0 {
             return None;
         }
+        // Growth is measured from the last nudge or the lowest count since, so a context
+        // that shrank earns its next nudge from its new size.
+        self.last_nudge_tokens = self.last_nudge_tokens.min(tokens);
         let over_limit = at_percent(tokens, window, config.max_context_limit_pct);
         let emergency = at_percent(tokens, window, config.emergency_threshold_pct);
         let floor = pressure_floor(window, config.min_pressure_benefit_tokens);

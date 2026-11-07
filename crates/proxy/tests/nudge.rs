@@ -83,6 +83,22 @@ fn a_growth_nudge_still_needs_compressible_mass() {
 }
 
 #[test]
+fn the_growth_reference_falls_when_the_context_shrinks() {
+    let window = 1_000_000;
+    let mut state = NudgeState::default();
+    observe(&mut state, 75_000, window);
+    assert_eq!(
+        observe(&mut state, 125_000, window).map(|n| n.kind),
+        Some(NudgeKind::First)
+    );
+    // The context shrank (a fold outside a compress, or a new conversation): no nudge,
+    // but the next growth is measured from here, not from the old peak.
+    assert_eq!(observe(&mut state, 40_000, window), None);
+    let again = observe(&mut state, 90_000, window).expect("growth from the shrunk context");
+    assert_eq!(again.since_last, 50_000);
+}
+
+#[test]
 fn first_nudge_fires_once_then_pressure_fires_every_turn_while_over() {
     let window = 64_000;
     let mut state = NudgeState::default();
