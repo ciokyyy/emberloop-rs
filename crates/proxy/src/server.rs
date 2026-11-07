@@ -31,6 +31,7 @@ use crate::nudge::{self, NudgeConfig, NudgeKind, NudgeState};
 use crate::splice::{turn_key, Splice, SpliceStore};
 use crate::token::{TokenError, TokenSigner};
 use crate::tokens::turns_tokens;
+use crate::turnkeys;
 use crate::wire::{
     extract_core_contents, extract_proxy_call_from_payload, inject_prompts_for_wire,
     inject_tools_for_wire, write_core_contents, WireKind,
@@ -772,7 +773,7 @@ fn strip_forged_markers(contents: &mut [Value]) {
             cleaned = true;
         }
         if cleaned {
-            if let Some(raw) = turn.get_mut("_raw") {
+            if let Some(raw) = turn.get_mut(turnkeys::RAW) {
                 strip_raw_markers(raw);
             }
         }
@@ -886,7 +887,7 @@ fn truncate_emergency(contents: &mut [Value]) {
             truncated_raw = Some((id, truncated));
         }
         if let Some((id, text)) = truncated_raw {
-            if let Some(raw) = turn.get_mut("_raw") {
+            if let Some(raw) = turn.get_mut(turnkeys::RAW) {
                 set_raw_tool_result(raw, &id, &text);
             }
         }
@@ -1026,11 +1027,8 @@ fn inject_nudge(
     };
     let raw = runtime.pins.text(id).unwrap_or_default();
     let text = render_text(id, raw, &vars)?;
-    // `_nudge` marks the turn as proxy-only: a fold must not store it, and no wire may see it.
-    contents.insert(
-        result_index + 1,
-        json!({ "role": "user", "parts": [{ "text": text }], "_nudge": true }),
-    );
+    // The nudge turn is proxy-only: a fold must not store it, and no wire may see it.
+    contents.insert(result_index + 1, turnkeys::nudge_turn(&text));
     let report = NudgeReport {
         kind: fired.kind.name(),
         tokens,
@@ -1237,7 +1235,7 @@ fn run_proxy_tool(
         settings,
         window,
     );
-    let turns = proxy_pair(&call, &text, &format!("emberloop-splice:{}", call.id));
+    let turns = proxy_pair(&call, &text, &turnkeys::splice_marker(&call.id));
     contents.extend(turns.clone());
     write_core_contents(wire, request, contents);
     Ok((turns, after))
@@ -1249,7 +1247,7 @@ fn splice_anchor(contents: &[Value]) -> Option<String> {
     contents
         .iter()
         .rev()
-        .find(|turn| turn.get("_nudge").is_none())
+        .find(|turn| !turnkeys::is_transient(turn))
         .and_then(turn_key)
 }
 
@@ -1322,8 +1320,8 @@ fn store_proxy_splice(
         .and_then(|part| part.get("functionCall"))
         .and_then(|call| call.get("id"))
         .and_then(Value::as_str)
-        .map(|id| format!("emberloop-splice:{id}"))
-        .unwrap_or_else(|| "emberloop-splice:unknown".to_string());
+        .map(turnkeys::splice_marker)
+        .unwrap_or_else(|| turnkeys::splice_marker("unknown"));
     let anchor = turns
         .get(1)
         .and_then(|turn| turn.get("parts"))
@@ -1794,7 +1792,7 @@ impl SseState {
             return Ok(());
         }
         let first_id = self.completed[0].call.id.clone();
-        let marker = format!("emberloop-splice:{first_id}");
+        let marker = turnkeys::splice_marker(&first_id);
         let turns = self
             .completed
             .iter()
@@ -2239,7 +2237,7 @@ fn rewrite_payload(
             remember_or_apply_step_signature(&mut part, &mut state.step_signature);
             if let Some(call) = proxy_call_from_part(&part) {
                 swallowed_signature =
-                    swallowed_signature.or_else(|| part.get("thoughtSignature").cloned());
+                    swallowed_signature.or_else(|| part.get(turnkeys::THOUGHT_SIGNATURE).cloned());
                 calls.push(call);
                 changed = true;
                 continue;
@@ -2267,13 +2265,13 @@ fn rewrite_payload(
 /// A signed part sets the step's signature; a swallowed call without one
 /// takes it, because the store replays that call as a turn of its own.
 fn remember_or_apply_step_signature(part: &mut Value, step_signature: &mut Option<Value>) {
-    if let Some(signature) = part.get("thoughtSignature") {
+    if let Some(signature) = part.get(turnkeys::THOUGHT_SIGNATURE) {
         *step_signature = Some(signature.clone());
         return;
     }
     if proxy_call_from_part(part).is_some() {
         if let Some(signature) = step_signature.clone() {
-            part["thoughtSignature"] = signature;
+            part[turnkeys::THOUGHT_SIGNATURE] = signature;
         }
     }
 }
@@ -2288,8 +2286,8 @@ fn hand_over_signature(kept: &mut [Value], signature: Option<Value>) {
         .iter_mut()
         .find(|part| part.get("functionCall").is_some());
     if let Some(part) = first_call {
-        if part.get("thoughtSignature").is_none() {
-            part["thoughtSignature"] = signature;
+        if part.get(turnkeys::THOUGHT_SIGNATURE).is_none() {
+            part[turnkeys::THOUGHT_SIGNATURE] = signature;
         }
     }
 }

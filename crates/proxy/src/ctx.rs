@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::tokens::text_tokens;
+use crate::turnkeys;
 use crate::wire::{response_text, set_response_text};
 
 /// Smallest result, in estimated tokens, that is replaced by a handle: the reference's
@@ -103,7 +104,7 @@ impl CtxStore {
                 replaced += 1;
             }
         }
-        if let (Some(raw), Some(text)) = (turn.get_mut("_raw"), raw_text) {
+        if let (Some(raw), Some(text)) = (turn.get_mut(turnkeys::RAW), raw_text) {
             set_raw_content(raw, &text);
         }
         replaced
