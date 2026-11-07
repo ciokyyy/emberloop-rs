@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
@@ -156,6 +156,10 @@ struct SessionRuntime {
     last_input_tokens: AtomicU64,
     nudge: Mutex<NudgeState>,
     nudge_file: std::path::PathBuf,
+    /// Set by an emergency nudge; while set, every outgoing request truncates its older large
+    /// results, so the truncated prefix stays byte-identical. Cleared by a fold or a reset.
+    /// In memory only: a restarted proxy starts clear.
+    emergency_truncated: AtomicBool,
 }
 
 impl SessionRuntime {
@@ -177,11 +181,14 @@ impl SessionRuntime {
                 NativeCompressor::new(spill_dir).map_err(ProxyError::Compression)?,
             )),
             last_input_tokens: AtomicU64::new(0),
+            emergency_truncated: AtomicBool::new(false),
         })
     }
 
-    /// A compress or a conversation restart closes the first-nudge gate (ticket 20).
+    /// A compress or a conversation restart closes the first-nudge gate (ticket 20) and ends
+    /// the sticky emergency truncation.
     fn close_nudge_gate(&self) -> Result<(), ProxyError> {
+        self.emergency_truncated.store(false, Ordering::Relaxed);
         let mut gate = lock(&self.nudge)?;
         gate.reset_after_compress();
         nudge::save(&self.nudge_file, &gate)?;
@@ -663,6 +670,9 @@ fn prepare_request(
     } else {
         None
     };
+    if preflight.is_some() {
+        runtime.emergency_truncated.store(false, Ordering::Relaxed);
+    }
     // The nudge goes last, on the final contents, so its turn numbers match what compress sees.
     let (nudge, gate) = if settings.proxy_compression && settings.inject_nudge {
         inject_nudge(runtime, &mut contents, window, settings)?
@@ -673,6 +683,9 @@ fn prepare_request(
         .as_ref()
         .is_some_and(|report| report.kind == NudgeKind::Emergency.name())
     {
+        runtime.emergency_truncated.store(true, Ordering::Relaxed);
+    }
+    if runtime.emergency_truncated.load(Ordering::Relaxed) {
         truncate_emergency(&mut contents);
     }
     write_core_contents(wire, request, contents);

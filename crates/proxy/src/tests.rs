@@ -2706,19 +2706,14 @@ async fn drive_growing(
     steps: usize,
     mut before: impl FnMut(usize, &Fixture) -> Option<Break>,
 ) -> Vec<(Value, Option<Break>)> {
-    let prompt = json!({ "role": "user", "parts": [{ "text": "start the task" }] });
-    let mut history = vec![prompt.clone()];
     // `warm` steps are already in the history before the first request, as after a long run.
-    for step in 0..warm {
-        grow_step(&mut history, step);
-        history.push(json!({ "role": "model", "parts": [{ "text": "done" }] }));
-    }
+    let mut history = warm_history(warm);
     let mut requests = Vec::new();
     for index in 0..steps {
         let brk = before(index, fixture);
         if matches!(brk, Some(Break::Reset)) {
             fixture.state.reset_history("ses_1").await.unwrap();
-            history = vec![prompt.clone()];
+            history = warm_history(0);
         }
         grow_step(&mut history, warm + index);
         let first_body = fixture.fake.bodies.lock().unwrap().len();
@@ -2769,7 +2764,9 @@ async fn prefix_is_stable_while_the_conversation_grows() {
 #[tokio::test]
 async fn prefix_is_stable_across_the_first_nudge() {
     let fixture = fixture_with(echoed_usage_fake()).await;
-    let requests = drive_growing(&fixture, 0, 28, |_, _| None).await;
+    // Twenty-two steps are warm (about 66000 tokens); the first nudge fires within the run, at
+    // about 75000 tokens. Fewer driven requests keep the debug-build run short.
+    let requests = drive_growing(&fixture, 22, 6, |_, _| None).await;
     let fired: Vec<usize> = requests
         .iter()
         .enumerate()
@@ -2811,18 +2808,18 @@ async fn prefix_is_stable_across_a_mid_run_compress() {
 }
 
 #[tokio::test]
-#[ignore = "fails until sticky emergency truncation lands: the band flips with the truncated size"]
 async fn prefix_is_stable_after_emergency_truncation_stops() {
     let fixture = fixture_with(echoed_usage_fake()).await;
-    // Twenty steps are already in the history, so the first request is in emergency: older
-    // results are truncated from the start and no request sees the untruncated history.
+    // Four steps are already in the history (about 12000 tokens), so the first request is in
+    // emergency at a 1 percent band: older results are truncated from the start and no request
+    // sees the untruncated history.
     fixture
         .settings
         .try_write()
         .unwrap()
-        .emergency_threshold_percent = 5;
-    let emergency_requests = 20;
-    let requests = drive_growing(&fixture, 20, 22, |index, fixture| {
+        .emergency_threshold_percent = 1;
+    let emergency_requests = 8;
+    let requests = drive_growing(&fixture, 4, 12, |index, fixture| {
         if index == emergency_requests {
             // The band no longer covers the request: the context is under the emergency line.
             fixture
@@ -2834,12 +2831,12 @@ async fn prefix_is_stable_after_emergency_truncation_stops() {
         None
     })
     .await;
-    assert!(
-        requests[..emergency_requests]
-            .iter()
-            .any(|(body, _)| body.to_string().contains("emergency truncation")),
-        "the emergency phase truncated older results"
-    );
+    for (index, (body, _)) in requests[..emergency_requests].iter().enumerate() {
+        assert!(
+            newest_result(body).contains("emergency truncation"),
+            "emergency request {index} truncates the result that arrived with it"
+        );
+    }
     assert_run_is_prefix_stable("emergency", &requests);
 }
 
@@ -2856,4 +2853,76 @@ async fn prefix_breaks_at_a_reset_restart_the_conversation() {
         "the reset restarted the harness conversation"
     );
     assert_run_is_prefix_stable("reset", &requests);
+}
+
+fn newest_result(body: &Value) -> String {
+    body["contents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .rev()
+        .find_map(|turn| {
+            turn["parts"]
+                .as_array()?
+                .iter()
+                .find_map(|part| part["functionResponse"]["response"]["result"].as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+/// `steps` finished calls and answers, as a harness history that has run for a while.
+fn warm_history(steps: usize) -> Vec<Value> {
+    let mut history = vec![json!({ "role": "user", "parts": [{ "text": "start the task" }] })];
+    for step in 0..steps {
+        grow_step(&mut history, step);
+        history.push(json!({ "role": "model", "parts": [{ "text": "done" }] }));
+    }
+    history
+}
+
+#[tokio::test]
+async fn a_compress_clears_the_sticky_emergency_flag() {
+    let fixture = fixture().await;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    runtime.emergency_truncated.store(true, Ordering::Relaxed);
+    let mut history = warm_history(4);
+    let settings = api::state::Settings {
+        preserve_recent_messages: 0,
+        ..api::state::Settings::default()
+    };
+    let call = ProxyCall {
+        name: "compress".into(),
+        id: "call_c".into(),
+        part: json!({}),
+        args: json!({"start": 1, "end": 3, "summary": "folded"}),
+    };
+    execute_tool(&runtime, &mut history, &call, &settings, 1_000_000).unwrap();
+    assert!(!runtime.emergency_truncated.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn a_preflight_fold_clears_the_sticky_emergency_flag() {
+    let fixture = fixture().await;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    runtime.emergency_truncated.store(true, Ordering::Relaxed);
+    // Twenty steps are about 60000 tokens: over this window, so the preflight folds them.
+    let mut history = warm_history(20);
+    history.push(json!({ "role": "user", "parts": [{ "text": "continue" }] }));
+    let mut request = body(Value::Array(history));
+    let settings = api::state::Settings {
+        preserve_recent_messages: 0,
+        ..api::state::Settings::default()
+    };
+    let outcome = prepare_request(
+        &runtime,
+        WireKind::Google,
+        &mut request,
+        50_000,
+        &settings,
+        false,
+    )
+    .unwrap();
+    assert!(outcome.preflight.is_some(), "the preflight fold ran");
+    assert!(!runtime.emergency_truncated.load(Ordering::Relaxed));
 }
