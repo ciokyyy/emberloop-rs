@@ -1,10 +1,14 @@
+use crate::marker;
+use crate::tokens;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Snippet budget in characters, and how many of them come before the match.
 const SNIPPET_TOTAL: usize = 200;
 const SNIPPET_AHEAD: usize = 80;
+/// Directory under a Session's spill dir holding one `<block id>.json` per fold.
+const BLOCKS_DIR: &str = "blocks";
 
 /// One folded range: the summary survives, the original turns live in `spill/`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -185,7 +189,7 @@ impl NativeCompressor {
             next_id: 1,
             spill_dir: spill_dir.into(),
         };
-        let entries = match std::fs::read_dir(compressor.spill_dir.join("blocks")) {
+        let entries = match std::fs::read_dir(compressor.spill_dir.join(BLOCKS_DIR)) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(compressor),
             Err(error) => return Err(format!("load compression blocks: {error}")),
@@ -219,9 +223,27 @@ impl NativeCompressor {
         Ok(compressor)
     }
 
+    /// Moves the spill dir's blocks directory aside as `blocks-reset-N` (N the first free number),
+    /// so a new compressor starts empty. The originals stay on disk. A missing directory moves
+    /// nothing.
+    pub fn archive_blocks(spill_dir: &Path) -> std::io::Result<()> {
+        let blocks = spill_dir.join(BLOCKS_DIR);
+        if !blocks.exists() {
+            return Ok(());
+        }
+        let mut generation = 1;
+        while spill_dir
+            .join(format!("blocks-reset-{generation}"))
+            .exists()
+        {
+            generation += 1;
+        }
+        std::fs::rename(blocks, spill_dir.join(format!("blocks-reset-{generation}")))
+    }
+
     /// Writes the block's file and returns its path. A failed rename leaves no temporary file.
     fn spill_originals(&self, block: &Block) -> Result<PathBuf, String> {
-        let dir = self.spill_dir.join("blocks");
+        let dir = self.spill_dir.join(BLOCKS_DIR);
         std::fs::create_dir_all(&dir).map_err(|err| format!("spill dir: {err}"))?;
         let bytes = serde_json::to_vec(block).map_err(|err| err.to_string())?;
         let temporary = dir.join(format!("{}.tmp", block.id));
@@ -234,23 +256,8 @@ impl NativeCompressor {
         Ok(path)
     }
 
-    fn marker(&self, call: &CompressCall, block_id: &str) -> String {
-        let topic = call
-            .topic
-            .as_deref()
-            .map(|topic| format!(" · {topic}"))
-            .unwrap_or_default();
-        format!(
-            "📦 [acp] Compressed turns {}–{} into block {}{topic}\n\n{}",
-            call.start,
-            call.end.saturating_sub(1),
-            block_id,
-            call.summary
-        )
-    }
-
-    fn summary_turn(marker: String) -> Value {
-        json!({"role": "user", "parts": [{"text": marker}]})
+    fn summary_turn(text: String) -> Value {
+        json!({"role": "user", "parts": [{"text": text}]})
     }
 
     /// Folds one range of `working` into a new block without touching the compressor's state.
@@ -261,7 +268,13 @@ impl NativeCompressor {
         id: &str,
     ) -> (String, Block) {
         let originals = working[call.start..call.end].to_vec();
-        let summary_turn = Self::summary_turn(self.marker(call, id));
+        let summary_turn = Self::summary_turn(marker::summary(
+            call.start,
+            call.end.saturating_sub(1),
+            id,
+            call.topic.as_deref(),
+            &call.summary,
+        ));
         working.splice(call.start..call.end, [summary_turn.clone()]);
         let line = format!(
             "Compressed turns {}–{} into block {id}. Originals kept in the session spill dir.",
@@ -398,7 +411,7 @@ impl Compressor for NativeCompressor {
         }
 
         let position = contents.iter().position(|turn| turn == &block.summary_turn);
-        if position.is_none() && !contains_window(contents, &block.originals) {
+        if position.is_none() && find_span(contents, &block.originals).is_none() {
             return Err(format!(
                 "block {} is not present in this conversation",
                 block.id
@@ -503,7 +516,7 @@ impl Compressor for NativeCompressor {
                 .blocks
                 .iter()
                 .filter(|block| !block.restored)
-                .map(|block| token_count(&block.originals))
+                .map(|block| tokens::turns_tokens(&block.originals))
                 .sum(),
             spill_dir: self.spill_dir.to_string_lossy().to_string(),
         }
@@ -526,12 +539,7 @@ impl Compressor for NativeCompressor {
         loop {
             let mut moved = false;
             for block in &blocks {
-                let wanted: Vec<Value> = block
-                    .originals
-                    .iter()
-                    .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, &skip_ids))
-                    .cloned()
-                    .collect();
+                let wanted = wanted_turns(block, skip, &skip_ids);
                 if let Some(matched) = find_span(contents, &wanted) {
                     fold_matched(
                         contents,
@@ -557,12 +565,7 @@ impl Compressor for NativeCompressor {
             .iter()
             .filter(|block| !block.restored && !block.originals.is_empty())
             .max_by_key(|block| block.originals.len())?;
-        let wanted: Vec<Value> = block
-            .originals
-            .iter()
-            .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, &skip_ids))
-            .cloned()
-            .collect();
+        let wanted = wanted_turns(block, skip, &skip_ids);
         let head = wanted.first()?;
         let Some(start) = contents.iter().position(|turn| turn_eq(turn, head)) else {
             return Some(format!(
@@ -586,6 +589,17 @@ impl Compressor for NativeCompressor {
     }
 }
 
+/// The stored turns a fold must find in the request: its originals without the transient nudge
+/// and without the turns the splice store puts back.
+fn wanted_turns(block: &Block, skip: &[Value], skip_ids: &[&str]) -> Vec<Value> {
+    block
+        .originals
+        .iter()
+        .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, skip_ids))
+        .cloned()
+        .collect()
+}
+
 /// One short line for a stored or requested turn, used only by `fold_report`.
 fn brief(turn: &Value) -> String {
     let text = turn
@@ -594,24 +608,19 @@ fn brief(turn: &Value) -> String {
         .map(|parts| {
             parts
                 .iter()
-                .map(|part| {
-                    match part
-                        .get("functionCall")
-                        .or_else(|| part.get("functionResponse"))
-                    {
-                        Some(call) => format!(
-                            "{}[{}]",
-                            call.get("name").and_then(Value::as_str).unwrap_or("?"),
-                            call.get("id").and_then(Value::as_str).unwrap_or("?")
-                        ),
-                        None => part
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .chars()
-                            .take(40)
-                            .collect(),
-                    }
+                .map(|part| match part_call(part) {
+                    Some(call) => format!(
+                        "{}[{}]",
+                        call.get("name").and_then(Value::as_str).unwrap_or("?"),
+                        call.get("id").and_then(Value::as_str).unwrap_or("?")
+                    ),
+                    None => part
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .chars()
+                        .take(40)
+                        .collect(),
                 })
                 .collect::<Vec<_>>()
                 .join(" | ")
@@ -696,19 +705,7 @@ fn turn_tool_names(turn: &Value) -> impl Iterator<Item = &str> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|part| {
-            part.get("functionCall")
-                .or_else(|| part.get("functionResponse"))
-                .and_then(|call| call.get("name"))
-                .and_then(Value::as_str)
-        })
-}
-
-fn token_count(turns: &[Value]) -> u64 {
-    turns
-        .iter()
-        .map(|turn| u64::try_from(turn.to_string().len() / 4).unwrap_or(u64::MAX))
-        .sum()
+        .filter_map(|part| part_call(part)?.get("name").and_then(Value::as_str))
 }
 
 /// Most turns a stored steer or a proxy pair may add between two folded turns. They are put back
@@ -795,6 +792,12 @@ fn turn_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// The function call or the function result a part carries, whichever it is.
+fn part_call(part: &Value) -> Option<&Value> {
+    part.get("functionCall")
+        .or_else(|| part.get("functionResponse"))
+}
+
 /// Every function-call id the stored turns carry. A splice pair changes shape on the wire round
 /// trip (`_raw`, the tool name, the marker's field), so the id is what identifies it.
 fn turn_ids(turns: &[Value]) -> Vec<&str> {
@@ -802,10 +805,7 @@ fn turn_ids(turns: &[Value]) -> Vec<&str> {
         .iter()
         .filter_map(|turn| turn.get("parts").and_then(Value::as_array))
         .flatten()
-        .filter_map(|part| {
-            part.get("functionCall")
-                .or_else(|| part.get("functionResponse"))
-        })
+        .filter_map(part_call)
         .filter_map(|call| call.get("id").and_then(Value::as_str))
         .collect()
 }
@@ -816,18 +816,13 @@ fn is_skipped(turn: &Value, skip: &[Value], skip_ids: &[&str]) -> bool {
         .and_then(Value::as_array)
         .is_some_and(|parts| {
             parts.iter().any(|part| {
-                part.get("functionCall")
-                    .or_else(|| part.get("functionResponse"))
+                part_call(part)
                     .and_then(|call| call.get("id"))
                     .and_then(Value::as_str)
                     .is_some_and(|id| skip_ids.contains(&id))
             })
         });
     id_matches || skip.iter().any(|spliced| turn_eq(turn, spliced))
-}
-
-fn contains_window(contents: &[Value], window: &[Value]) -> bool {
-    find_span(contents, window).is_some()
 }
 
 /// Lowercased whitespace-separated query terms; an empty query is an error.
@@ -887,7 +882,7 @@ fn original_text(block: &Block) -> String {
     pieces
         .join("\n")
         .lines()
-        .filter(|line| !line.starts_with("📦 [acp]") && !line.starts_with("❌ [acp]"))
+        .filter(|line| !marker::is_tool_text(line))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -1984,5 +1979,31 @@ mod tests {
         // `rebuilt[2]` is the second turn of the fold: the first one at index 1 is `turn 0`.
         let report = compressor.fold_report(&rebuilt, &[]).expect("a report");
         assert!(report.contains("turn 1 differs"), "{report}");
+    }
+
+    #[test]
+    fn archive_blocks_moves_the_directory_aside_under_the_first_free_generation() {
+        let dir = tempdir().unwrap();
+        let blocks = dir.path().join("blocks");
+        std::fs::create_dir_all(&blocks).unwrap();
+        std::fs::write(blocks.join("b1.json"), b"old").unwrap();
+
+        NativeCompressor::archive_blocks(dir.path()).unwrap();
+        assert!(!blocks.exists());
+        assert_eq!(
+            std::fs::read(dir.path().join("blocks-reset-1/b1.json")).unwrap(),
+            b"old"
+        );
+
+        std::fs::create_dir_all(&blocks).unwrap();
+        NativeCompressor::archive_blocks(dir.path()).unwrap();
+        assert!(dir.path().join("blocks-reset-2").exists());
+    }
+
+    #[test]
+    fn archive_blocks_with_no_directory_moves_nothing() {
+        let dir = tempdir().unwrap();
+        NativeCompressor::archive_blocks(dir.path()).unwrap();
+        assert!(!dir.path().join("blocks-reset-1").exists());
     }
 }

@@ -2,7 +2,7 @@
 
 //! Characterization of the compression engine through its public API: turn matching
 //! (`turn_eq`, `find_span`, `is_transient`), refolding (`apply_skipping`), `fold_report`,
-//! the summary marker, `token_count`, the policy and batch validation. Each expectation states
+//! the summary marker, `tokens_compressed`, the policy and batch validation. Each expectation states
 //! a behaviour the compressor must keep. `fixtures/compressor/conversation.json` is a 12-turn chat history with
 //! `_raw` copies, a thought signature, a steer, a proxy splice pair and a transient nudge.
 
@@ -74,11 +74,6 @@ fn harness_view(turns: &[Value]) -> Vec<Value> {
             turn
         })
         .collect()
-}
-
-/// The estimate the status totals use: compact JSON bytes of the turn, divided by four.
-fn estimate(turn: &Value) -> u64 {
-    u64::try_from(turn.to_string().len() / 4).unwrap()
 }
 
 #[test]
@@ -412,16 +407,18 @@ fn a_batch_returns_one_report_line_per_range_in_history_order() {
 }
 
 #[test]
-fn tokens_compressed_estimates_each_folded_turn_as_its_json_bytes_over_four() {
+fn tokens_compressed_counts_the_folded_turns_by_the_reference_rule() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
     compressor
         .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
         .unwrap();
 
-    let expected: u64 = conversation()[1..5].iter().map(estimate).sum();
+    // By hand, ceil(chars / 4) per text: turn 1 is its message text (9), turn 2 its call name
+    // and arguments (1 + 7), turn 3 its result text (10), turn 4 its message text (11). The `_raw`
+    // copies are not message text and count nothing.
     let status = compressor.status();
-    assert_eq!(status.tokens_compressed, expected);
+    assert_eq!(status.tokens_compressed, 38);
     assert_eq!(status.spilled_turns, 4);
     assert_eq!(
         (status.blocks, status.active_blocks, status.restored_blocks),
