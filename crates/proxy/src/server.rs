@@ -21,7 +21,8 @@ use store::{DataRoot, ProjectsStore, SessionsStore};
 use tokio::time::timeout;
 
 use crate::compressor::{
-    CompressCall, CompressPolicy, Compressor, DecompressCall, NativeCompressor, SearchHit,
+    latest_user_turn, CompressCall, CompressPolicy, Compressor, DecompressCall, NativeCompressor,
+    SearchHit,
 };
 use crate::ctx::CtxStore;
 use crate::meter;
@@ -709,7 +710,11 @@ fn preflight_fold(
             break;
         }
         let keep = policy.preserve_recent_messages.min(contents.len());
-        let end = contents.len().saturating_sub(keep);
+        // Never reaches the latest user message: no fold may include it.
+        let end = contents
+            .len()
+            .saturating_sub(keep)
+            .min(latest_user_turn(contents).unwrap_or(usize::MAX));
         if end <= 1 {
             break;
         }
@@ -723,8 +728,7 @@ fn preflight_fold(
             topic: Some("preflight".to_string()),
         };
         let mut compressor = lock(&runtime.compressor)?;
-        compressor.set_policy(policy.clone());
-        match compressor.compress_batch(contents, vec![call]) {
+        match compressor.compress_batch(contents, vec![call], &policy) {
             Ok(text) => folded = Some(text),
             Err(_) => break,
         }
@@ -1301,8 +1305,7 @@ fn execute_tool(
         "compress" => {
             let calls = parse_compress_calls(&call.args)?;
             let mut compressor = lock(&runtime.compressor).map_err(|error| error.to_string())?;
-            compressor.set_policy(compress_policy(settings));
-            let folded = compressor.compress_batch(contents, calls)?;
+            let folded = compressor.compress_batch(contents, calls, &compress_policy(settings))?;
             // The next nudge must judge the folded history, not the usage from before the fold.
             runtime
                 .last_input_tokens

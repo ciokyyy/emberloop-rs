@@ -11,7 +11,6 @@ struct Block {
     topic: Option<String>,
     summary: String,
     originals: Vec<Value>,
-    #[serde(default)]
     summary_turn: Value,
     #[serde(default)]
     restored: bool,
@@ -56,29 +55,19 @@ pub struct CompressPolicy {
     pub protected_tools: Vec<String>,
 }
 
-impl CompressPolicy {
-    pub fn with_recent(mut self, preserve_recent_messages: usize) -> Self {
-        self.preserve_recent_messages = preserve_recent_messages;
-        self
-    }
-
-    pub fn with_protected_tools(mut self, protected_tools: Vec<String>) -> Self {
-        self.protected_tools = protected_tools;
-        self
-    }
-}
-
 /// Billion-context backend. Phase 1 ships the native implementation; a future
 /// proxy-backed compressor implements the same operations.
 pub trait Compressor: Send + Sync {
-    fn compress(&mut self, contents: &mut Vec<Value>, call: CompressCall)
-        -> Result<String, String>;
-    /// Fold several ranges in one call. Every range is numbered against the history as it is
-    /// now; they are validated together and either all fold or none does.
+    /// Fold several ranges in one call, checked against `policy` as given for this call. Every
+    /// range is numbered against the history as it is now and validated before anything changes.
+    /// Either all of them fold, changing the history, the blocks and the spill files, or none
+    /// does: a failure removes the spill files it wrote and leaves the history, the blocks and
+    /// the next block id as they were.
     fn compress_batch(
         &mut self,
         contents: &mut Vec<Value>,
         calls: Vec<CompressCall>,
+        policy: &CompressPolicy,
     ) -> Result<String, String>;
     fn decompress(
         &mut self,
@@ -88,19 +77,10 @@ pub trait Compressor: Send + Sync {
     fn search_context(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>, String>;
     fn status(&self) -> CompressorStatus;
 
-    /// Recent-turn and protected-tool policy for the next folds. Backends without folds ignore it.
-    fn set_policy(&mut self, _policy: CompressPolicy) {}
-
     /// Why no stored fold matched `contents`: one line for the session log. Backends without
     /// folds say nothing.
     fn fold_report(&self, _contents: &[Value], _skip: &[Value]) -> Option<String> {
         None
-    }
-
-    /// Re-attach stored folds to a request that the harness rebuilt from its
-    /// own history. Backends without folds do nothing.
-    fn apply(&mut self, contents: &mut Vec<Value>) -> usize {
-        self.apply_skipping(contents, &[])
     }
 
     /// Like `apply`, ignoring `skip` turns when matching a fold's stored turns: steers and proxy
@@ -114,7 +94,6 @@ pub struct NativeCompressor {
     blocks: Vec<Block>,
     next_id: usize,
     spill_dir: PathBuf,
-    policy: CompressPolicy,
 }
 
 impl NativeCompressor {
@@ -123,7 +102,6 @@ impl NativeCompressor {
             blocks: Vec::new(),
             next_id: 1,
             spill_dir: spill_dir.into(),
-            policy: CompressPolicy::default(),
         };
         let entries = match std::fs::read_dir(compressor.spill_dir.join("blocks")) {
             Ok(entries) => entries,
@@ -137,7 +115,7 @@ impl NativeCompressor {
             }
             let bytes =
                 std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-            let mut block: Block = serde_json::from_slice(&bytes)
+            let block: Block = serde_json::from_slice(&bytes)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             let next = block
                 .id
@@ -152,13 +130,6 @@ impl NativeCompressor {
                     path.display()
                 ));
             }
-            if block.summary_turn.is_null() {
-                // Older files kept the summary but not its exact on-wire marker.
-                block.summary_turn = Self::summary_turn(format!(
-                    "📦 [acp] Compressed block {}\n\n{}",
-                    block.id, block.summary
-                ));
-            }
             compressor.next_id = compressor.next_id.max(next);
             compressor.blocks.push(block);
         }
@@ -166,14 +137,19 @@ impl NativeCompressor {
         Ok(compressor)
     }
 
-    fn spill_originals(&self, block: &Block) -> Result<(), String> {
+    /// Writes the block's file and returns its path. A failed rename leaves no temporary file.
+    fn spill_originals(&self, block: &Block) -> Result<PathBuf, String> {
         let dir = self.spill_dir.join("blocks");
         std::fs::create_dir_all(&dir).map_err(|err| format!("spill dir: {err}"))?;
         let bytes = serde_json::to_vec(block).map_err(|err| err.to_string())?;
         let temporary = dir.join(format!("{}.tmp", block.id));
         std::fs::write(&temporary, bytes).map_err(|err| format!("spill write: {err}"))?;
-        std::fs::rename(temporary, dir.join(format!("{}.json", block.id)))
-            .map_err(|err| format!("spill rename: {err}"))
+        let path = dir.join(format!("{}.json", block.id));
+        if let Err(err) = std::fs::rename(&temporary, &path) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(format!("spill rename: {err}"));
+        }
+        Ok(path)
     }
 
     fn marker(&self, call: &CompressCall, block_id: &str) -> String {
@@ -195,30 +171,30 @@ impl NativeCompressor {
         json!({"role": "user", "parts": [{"text": marker}]})
     }
 
-    fn fold_range(
-        &mut self,
-        contents: &mut Vec<Value>,
-        call: CompressCall,
+    /// Folds one range of `working` into a new block without touching the compressor's state.
+    fn stage_fold(
+        &self,
+        working: &mut Vec<Value>,
+        call: &CompressCall,
         id: &str,
-    ) -> Result<String, String> {
-        let originals = contents[call.start..call.end].to_vec();
-        let summary_turn = Self::summary_turn(self.marker(&call, id));
+    ) -> (String, Block) {
+        let originals = working[call.start..call.end].to_vec();
+        let summary_turn = Self::summary_turn(self.marker(call, id));
+        working.splice(call.start..call.end, [summary_turn.clone()]);
+        let line = format!(
+            "Compressed turns {}–{} into block {id}. Originals kept in the session spill dir.",
+            call.start,
+            call.end.saturating_sub(1)
+        );
         let block = Block {
             id: id.to_string(),
             topic: call.topic.clone(),
             summary: call.summary.clone(),
             originals,
-            summary_turn: summary_turn.clone(),
+            summary_turn,
             restored: false,
         };
-        self.spill_originals(&block)?;
-        contents.splice(call.start..call.end, [summary_turn]);
-        self.blocks.push(block);
-        Ok(format!(
-            "Compressed turns {}–{} into block {id}. Originals kept in the session spill dir.",
-            call.start,
-            call.end.saturating_sub(1)
-        ))
+        (line, block)
     }
 
     fn block_index(&self, id: &str) -> Option<usize> {
@@ -240,18 +216,11 @@ impl NativeCompressor {
 }
 
 impl Compressor for NativeCompressor {
-    fn compress(
-        &mut self,
-        contents: &mut Vec<Value>,
-        call: CompressCall,
-    ) -> Result<String, String> {
-        self.compress_batch(contents, vec![call])
-    }
-
     fn compress_batch(
         &mut self,
         contents: &mut Vec<Value>,
         mut calls: Vec<CompressCall>,
+        policy: &CompressPolicy,
     ) -> Result<String, String> {
         if calls.is_empty() {
             return Err("ranges must not be empty".into());
@@ -259,36 +228,63 @@ impl Compressor for NativeCompressor {
         calls.sort_by_key(|call| call.start);
         let several = calls.len() > 1;
         for (index, call) in calls.iter().enumerate() {
-            let named = |error: String| {
+            validate_range(call, contents, policy).map_err(|error| {
                 if several {
                     format!("range {}: {error}", index + 1)
                 } else {
                     error
                 }
-            };
-            validate_range(call, contents, &self.policy).map_err(named)?;
-            if index > 0 && call.start < calls[index - 1].end {
-                return Err(format!(
-                    "range {} overlaps range {}: turns {}–{} and {}–{}",
-                    index + 1,
-                    index,
-                    calls[index - 1].start,
-                    calls[index - 1].end.saturating_sub(1),
+            })?;
+        }
+        // In history order the earlier range wins: a range that starts inside the last kept one is
+        // not folded, and the report says so, because the model must know the turns are still
+        // there.
+        let mut kept: Vec<CompressCall> = Vec::with_capacity(calls.len());
+        let mut warnings = Vec::new();
+        for call in calls {
+            match kept.last() {
+                Some(last) if call.start < last.end => warnings.push(format!(
+                    "Warning: turns {}–{} overlap turns {}–{} and were not folded.",
                     call.start,
-                    call.end.saturating_sub(1)
-                ));
+                    call.end.saturating_sub(1),
+                    last.start,
+                    last.end.saturating_sub(1)
+                )),
+                _ => kept.push(call),
             }
         }
 
         // Ids follow the position in the history, but ranges are folded from the highest down
-        // so folding one never moves the numbers of the ones before it.
+        // so folding one never moves the numbers of the ones before it. Everything is staged
+        // on a copy first: the history, the blocks and the next id change only once every
+        // spill has been written.
         let first_id = self.next_id;
-        self.next_id += calls.len();
-        let mut lines = vec![String::new(); calls.len()];
-        for (index, call) in calls.into_iter().enumerate().rev() {
+        let count = kept.len();
+        let mut working = contents.clone();
+        let mut lines = vec![String::new(); count];
+        let mut staged = Vec::with_capacity(count);
+        for (index, call) in kept.into_iter().enumerate().rev() {
             let id = format!("b{}", first_id + index);
-            lines[index] = self.fold_range(contents, call, &id)?;
+            let (line, block) = self.stage_fold(&mut working, &call, &id);
+            lines[index] = line;
+            staged.push(block);
         }
+        let mut written = Vec::with_capacity(count);
+        for block in &staged {
+            match self.spill_originals(block) {
+                Ok(path) => written.push(path),
+                Err(error) => {
+                    for path in written {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        *contents = working;
+        self.next_id = first_id + count;
+        self.blocks.extend(staged.into_iter().rev());
+        lines.extend(warnings);
         Ok(lines.join("\n"))
     }
 
@@ -386,10 +382,6 @@ impl Compressor for NativeCompressor {
         }
     }
 
-    fn set_policy(&mut self, policy: CompressPolicy) {
-        self.policy = policy;
-    }
-
     fn apply_skipping(&mut self, contents: &mut Vec<Value>, skip: &[Value]) -> usize {
         let skip_ids = turn_ids(skip);
         let mut applied = 0;
@@ -413,9 +405,14 @@ impl Compressor for NativeCompressor {
                     .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, &skip_ids))
                     .cloned()
                     .collect();
-                if let Some((start, end)) = find_span(contents, &wanted) {
-                    let replacement = [block.summary_turn.clone()];
-                    contents.splice(start..end, replacement);
+                if let Some(matched) = find_span(contents, &wanted) {
+                    fold_matched(
+                        contents,
+                        &matched,
+                        block.summary_turn.clone(),
+                        skip,
+                        &skip_ids,
+                    );
                     applied += 1;
                     moved = true;
                 }
@@ -502,6 +499,27 @@ fn is_transient(turn: &Value) -> bool {
     turn.get("_nudge").is_some()
 }
 
+/// Index of the latest message the user typed, the one no fold may include.
+pub fn latest_user_turn(contents: &[Value]) -> Option<usize> {
+    contents.iter().rposition(is_user_message)
+}
+
+/// A message the user typed: a user-role turn that is neither a tool result nor the transient
+/// nudge. Tool results carry the user role on the Google wire too, so they are told apart by their
+/// function response.
+fn is_user_message(turn: &Value) -> bool {
+    turn.get("role").and_then(Value::as_str) == Some("user")
+        && !is_transient(turn)
+        && !turn
+            .get("parts")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                parts
+                    .iter()
+                    .any(|part| part.get("functionResponse").is_some())
+            })
+}
+
 fn validate_range(
     call: &CompressCall,
     contents: &[Value],
@@ -523,6 +541,14 @@ fn validate_range(
             "range {}..{} includes the last {keep} preserved turns",
             call.start, call.end
         ));
+    }
+    if let Some(latest) = latest_user_turn(contents) {
+        if (call.start..call.end).contains(&latest) {
+            return Err(format!(
+                "range {}..{} includes the latest user message",
+                call.start, call.end
+            ));
+        }
     }
     if let Some(name) = policy.protected_tools.iter().find(|name| {
         contents[call.start..call.end]
@@ -563,10 +589,9 @@ fn token_count(turns: &[Value]) -> u64 {
 /// contiguous; a bigger gap is a different conversation, not a splice.
 const MAX_SPLICE_GAP: usize = 4;
 
-/// Where the folded turns sit in `contents`: the range from the first to the last of them, found
-/// in order with at most `MAX_SPLICE_GAP` unrelated turns between neighbours. The fast path is the
-/// exact contiguous window.
-fn find_span(contents: &[Value], originals: &[Value]) -> Option<(usize, usize)> {
+/// Indices in `contents` of the folded turns, in order, with at most `MAX_SPLICE_GAP` unrelated
+/// turns between neighbours. The fast path is the exact contiguous window.
+fn find_span(contents: &[Value], originals: &[Value]) -> Option<Vec<usize>> {
     if originals.is_empty() || originals.len() > contents.len() {
         return None;
     }
@@ -574,21 +599,51 @@ fn find_span(contents: &[Value], originals: &[Value]) -> Option<(usize, usize)> 
         .windows(originals.len())
         .position(|turns| turns.iter().zip(originals).all(|(a, b)| turn_eq(a, b)))
     {
-        return Some((start, start + originals.len()));
+        return Some((start..start + originals.len()).collect());
     }
     (0..contents.len())
         .filter(|&start| turn_eq(&contents[start], &originals[0]))
         .find_map(|start| span_from(contents, originals, start))
 }
 
-fn span_from(contents: &[Value], originals: &[Value], start: usize) -> Option<(usize, usize)> {
+fn span_from(contents: &[Value], originals: &[Value], start: usize) -> Option<Vec<usize>> {
+    let mut matched = vec![start];
     let mut at = start;
     for original in &originals[1..] {
         let next = (at + 1..contents.len().min(at + 2 + MAX_SPLICE_GAP))
             .find(|&index| turn_eq(&contents[index], original))?;
+        matched.push(next);
         at = next;
     }
-    Some((start, at + 1))
+    Some(matched)
+}
+
+/// Replaces the matched turns with `replacement` where the first one stood. Turns between them
+/// that the fold did not hold are kept, except the transient and skipped ones: a steer or a
+/// proxy pair the harness will not resend must not be deleted with the fold.
+fn fold_matched(
+    contents: &mut Vec<Value>,
+    matched: &[usize],
+    replacement: Value,
+    skip: &[Value],
+    skip_ids: &[&str],
+) {
+    let (Some(&first), Some(&last)) = (matched.first(), matched.last()) else {
+        return;
+    };
+    let old = std::mem::take(contents);
+    for (index, turn) in old.into_iter().enumerate() {
+        if index == first {
+            contents.push(replacement.clone());
+            continue;
+        }
+        let between = index > first && index < last;
+        let dropped = matched.contains(&index)
+            || (between && (is_transient(&turn) || is_skipped(&turn, skip, skip_ids)));
+        if !dropped {
+            contents.push(turn);
+        }
+    }
 }
 
 /// Turn equality that ignores `thoughtSignature` and `_raw`: the Google wire signs unsigned calls
@@ -685,7 +740,8 @@ mod tests {
             json!({"role": "user", "parts": [{"text": "first"}]}),
             json!({"role": "model", "parts": [{"text": "second"}]}),
             json!({"role": "user", "parts": [{"text": "third"}]}),
-            json!({"role": "model", "parts": [{"text": "fourth"}]}),
+            // The last user message: `call()` folds turns 1 and 2 and must leave it alone.
+            json!({"role": "user", "parts": [{"text": "fourth"}]}),
         ]
     }
 
@@ -703,7 +759,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = turns();
-        compressor.compress(&mut contents, call()).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
         let folded = contents.clone();
         let saved = std::fs::read(dir.path().join("blocks/b1.json")).unwrap();
         drop(compressor);
@@ -711,7 +769,7 @@ mod tests {
         let mut reloaded = NativeCompressor::new(dir.path()).unwrap();
         assert_eq!(reloaded.search_context("x=1", 3).unwrap().len(), 1);
         let mut replay = turns();
-        assert_eq!(reloaded.apply(&mut replay), 1);
+        assert_eq!(reloaded.apply_skipping(&mut replay, &[]), 1);
         assert_eq!(replay, folded);
         reloaded
             .decompress(
@@ -725,16 +783,17 @@ mod tests {
         assert_eq!(replay, turns());
         let mut restarted = NativeCompressor::new(dir.path()).unwrap();
         assert_eq!(restarted.status().restored_blocks, 1);
-        assert_eq!(restarted.apply(&mut replay), 0);
+        assert_eq!(restarted.apply_skipping(&mut replay, &[]), 0);
         restarted
-            .compress(
+            .compress_batch(
                 &mut contents,
-                CompressCall {
+                vec![CompressCall {
                     start: 0,
                     end: 1,
                     summary: "new fold".into(),
                     topic: None,
-                },
+                }],
+                &CompressPolicy::default(),
             )
             .unwrap();
         assert!(dir.path().join("blocks/b2.json").exists());
@@ -750,57 +809,46 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = turns();
-        compressor.compress(&mut contents, call()).unwrap();
         compressor
-            .compress(
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
+        compressor
+            .compress_batch(
                 &mut contents,
-                CompressCall {
+                vec![CompressCall {
                     start: 0,
                     end: 2,
                     summary: "nested plan".into(),
                     topic: None,
-                },
+                }],
+                &CompressPolicy::default(),
             )
             .unwrap();
         let mut reloaded = NativeCompressor::new(dir.path()).unwrap();
         let mut replay = turns();
-        assert_eq!(reloaded.apply(&mut replay), 2);
+        assert_eq!(reloaded.apply_skipping(&mut replay, &[]), 2);
         assert_eq!(replay, contents);
     }
 
     #[test]
-    fn legacy_blocks_remain_recoverable_and_corrupt_files_are_not_overwritten() {
+    fn a_block_without_its_summary_turn_fails_to_load_and_is_not_overwritten() {
         let dir = tempdir().unwrap();
         let blocks = dir.path().join("blocks");
         std::fs::create_dir_all(&blocks).unwrap();
-        std::fs::write(
-            blocks.join("b7.json"),
-            serde_json::to_vec(&json!({
-                "blockId": "b7", "summary": "legacy plan", "topic": null, "originals": turns(),
-            }))
-            .unwrap(),
-        )
+        let legacy = serde_json::to_vec(&json!({
+            "blockId": "b7", "summary": "legacy plan", "topic": null, "originals": turns(),
+        }))
         .unwrap();
-        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
-        assert_eq!(
-            compressor.search_context("legacy", 1).unwrap()[0].block_id,
-            "b7"
-        );
-        compressor
-            .decompress(
-                &mut Vec::new(),
-                DecompressCall {
-                    block_id: "b7".into(),
-                    to_file: Some("legacy.json".into()),
-                },
-            )
-            .unwrap();
-        let restored: Vec<Value> =
-            serde_json::from_slice(&std::fs::read(dir.path().join("legacy.json")).unwrap())
-                .unwrap();
-        assert_eq!(restored, turns());
-        compressor.compress(&mut turns(), call()).unwrap();
-        assert!(blocks.join("b8.json").exists());
+        std::fs::write(blocks.join("b7.json"), &legacy).unwrap();
+        assert!(NativeCompressor::new(dir.path()).is_err());
+        assert_eq!(std::fs::read(blocks.join("b7.json")).unwrap(), legacy);
+    }
+
+    #[test]
+    fn a_corrupt_block_file_fails_to_load_and_is_not_overwritten() {
+        let dir = tempdir().unwrap();
+        let blocks = dir.path().join("blocks");
+        std::fs::create_dir_all(&blocks).unwrap();
         std::fs::write(blocks.join("b9.json"), b"broken json").unwrap();
         assert!(NativeCompressor::new(dir.path()).is_err());
         assert_eq!(
@@ -813,9 +861,14 @@ mod tests {
     fn preserve_recent_messages_rejects_a_range_that_reaches_the_tail() {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
-        compressor.set_policy(CompressPolicy::default().with_recent(2));
+        let policy = CompressPolicy {
+            preserve_recent_messages: 2,
+            ..CompressPolicy::default()
+        };
         let mut contents = turns();
-        let error = compressor.compress(&mut contents, call()).unwrap_err();
+        let error = compressor
+            .compress_batch(&mut contents, vec![call()], &policy)
+            .unwrap_err();
         assert!(error.contains("last 2 preserved turns"), "{error}");
         assert_eq!(contents, turns());
     }
@@ -824,14 +877,19 @@ mod tests {
     fn protected_tools_never_fold_and_are_named_in_the_error() {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
-        compressor.set_policy(CompressPolicy::default().with_protected_tools(vec!["read".into()]));
+        let policy = CompressPolicy {
+            protected_tools: vec!["read".into()],
+            ..CompressPolicy::default()
+        };
         let mut contents = vec![
             json!({"role": "user", "parts": [{"text": "first"}]}),
             json!({"role": "model", "parts": [{"functionCall": {"id": "c1", "name": "read", "args": {}}}]}),
             json!({"role": "user", "parts": [{"functionResponse": {"id": "c1", "name": "read", "response": {"result": "x"}}}]}),
             json!({"role": "model", "parts": [{"text": "fourth"}]}),
         ];
-        let error = compressor.compress(&mut contents, call()).unwrap_err();
+        let error = compressor
+            .compress_batch(&mut contents, vec![call()], &policy)
+            .unwrap_err();
         assert!(error.contains("protected tool read"), "{error}");
     }
 
@@ -840,7 +898,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = turns();
-        compressor.compress(&mut contents, call()).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
         let status = compressor.status();
         assert_eq!(status.active_blocks, 1);
         assert_eq!(status.spilled_turns, 2);
@@ -854,7 +914,9 @@ mod tests {
         let mut contents = turns();
         let originals = contents[1..3].to_vec();
 
-        compressor.compress(&mut contents, call()).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
 
         assert_eq!(contents.len(), 3);
         assert!(contents[1]["parts"][0]["text"]
@@ -873,7 +935,9 @@ mod tests {
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = turns();
         let originals = contents[1..3].to_vec();
-        compressor.compress(&mut contents, call()).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
 
         compressor
             .decompress(
@@ -894,10 +958,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = turns();
-        compressor.compress(&mut contents, call()).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
 
         let mut rebuilt = turns();
-        assert_eq!(compressor.apply(&mut rebuilt), 1);
+        assert_eq!(compressor.apply_skipping(&mut rebuilt, &[]), 1);
         assert_eq!(rebuilt.len(), 3);
         assert!(rebuilt[1]["parts"][0]["text"]
             .as_str()
@@ -910,23 +976,25 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = turns();
-        compressor.compress(&mut contents, call()).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
 
-        // The harness resends the original turns; a stored steer and a proxy pair were put
-        // back between them before the block is looked for.
+        // The harness resends the original turns; a steer and a proxy pair the stored fold never
+        // held sit between them. They are not transient or skipped, so they must survive.
         let mut rebuilt = turns();
         rebuilt.insert(
             2,
             json!({"role": "user", "parts": [{"text": "steer: spliced"}]}),
         );
         rebuilt.insert(3, json!({"role": "user", "parts": [{"text": "pair"}]}));
-        assert_eq!(compressor.apply(&mut rebuilt), 1);
-        assert!(rebuilt.iter().any(|turn| turn["parts"][0]["text"]
+        assert_eq!(compressor.apply_skipping(&mut rebuilt, &[]), 1);
+        assert_eq!(rebuilt.len(), 5, "{rebuilt:?}");
+        assert!(rebuilt[1]["parts"][0]["text"]
             .as_str()
-            .is_some_and(|t| t.contains("block b1"))));
-        assert!(!rebuilt
-            .iter()
-            .any(|turn| turn["parts"][0]["text"].as_str() == Some("steer: spliced")));
+            .is_some_and(|t| t.contains("block b1")));
+        assert_eq!(rebuilt[2]["parts"][0]["text"], "steer: spliced");
+        assert_eq!(rebuilt[3]["parts"][0]["text"], "pair");
     }
 
     #[test]
@@ -934,7 +1002,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = turns();
-        compressor.compress(&mut contents, call()).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
 
         // The first folded turn is present, the rest is far away behind unrelated turns.
         let originals = turns();
@@ -944,7 +1014,7 @@ mod tests {
         }
         rebuilt.push(originals[2].clone());
         let before = rebuilt.clone();
-        assert_eq!(compressor.apply(&mut rebuilt), 0);
+        assert_eq!(compressor.apply_skipping(&mut rebuilt, &[]), 0);
         assert_eq!(rebuilt, before);
     }
 
@@ -966,18 +1036,22 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = raw_turns();
-        compressor.compress(&mut contents, range(1, 3)).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 3)], &CompressPolicy::default())
+            .unwrap();
         // The wire round trip gives the inserted marker a `_raw` field; a later fold stores it.
         for turn in &mut contents {
             turn.as_object_mut()
                 .unwrap()
                 .insert("_raw".into(), json!({"role": "user"}));
         }
-        compressor.compress(&mut contents, range(1, 4)).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 4)], &CompressPolicy::default())
+            .unwrap();
 
         // The harness resends only its own turns: neither marker is in them.
         let mut rebuilt = raw_turns();
-        assert_eq!(compressor.apply(&mut rebuilt), 2);
+        assert_eq!(compressor.apply_skipping(&mut rebuilt, &[]), 2);
         assert_eq!(rebuilt.len(), 3);
         assert!(rebuilt[1]["parts"][0]["text"]
             .as_str()
@@ -996,10 +1070,12 @@ mod tests {
             2,
             json!({"role": "user", "parts": [{"text": "nudge: first"}], "_nudge": true}),
         );
-        compressor.compress(&mut contents, range(1, 4)).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 4)], &CompressPolicy::default())
+            .unwrap();
 
         let mut rebuilt = raw_turns();
-        assert_eq!(compressor.apply(&mut rebuilt), 1);
+        assert_eq!(compressor.apply_skipping(&mut rebuilt, &[]), 1);
         assert!(rebuilt.iter().any(|turn| {
             turn["parts"][0]["text"]
                 .as_str()
@@ -1018,7 +1094,9 @@ mod tests {
             json!({"role": "user", "parts": [{"functionResponse": {"id": "call_p", "name": "tool", "response": {"result": "folded\n[emberloop-splice:call_p]"}}}]}),
         ];
         contents.splice(2..2, pair.clone());
-        compressor.compress(&mut contents, range(1, 4)).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 4)], &CompressPolicy::default())
+            .unwrap();
 
         // The stored pair differs from the request copy: no `_raw`, the splice marker in its own
         // response field, and the call's name instead of the wire's "tool".
@@ -1039,14 +1117,27 @@ mod tests {
     fn a_chain_of_folds_collapses_to_the_outermost_summary() {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
-        let mut contents = eight();
-        compressor.compress(&mut contents, range(1, 3)).unwrap();
-        compressor.compress(&mut contents, range(1, 4)).unwrap();
-        compressor.compress(&mut contents, range(1, 5)).unwrap();
+        // Two turns after the eight keep the latest user message out of the chain's ranges.
+        let with_prompt = || {
+            let mut turns = eight();
+            turns.push(json!({"role": "model", "parts": [{"text": "answer"}]}));
+            turns.push(json!({"role": "user", "parts": [{"text": "prompt"}]}));
+            turns
+        };
+        let mut contents = with_prompt();
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 3)], &CompressPolicy::default())
+            .unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 4)], &CompressPolicy::default())
+            .unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 5)], &CompressPolicy::default())
+            .unwrap();
 
         // Each fold wrapped the previous marker, so the chain needs three rounds.
-        let mut rebuilt = eight();
-        assert_eq!(compressor.apply(&mut rebuilt), 3);
+        let mut rebuilt = with_prompt();
+        assert_eq!(compressor.apply_skipping(&mut rebuilt, &[]), 3);
         let marker = rebuilt[1]["parts"][0]["text"].as_str().unwrap();
         assert!(marker.contains("summary of 1..5"), "{marker}");
     }
@@ -1062,31 +1153,33 @@ mod tests {
         };
         let mut first = wide(12);
         compressor
-            .compress(
+            .compress_batch(
                 &mut first,
-                CompressCall {
+                vec![CompressCall {
                     start: 1,
                     end: 3,
                     summary: "narrow fold".into(),
                     topic: None,
-                },
+                }],
+                &CompressPolicy::default(),
             )
             .unwrap();
         let mut second = wide(12);
         compressor
-            .compress(
+            .compress_batch(
                 &mut second,
-                CompressCall {
+                vec![CompressCall {
                     start: 1,
                     end: 9,
                     summary: "wide fold".into(),
                     topic: None,
-                },
+                }],
+                &CompressPolicy::default(),
             )
             .unwrap();
 
         let mut rebuilt = wide(12);
-        assert_eq!(compressor.apply(&mut rebuilt), 1);
+        assert_eq!(compressor.apply_skipping(&mut rebuilt, &[]), 1);
         assert!(rebuilt.iter().any(|turn| turn["parts"][0]["text"]
             .as_str()
             .is_some_and(|text| text.contains("wide fold"))));
@@ -1121,7 +1214,11 @@ mod tests {
         let mut contents = eight();
 
         let result = compressor
-            .compress_batch(&mut contents, vec![range(1, 3), range(4, 6)])
+            .compress_batch(
+                &mut contents,
+                vec![range(1, 3), range(4, 6)],
+                &CompressPolicy::default(),
+            )
             .unwrap();
 
         // Two folds, each replacing two turns by one: 8 - 2 = 6 turns, in place.
@@ -1143,7 +1240,11 @@ mod tests {
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = eight();
         compressor
-            .compress_batch(&mut contents, vec![range(4, 6), range(1, 3)])
+            .compress_batch(
+                &mut contents,
+                vec![range(4, 6), range(1, 3)],
+                &CompressPolicy::default(),
+            )
             .unwrap();
         let got = texts(&contents);
         assert!(got[1].contains("block b1"), "lowest range is b1: {got:?}");
@@ -1151,17 +1252,23 @@ mod tests {
     }
 
     #[test]
-    fn batch_with_overlapping_ranges_changes_nothing() {
+    fn batch_with_overlapping_ranges_folds_the_earlier_and_skips_the_later() {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = eight();
-        let before = contents.clone();
-        let error = compressor
-            .compress_batch(&mut contents, vec![range(1, 4), range(3, 6)])
-            .unwrap_err();
-        assert!(error.contains("overlap"), "{error}");
-        assert_eq!(contents, before);
-        assert_eq!(compressor.status().blocks, 0);
+        let report = compressor
+            .compress_batch(
+                &mut contents,
+                vec![range(1, 4), range(3, 6)],
+                &CompressPolicy::default(),
+            )
+            .unwrap();
+        assert_eq!(compressor.status().blocks, 1);
+        assert_eq!(contents.len(), 6);
+        assert!(
+            report.contains("Warning:") && report.contains("not folded"),
+            "{report}"
+        );
     }
 
     #[test]
@@ -1173,14 +1280,22 @@ mod tests {
         let mut bad = range(4, 6);
         bad.summary = "  ".into();
         let error = compressor
-            .compress_batch(&mut contents, vec![range(1, 3), bad])
+            .compress_batch(
+                &mut contents,
+                vec![range(1, 3), bad],
+                &CompressPolicy::default(),
+            )
             .unwrap_err();
         assert!(error.contains("range 2"), "{error}");
         assert_eq!(contents, before);
         assert_eq!(compressor.status().blocks, 0);
 
         let out_of_bounds = compressor
-            .compress_batch(&mut contents, vec![range(1, 3), range(6, 9)])
+            .compress_batch(
+                &mut contents,
+                vec![range(1, 3), range(6, 9)],
+                &CompressPolicy::default(),
+            )
             .unwrap_err();
         assert!(out_of_bounds.contains("range 2"), "{out_of_bounds}");
         assert_eq!(contents, before);
@@ -1193,7 +1308,11 @@ mod tests {
         let mut contents = eight();
         let original = contents.clone();
         compressor
-            .compress_batch(&mut contents, vec![range(1, 3), range(4, 6)])
+            .compress_batch(
+                &mut contents,
+                vec![range(1, 3), range(4, 6)],
+                &CompressPolicy::default(),
+            )
             .unwrap();
         for id in ["b1", "b2"] {
             compressor
@@ -1210,25 +1329,13 @@ mod tests {
     }
 
     #[test]
-    fn a_single_range_batch_keeps_the_single_call_wording() {
-        let dir = tempdir().unwrap();
-        let mut single = NativeCompressor::new(dir.path()).unwrap();
-        let mut a = eight();
-        let one = single.compress(&mut a, range(1, 3)).unwrap();
-        let dir2 = tempdir().unwrap();
-        let mut batch = NativeCompressor::new(dir2.path()).unwrap();
-        let mut b = eight();
-        let many = batch.compress_batch(&mut b, vec![range(1, 3)]).unwrap();
-        assert_eq!(one, many);
-        assert_eq!(a, b);
-    }
-
-    #[test]
     fn search_finds_a_block_case_insensitively() {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = turns();
-        compressor.compress(&mut contents, call()).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
 
         let hits = compressor.search_context("PLAN", 5).unwrap();
         assert_eq!(hits.len(), 1);
@@ -1242,7 +1349,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = turns();
-        compressor.compress(&mut contents, call()).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
 
         let err = compressor
             .decompress(
@@ -1265,11 +1374,15 @@ mod tests {
 
         let mut bad_range = call();
         bad_range.end = 99;
-        assert!(compressor.compress(&mut contents, bad_range).is_err());
+        assert!(compressor
+            .compress_batch(&mut contents, vec![bad_range], &CompressPolicy::default())
+            .is_err());
 
         let mut empty = call();
         empty.summary = "  ".into();
-        assert!(compressor.compress(&mut contents, empty).is_err());
+        assert!(compressor
+            .compress_batch(&mut contents, vec![empty], &CompressPolicy::default())
+            .is_err());
         assert_eq!(compressor.status().blocks, 0);
     }
 
@@ -1295,7 +1408,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = raw_turns();
-        compressor.compress(&mut contents, range(1, 4)).unwrap();
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 4)], &CompressPolicy::default())
+            .unwrap();
 
         let mut rebuilt = raw_turns();
         rebuilt[2]["parts"][0]["text"] = json!("changed");
