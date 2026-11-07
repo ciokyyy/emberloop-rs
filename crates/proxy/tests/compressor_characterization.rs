@@ -606,19 +606,75 @@ fn a_bad_range_in_a_batch_refuses_the_whole_batch_and_names_it() {
 }
 
 #[test]
-fn overlapping_ranges_in_a_batch_are_refused_and_named() {
+fn overlapping_ranges_in_a_batch_keep_the_earlier_and_warn_about_the_later() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    let before = contents.clone();
-    let error = compressor
+    let report = compressor
         .compress_batch(
             &mut contents,
             vec![fold(1, 4), fold(3, 5)],
             &CompressPolicy::default(),
         )
+        .unwrap();
+    // Turns 1..4 fold into b1; the later range 3..5 overlaps it and is not folded at all.
+    assert_eq!(contents.len(), 10);
+    assert!(
+        text(&contents[1]).contains("block b1"),
+        "{}",
+        text(&contents[1])
+    );
+    let lines: Vec<&str> = report.lines().collect();
+    assert_eq!(lines.len(), 2, "{report}");
+    assert!(lines[0].contains("turns 1–3 into block b1"), "{report}");
+    assert!(
+        lines[1].starts_with("Warning:")
+            && lines[1].contains("turns 3–4")
+            && lines[1].contains("turns 1–3")
+            && lines[1].contains("not folded"),
+        "{report}"
+    );
+    assert_eq!(compressor.status().blocks, 1);
+}
+
+#[test]
+fn the_earlier_range_in_history_wins_whatever_the_order_given() {
+    let (_dir, mut compressor) = fresh();
+    let mut contents = conversation();
+    let report = compressor
+        .compress_batch(
+            &mut contents,
+            vec![fold(3, 5), fold(1, 4)],
+            &CompressPolicy::default(),
+        )
+        .unwrap();
+    assert!(
+        text(&contents[1]).contains("block b1"),
+        "{}",
+        text(&contents[1])
+    );
+    assert!(report.contains("turns 1–3 into block b1"), "{report}");
+    assert!(report.contains("Warning:"), "{report}");
+}
+
+#[test]
+fn an_invalid_range_refuses_the_batch_even_when_it_would_be_skipped_as_an_overlap() {
+    let (_dir, mut compressor) = fresh();
+    let mut contents = conversation();
+    let before = contents.clone();
+    let blank = CompressCall {
+        summary: "  ".into(),
+        ..fold(3, 5)
+    };
+    let error = compressor
+        .compress_batch(
+            &mut contents,
+            vec![fold(1, 4), blank],
+            &CompressPolicy::default(),
+        )
         .unwrap_err();
-    assert_eq!(error, "range 2 overlaps range 1: turns 1–3 and 3–4");
+    assert_eq!(error, "range 2: summary must not be empty");
     assert_eq!(contents, before);
+    assert_eq!(compressor.status().blocks, 0);
 }
 
 #[test]

@@ -264,24 +264,29 @@ impl Compressor for NativeCompressor {
         calls.sort_by_key(|call| call.start);
         let several = calls.len() > 1;
         for (index, call) in calls.iter().enumerate() {
-            let named = |error: String| {
+            validate_range(call, contents, policy).map_err(|error| {
                 if several {
                     format!("range {}: {error}", index + 1)
                 } else {
                     error
                 }
-            };
-            validate_range(call, contents, policy).map_err(named)?;
-            if index > 0 && call.start < calls[index - 1].end {
-                return Err(format!(
-                    "range {} overlaps range {}: turns {}–{} and {}–{}",
-                    index + 1,
-                    index,
-                    calls[index - 1].start,
-                    calls[index - 1].end.saturating_sub(1),
+            })?;
+        }
+        // In history order the earlier range wins: a range that starts inside the last kept one is
+        // not folded, and the report says so, because the model must know the turns are still
+        // there.
+        let mut kept: Vec<CompressCall> = Vec::with_capacity(calls.len());
+        let mut warnings = Vec::new();
+        for call in calls {
+            match kept.last() {
+                Some(last) if call.start < last.end => warnings.push(format!(
+                    "Warning: turns {}–{} overlap turns {}–{} and were not folded.",
                     call.start,
-                    call.end.saturating_sub(1)
-                ));
+                    call.end.saturating_sub(1),
+                    last.start,
+                    last.end.saturating_sub(1)
+                )),
+                _ => kept.push(call),
             }
         }
 
@@ -290,11 +295,11 @@ impl Compressor for NativeCompressor {
         // on a copy first: the history, the blocks and the next id change only once every
         // spill has been written.
         let first_id = self.next_id;
-        let count = calls.len();
+        let count = kept.len();
         let mut working = contents.clone();
         let mut lines = vec![String::new(); count];
         let mut staged = Vec::with_capacity(count);
-        for (index, call) in calls.into_iter().enumerate().rev() {
+        for (index, call) in kept.into_iter().enumerate().rev() {
             let id = format!("b{}", first_id + index);
             let (line, block) = self.stage_fold(&mut working, &call, &id);
             lines[index] = line;
@@ -315,6 +320,7 @@ impl Compressor for NativeCompressor {
         *contents = working;
         self.next_id = first_id + count;
         self.blocks.extend(staged.into_iter().rev());
+        lines.extend(warnings);
         Ok(lines.join("\n"))
     }
 
@@ -1258,21 +1264,23 @@ mod tests {
     }
 
     #[test]
-    fn batch_with_overlapping_ranges_changes_nothing() {
+    fn batch_with_overlapping_ranges_folds_the_earlier_and_skips_the_later() {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
         let mut contents = eight();
-        let before = contents.clone();
-        let error = compressor
+        let report = compressor
             .compress_batch(
                 &mut contents,
                 vec![range(1, 4), range(3, 6)],
                 &CompressPolicy::default(),
             )
-            .unwrap_err();
-        assert!(error.contains("overlap"), "{error}");
-        assert_eq!(contents, before);
-        assert_eq!(compressor.status().blocks, 0);
+            .unwrap();
+        assert_eq!(compressor.status().blocks, 1);
+        assert_eq!(contents.len(), 6);
+        assert!(
+            report.contains("Warning:") && report.contains("not folded"),
+            "{report}"
+        );
     }
 
     #[test]
