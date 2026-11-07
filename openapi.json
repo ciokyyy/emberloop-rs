@@ -902,6 +902,50 @@
         }
       }
     },
+    "/api/sessions/{id}/usage": {
+      "get": {
+        "tags": [
+          "crate::usage"
+        ],
+        "operationId": "session_usage_handler",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "newest requests to return, default 200, at most 1000",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "usage history, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UsageRecord"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/settings": {
       "get": {
         "tags": [],
@@ -1615,6 +1659,65 @@
           "remaining": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "UsageRecord": {
+        "type": "object",
+        "description": "One model request of a Session. `inputTokens` is the whole prompt (the context size);\n`freshInputTokens` is the part that was neither a cache read nor a cache write.",
+        "required": [
+          "seq",
+          "at",
+          "inputTokens",
+          "freshInputTokens",
+          "cachedTokens",
+          "cacheCreationTokens",
+          "outputTokens"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epoch milliseconds when the event was recorded.",
+            "minimum": 0
+          },
+          "cacheCreationTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cachedTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "freshInputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "hitPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`cachedTokens` as a percentage of the prompt (`cached + creation + fresh`); null when the prompt is empty."
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
