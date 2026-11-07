@@ -390,7 +390,7 @@ impl Compressor for NativeCompressor {
         }
 
         let position = contents.iter().position(|turn| turn == &block.summary_turn);
-        if position.is_none() && !contains_window(contents, &block.originals) {
+        if position.is_none() && find_span(contents, &block.originals).is_none() {
             return Err(format!(
                 "block {} is not present in this conversation",
                 block.id
@@ -518,12 +518,7 @@ impl Compressor for NativeCompressor {
         loop {
             let mut moved = false;
             for block in &blocks {
-                let wanted: Vec<Value> = block
-                    .originals
-                    .iter()
-                    .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, &skip_ids))
-                    .cloned()
-                    .collect();
+                let wanted = wanted_turns(block, skip, &skip_ids);
                 if let Some(matched) = find_span(contents, &wanted) {
                     fold_matched(
                         contents,
@@ -549,12 +544,7 @@ impl Compressor for NativeCompressor {
             .iter()
             .filter(|block| !block.restored && !block.originals.is_empty())
             .max_by_key(|block| block.originals.len())?;
-        let wanted: Vec<Value> = block
-            .originals
-            .iter()
-            .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, &skip_ids))
-            .cloned()
-            .collect();
+        let wanted = wanted_turns(block, skip, &skip_ids);
         let head = wanted.first()?;
         let Some(start) = contents.iter().position(|turn| turn_eq(turn, head)) else {
             return Some(format!(
@@ -578,6 +568,17 @@ impl Compressor for NativeCompressor {
     }
 }
 
+/// The stored turns a fold must find in the request: its originals without the transient nudge
+/// and without the turns the splice store puts back.
+fn wanted_turns(block: &Block, skip: &[Value], skip_ids: &[&str]) -> Vec<Value> {
+    block
+        .originals
+        .iter()
+        .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, skip_ids))
+        .cloned()
+        .collect()
+}
+
 /// One short line for a stored or requested turn, used only by `fold_report`.
 fn brief(turn: &Value) -> String {
     let text = turn
@@ -586,24 +587,19 @@ fn brief(turn: &Value) -> String {
         .map(|parts| {
             parts
                 .iter()
-                .map(|part| {
-                    match part
-                        .get("functionCall")
-                        .or_else(|| part.get("functionResponse"))
-                    {
-                        Some(call) => format!(
-                            "{}[{}]",
-                            call.get("name").and_then(Value::as_str).unwrap_or("?"),
-                            call.get("id").and_then(Value::as_str).unwrap_or("?")
-                        ),
-                        None => part
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .chars()
-                            .take(40)
-                            .collect(),
-                    }
+                .map(|part| match part_call(part) {
+                    Some(call) => format!(
+                        "{}[{}]",
+                        call.get("name").and_then(Value::as_str).unwrap_or("?"),
+                        call.get("id").and_then(Value::as_str).unwrap_or("?")
+                    ),
+                    None => part
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .chars()
+                        .take(40)
+                        .collect(),
                 })
                 .collect::<Vec<_>>()
                 .join(" | ")
@@ -688,12 +684,7 @@ fn turn_tool_names(turn: &Value) -> impl Iterator<Item = &str> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|part| {
-            part.get("functionCall")
-                .or_else(|| part.get("functionResponse"))
-                .and_then(|call| call.get("name"))
-                .and_then(Value::as_str)
-        })
+        .filter_map(|part| part_call(part)?.get("name").and_then(Value::as_str))
 }
 
 fn token_count(turns: &[Value]) -> u64 {
@@ -787,6 +778,12 @@ fn turn_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// The function call or the function result a part carries, whichever it is.
+fn part_call(part: &Value) -> Option<&Value> {
+    part.get("functionCall")
+        .or_else(|| part.get("functionResponse"))
+}
+
 /// Every function-call id the stored turns carry. A splice pair changes shape on the wire round
 /// trip (`_raw`, the tool name, the marker's field), so the id is what identifies it.
 fn turn_ids(turns: &[Value]) -> Vec<&str> {
@@ -794,10 +791,7 @@ fn turn_ids(turns: &[Value]) -> Vec<&str> {
         .iter()
         .filter_map(|turn| turn.get("parts").and_then(Value::as_array))
         .flatten()
-        .filter_map(|part| {
-            part.get("functionCall")
-                .or_else(|| part.get("functionResponse"))
-        })
+        .filter_map(part_call)
         .filter_map(|call| call.get("id").and_then(Value::as_str))
         .collect()
 }
@@ -808,18 +802,13 @@ fn is_skipped(turn: &Value, skip: &[Value], skip_ids: &[&str]) -> bool {
         .and_then(Value::as_array)
         .is_some_and(|parts| {
             parts.iter().any(|part| {
-                part.get("functionCall")
-                    .or_else(|| part.get("functionResponse"))
+                part_call(part)
                     .and_then(|call| call.get("id"))
                     .and_then(Value::as_str)
                     .is_some_and(|id| skip_ids.contains(&id))
             })
         });
     id_matches || skip.iter().any(|spliced| turn_eq(turn, spliced))
-}
-
-fn contains_window(contents: &[Value], window: &[Value]) -> bool {
-    find_span(contents, window).is_some()
 }
 
 /// Lowercased whitespace-separated query terms; an empty query is an error.
