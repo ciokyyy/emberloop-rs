@@ -30,6 +30,10 @@ struct FakeUpstream {
     stall: Arc<AtomicBool>,
     /// Signalled when a stalled call arrives, so a test knows the request is in flight.
     arrived: Arc<tokio::sync::Notify>,
+    /// Answers taken in order before the default answer.
+    script: Arc<Mutex<VecDeque<Value>>>,
+    /// The default text answer reports the request's size as its input usage, as a provider does.
+    echo_usage: Arc<AtomicBool>,
 }
 
 impl FakeUpstream {
@@ -42,6 +46,8 @@ impl FakeUpstream {
             fail_next: Arc::new(AtomicBool::new(false)),
             stall: Arc::new(AtomicBool::new(false)),
             arrived: Arc::new(tokio::sync::Notify::new()),
+            script: Arc::new(Mutex::new(VecDeque::new())),
+            echo_usage: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -86,6 +92,7 @@ async fn fake_upstream(
         std::future::pending::<()>().await;
     }
     fake.calls.fetch_add(1, Ordering::SeqCst);
+    let body_size = body.to_string().len();
     fake.bodies.lock().unwrap().push(body);
     if fake.fail_next.swap(false, Ordering::SeqCst) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "upstream failed").into_response();
@@ -96,7 +103,15 @@ async fn fake_upstream(
             .body(Body::from(response))
             .unwrap();
     }
+    if let Some(response) = fake.script.lock().unwrap().pop_front() {
+        return Json(response).into_response();
+    }
     let call = fake.calls.load(Ordering::SeqCst) - 1;
+    let prompt_tokens = if fake.echo_usage.load(Ordering::SeqCst) {
+        u64::try_from(body_size).unwrap_or(0) / 4
+    } else {
+        11
+    };
     let json = if call == 0 {
         json!({
             "response": {
@@ -123,9 +138,9 @@ async fn fake_upstream(
                 }]
             },
             "usageMetadata": {
-                "promptTokenCount": 11,
+                "promptTokenCount": prompt_tokens,
                 "candidatesTokenCount": 7,
-                "totalTokenCount": 18
+                "totalTokenCount": prompt_tokens + 7
             }
         })
     };
@@ -2595,4 +2610,250 @@ async fn codex_zstd_compression_is_executed_in_proxy_and_followed_up_with_folded
     }
     assert!(compressed);
     assert_eq!(final_input, 9000);
+}
+
+/// Prefix stability: a prompt cache hits only when the request prefix is byte-identical to the
+/// previous request. The harness resends its whole history, so each request must begin with the
+/// previous one. Allowed break points, declared by each scenario and never inferred from a diff:
+///
+/// | break            | caused by                                  | prefix that must still match |
+/// |------------------|--------------------------------------------|------------------------------|
+/// | `Fold(start)`    | a `compress` or preflight fold from `start` | turns `..start`             |
+/// | `Reset`          | `reset_history`                            | nothing                      |
+///
+/// Everything else must hold: request N+1 begins with every turn of request N except the
+/// transient `_nudge` turn (the wire never carries its marker, so it is found by its text) and
+/// the newest turn of request N, which the harness is still extending.
+#[derive(Clone, Copy)]
+enum Break {
+    Fold(usize),
+    Reset,
+}
+
+/// Each step's tool result: large enough to grow the context quickly, small enough (under the
+/// 4000-token ctx threshold) that it is never replaced by a handle.
+const STEP_RESULT_CHARS: usize = 12_000;
+
+fn is_nudge_turn(turn: &Value) -> bool {
+    turn["parts"][0]["text"]
+        .as_str()
+        .is_some_and(|text| text.starts_with("This is an efficiency nudge"))
+}
+
+/// The turns request N must still open with for request N+1: nudge and newest turn removed.
+fn stable_turns(body: &Value) -> Vec<Value> {
+    let mut turns: Vec<Value> = body["contents"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|turn| !is_nudge_turn(turn))
+        .collect();
+    turns.pop();
+    turns
+}
+
+fn assert_prefix_stable(label: &str, previous: &Value, next: &Value, brk: Option<Break>) {
+    let before = stable_turns(previous);
+    let after = next["contents"].as_array().expect("contents");
+    let must_match = match brk {
+        None => before.len(),
+        Some(Break::Fold(start)) => start.min(before.len()),
+        Some(Break::Reset) => 0,
+    };
+    assert!(
+        after.len() >= must_match,
+        "{label}: the next request has {} turns, the previous one needs {must_match} kept",
+        after.len()
+    );
+    for (index, turn) in before[..must_match].iter().enumerate() {
+        let same = after[index] == *turn;
+        assert!(
+            same,
+            "{label}: turn {index} of the previous request changed on the next one \
+             (previous {} bytes, next {} bytes); the prompt cache misses from here",
+            turn.to_string().len(),
+            after[index].to_string().len()
+        );
+    }
+}
+
+/// Appends one model call and its user-role result, the way a harness grows its history.
+fn grow_step(history: &mut Vec<Value>, step: usize) {
+    let id = format!("call_{step}");
+    history.push(json!({
+        "role": "model",
+        "parts": [{ "functionCall": { "name": "bash", "id": id, "args": { "cmd": format!("step {step}") } } }]
+    }));
+    history.push(json!({
+        "role": "user",
+        "parts": [{ "functionResponse": {
+            "name": "bash",
+            "id": id,
+            "response": { "result": format!("{step}:{}", "x".repeat(STEP_RESULT_CHARS)) }
+        } }]
+    }));
+}
+
+/// Drives `steps` requests on one Session. `before` runs first for each request, may change
+/// the Session's settings or script the upstream, and returns the break it declares before that
+/// request. Each request is answered "done", which the harness appends to its history.
+/// Returns, per request, its first upstream body (the one the cache sees before any fold the
+/// request itself performs) and the declared break.
+async fn drive_growing(
+    fixture: &Fixture,
+    warm: usize,
+    steps: usize,
+    mut before: impl FnMut(usize, &Fixture) -> Option<Break>,
+) -> Vec<(Value, Option<Break>)> {
+    let prompt = json!({ "role": "user", "parts": [{ "text": "start the task" }] });
+    let mut history = vec![prompt.clone()];
+    // `warm` steps are already in the history before the first request, as after a long run.
+    for step in 0..warm {
+        grow_step(&mut history, step);
+        history.push(json!({ "role": "model", "parts": [{ "text": "done" }] }));
+    }
+    let mut requests = Vec::new();
+    for index in 0..steps {
+        let brk = before(index, fixture);
+        if matches!(brk, Some(Break::Reset)) {
+            fixture.state.reset_history("ses_1").await.unwrap();
+            history = vec![prompt.clone()];
+        }
+        grow_step(&mut history, warm + index);
+        let first_body = fixture.fake.bodies.lock().unwrap().len();
+        let (status, _) = send(
+            &fixture.state,
+            &fixture.token,
+            "v1internal:generateContent",
+            body(Value::Array(history.clone())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "request {index}");
+        requests.push((fixture.fake.body(first_body), brk));
+        history.push(json!({ "role": "model", "parts": [{ "text": "done" }] }));
+    }
+    requests
+}
+
+fn assert_run_is_prefix_stable(label: &str, requests: &[(Value, Option<Break>)]) {
+    for (index, pair) in requests.windows(2).enumerate() {
+        let next_break = pair[1].1;
+        assert_prefix_stable(
+            &format!("{label}, request {}", index + 1),
+            &pair[0].0,
+            &pair[1].0,
+            next_break,
+        );
+    }
+}
+
+fn echoed_usage_fake() -> FakeUpstream {
+    let fake = text_only_fake();
+    fake.echo_usage.store(true, Ordering::SeqCst);
+    fake
+}
+
+#[tokio::test]
+async fn prefix_is_stable_while_the_conversation_grows() {
+    let fixture = fixture_with(echoed_usage_fake()).await;
+    let requests = drive_growing(&fixture, 0, 6, |_, _| None).await;
+    assert_run_is_prefix_stable("steady growth", &requests);
+    let nudges = requests
+        .iter()
+        .filter(|(body, _)| nudge_parts(body).len() == 1)
+        .count();
+    assert_eq!(nudges, 0, "below the first threshold no nudge is sent");
+}
+
+#[tokio::test]
+async fn prefix_is_stable_across_the_first_nudge() {
+    let fixture = fixture_with(echoed_usage_fake()).await;
+    let requests = drive_growing(&fixture, 0, 28, |_, _| None).await;
+    let fired: Vec<usize> = requests
+        .iter()
+        .enumerate()
+        .filter(|(_, (body, _))| !nudge_parts(body).is_empty())
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(fired.len(), 1, "the first nudge fires once: {fired:?}");
+    assert_run_is_prefix_stable("first nudge", &requests);
+}
+
+#[tokio::test]
+#[ignore = "splice.rs replay_index re-attaches a proxy-only compress pair before the newest model turn, so the pair moves every request"]
+async fn prefix_is_stable_across_a_mid_run_compress() {
+    let fixture = fixture_with(echoed_usage_fake()).await;
+    let folded_at = 5;
+    let requests = drive_growing(&fixture, 0, 8, |index, fixture| {
+        if index == folded_at {
+            // The model folds turns 1..4 (the first call and its result) on this request.
+            fixture.fake.script.lock().unwrap().extend([
+                json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
+                    "functionCall": {"id": "call_c", "name": "compress",
+                        "args": {"start": 1, "end": 4, "summary": "folded early steps"}},
+                    "thoughtSignature": "SIG-C"
+                }]}}]}}),
+                json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{ "text": "done" }]}}]}}),
+            ]);
+        }
+        (index == folded_at + 1).then_some(Break::Fold(1))
+    })
+    .await;
+    let after_fold = &requests[folded_at + 1].0["contents"];
+    assert!(
+        after_fold[1]["parts"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("folded early steps")),
+        "the fold replaced turns 1.. on the next request"
+    );
+    assert_run_is_prefix_stable("mid-run compress", &requests);
+}
+
+#[tokio::test]
+#[ignore = "fails until sticky emergency truncation lands: the band flips with the truncated size"]
+async fn prefix_is_stable_after_emergency_truncation_stops() {
+    let fixture = fixture_with(echoed_usage_fake()).await;
+    // Twenty steps are already in the history, so the first request is in emergency: older
+    // results are truncated from the start and no request sees the untruncated history.
+    fixture
+        .settings
+        .try_write()
+        .unwrap()
+        .emergency_threshold_percent = 5;
+    let emergency_requests = 20;
+    let requests = drive_growing(&fixture, 20, 22, |index, fixture| {
+        if index == emergency_requests {
+            // The band no longer covers the request: the context is under the emergency line.
+            fixture
+                .settings
+                .try_write()
+                .unwrap()
+                .emergency_threshold_percent = 95;
+        }
+        None
+    })
+    .await;
+    assert!(
+        requests[..emergency_requests]
+            .iter()
+            .any(|(body, _)| body.to_string().contains("emergency truncation")),
+        "the emergency phase truncated older results"
+    );
+    assert_run_is_prefix_stable("emergency", &requests);
+}
+
+#[tokio::test]
+async fn prefix_breaks_at_a_reset_restart_the_conversation() {
+    let fixture = fixture_with(echoed_usage_fake()).await;
+    let requests = drive_growing(&fixture, 0, 6, |index, _| {
+        (index == 3).then_some(Break::Reset)
+    })
+    .await;
+    assert!(
+        requests[3].0["contents"].as_array().unwrap().len()
+            < requests[2].0["contents"].as_array().unwrap().len(),
+        "the reset restarted the harness conversation"
+    );
+    assert_run_is_prefix_stable("reset", &requests);
 }
