@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
+/// Snippet budget in characters, and how many of them come before the match.
+const SNIPPET_TOTAL: usize = 200;
+const SNIPPET_AHEAD: usize = 80;
+
 /// One folded range: the summary survives, the original turns live in `spill/`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +39,84 @@ pub struct SearchHit {
     pub block_id: String,
     pub topic: Option<String>,
     pub snippet: String,
+    /// The hit is in the block's original turns, not in its summary or topic.
+    pub from_original: bool,
+    /// The block was restored, so its turns are back in the history.
+    pub inactive: bool,
+    /// The number of turns the block folded.
+    pub turns: usize,
+}
+
+/// A search result: the hits in the order shown, with what `render` needs for the model text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchReport {
+    pub query: String,
+    pub total_blocks: usize,
+    /// Summary matches before the limit was applied.
+    pub summary_candidates: usize,
+    pub hits: Vec<SearchHit>,
+    /// A hint naming a query term the shown blocks lack but lower-ranked blocks have.
+    pub narrowing: Option<String>,
+}
+
+impl SearchReport {
+    /// The model-visible text of the result.
+    pub fn render(&self) -> String {
+        if self.total_blocks == 0 {
+            return "No compressed blocks exist yet — nothing to search.".into();
+        }
+        if self.hits.is_empty() {
+            return format!(
+                "No blocks matched \"{}\" among {} block(s). Scope = compressed topics and \
+                 summaries plus the original text of compressed blocks, NOT visible messages. \
+                 Absence here does not mean the topic was never discussed.",
+                self.query, self.total_blocks
+            );
+        }
+        let originals: Vec<&SearchHit> = self.hits.iter().filter(|hit| hit.from_original).collect();
+        let summaries: Vec<&SearchHit> =
+            self.hits.iter().filter(|hit| !hit.from_original).collect();
+        let mut out = format!("Found {} block(s) for \"{}\":", summaries.len(), self.query);
+        if !summaries.is_empty() {
+            out.push_str("\n\n");
+            out.push_str(&render_entries(&summaries));
+        }
+        if self.summary_candidates > summaries.len() {
+            out.push_str(&format!(
+                "\n\n[truncated: showing {} of {} candidates by relevance — pass limit:{} to see the rest]",
+                summaries.len(),
+                self.summary_candidates,
+                self.summary_candidates
+            ));
+        }
+        if let Some(tip) = &self.narrowing {
+            out.push_str("\n\n");
+            out.push_str(tip);
+        }
+        if !originals.is_empty() {
+            out.push_str("\n\nOriginal text, not in any summary:\n\n");
+            out.push_str(&render_entries(&originals));
+        }
+        out
+    }
+}
+
+fn render_entries(hits: &[&SearchHit]) -> String {
+    hits.iter()
+        .map(|hit| {
+            let topic = hit.topic.as_deref().unwrap_or("(no topic)");
+            let inactive = if hit.inactive {
+                " [inactive — restored to full text; its turns are back in the history]"
+            } else {
+                ""
+            };
+            format!(
+                "{} \"{topic}\" [{} turns]{inactive}\n  {}",
+                hit.block_id, hit.turns, hit.snippet
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,7 +156,7 @@ pub trait Compressor: Send + Sync {
         contents: &mut Vec<Value>,
         call: DecompressCall,
     ) -> Result<String, String>;
-    fn search_context(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>, String>;
+    fn search_context(&self, query: &str, limit: usize) -> Result<SearchReport, String>;
     fn status(&self) -> CompressorStatus;
 
     /// Why no stored fold matched `contents`: one line for the session log. Backends without
@@ -336,29 +418,74 @@ impl Compressor for NativeCompressor {
         ))
     }
 
-    fn search_context(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>, String> {
-        let needle = query.trim().to_lowercase();
-        if needle.is_empty() {
-            return Err("query must not be empty".into());
-        }
-        let hits = self
+    fn search_context(&self, query: &str, limit: usize) -> Result<SearchReport, String> {
+        let terms = search_terms(query)?;
+        let limit = limit.max(1);
+        let summaries: Vec<String> = self
             .blocks
             .iter()
-            .filter(|block| {
-                block.summary.to_lowercase().contains(&needle)
-                    || block
-                        .topic
-                        .as_deref()
-                        .is_some_and(|topic| topic.to_lowercase().contains(&needle))
-            })
-            .take(limit.max(1))
-            .map(|block| SearchHit {
-                block_id: block.id.clone(),
-                topic: block.topic.clone(),
-                snippet: snippet_for(&block.summary, &needle),
+            .map(|block| {
+                format!(
+                    "{}\n{}",
+                    block.topic.as_deref().unwrap_or(""),
+                    block.summary
+                )
             })
             .collect();
-        Ok(hits)
+        let summary_refs: Vec<&str> = summaries.iter().map(String::as_str).collect();
+        let summary_ranked = rank_by_terms(summary_refs.iter().copied(), &terms);
+        let summary_freq = doc_frequency(&summary_refs, &terms);
+        let shown: Vec<usize> = summary_ranked
+            .iter()
+            .take(limit)
+            .map(|&(_, index)| index)
+            .collect();
+        let shown_texts: Vec<&str> = shown.iter().map(|&index| summary_refs[index]).collect();
+        let lower_texts: Vec<&str> = summary_ranked
+            .iter()
+            .skip(limit)
+            .map(|&(_, index)| summary_refs[index])
+            .collect();
+        let narrowing = narrowing_hint(&terms, &shown_texts, &lower_texts);
+        let mut hits: Vec<SearchHit> = shown
+            .iter()
+            .map(|&index| {
+                let block = &self.blocks[index];
+                let anchor = anchor_term(&block.summary, &terms, &summary_freq);
+                search_hit(
+                    block,
+                    snippet_around(&block.summary, anchor.as_deref()),
+                    false,
+                )
+            })
+            .collect();
+        // Original text only adds blocks whose summary was not shown above.
+        let candidates: Vec<(usize, String)> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !shown.contains(index))
+            .map(|(index, block)| (index, original_text(block)))
+            .collect();
+        let texts: Vec<&str> = candidates.iter().map(|(_, text)| text.as_str()).collect();
+        let original_freq = doc_frequency(&texts, &terms);
+        let original_ranked = rank_by_terms(texts.iter().copied(), &terms);
+        hits.extend(original_ranked.iter().take(limit).map(|&(_, pos)| {
+            let (index, text) = &candidates[pos];
+            let anchor = anchor_term(text, &terms, &original_freq);
+            search_hit(
+                &self.blocks[*index],
+                snippet_around(text, anchor.as_deref()),
+                true,
+            )
+        }));
+        Ok(SearchReport {
+            query: query.to_string(),
+            total_blocks: self.blocks.len(),
+            summary_candidates: summary_ranked.len(),
+            hits,
+            narrowing,
+        })
     }
 
     fn status(&self) -> CompressorStatus {
@@ -703,30 +830,224 @@ fn contains_window(contents: &[Value], window: &[Value]) -> bool {
     find_span(contents, window).is_some()
 }
 
-fn snippet_for(summary: &str, needle: &str) -> String {
-    let lower = summary.to_lowercase();
-    let Some(byte) = lower.find(needle) else {
-        return summary.chars().take(160).collect();
+/// Lowercased whitespace-separated query terms; an empty query is an error.
+fn search_terms(query: &str) -> Result<Vec<String>, String> {
+    let terms: Vec<String> = query
+        .to_lowercase()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    if terms.is_empty() {
+        return Err("query must not be empty".into());
+    }
+    Ok(terms)
+}
+
+/// `(score, position)` of every text with a positive term score, best first; equal scores keep
+/// their position order.
+fn rank_by_terms<'a>(
+    texts: impl Iterator<Item = &'a str>,
+    terms: &[String],
+) -> Vec<(usize, usize)> {
+    let mut ranked: Vec<(usize, usize)> = texts
+        .enumerate()
+        .filter_map(|(position, text)| {
+            let score = term_score(&text.to_lowercase(), terms);
+            (score > 0).then_some((score, position))
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    ranked
+}
+
+/// The text a block's folded turns carried: message text, call names and arguments, and the
+/// strings of tool results. The fold's own marker lines are not content.
+fn original_text(block: &Block) -> String {
+    let mut pieces = Vec::new();
+    for turn in &block.originals {
+        for part in turn
+            .get("parts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                pieces.push(text.to_string());
+            } else if let Some(call) = part.get("functionCall") {
+                pieces.push(format!(
+                    "{} {}",
+                    call.get("name").and_then(Value::as_str).unwrap_or(""),
+                    call.get("args").unwrap_or(&Value::Null)
+                ));
+            } else if let Some(result) = part.get("functionResponse") {
+                json_strings(result.get("response").unwrap_or(&Value::Null), &mut pieces);
+            }
+        }
+    }
+    pieces
+        .join("\n")
+        .lines()
+        .filter(|line| !line.starts_with("📦 [acp]") && !line.starts_with("❌ [acp]"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn json_strings(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(text) => out.push(text.clone()),
+        Value::Array(items) => items.iter().for_each(|item| json_strings(item, out)),
+        Value::Object(map) => map.values().for_each(|item| json_strings(item, out)),
+        _ => {}
+    }
+}
+
+/// Sum over the terms of their non-overlapping occurrence counts in `haystack` (lowercase).
+fn term_score(haystack: &str, terms: &[String]) -> usize {
+    terms
+        .iter()
+        .map(|term| haystack.matches(term.as_str()).count())
+        .sum()
+}
+
+fn search_hit(block: &Block, snippet: String, from_original: bool) -> SearchHit {
+    SearchHit {
+        block_id: block.id.clone(),
+        topic: block.topic.clone(),
+        snippet,
+        from_original,
+        inactive: block.restored,
+        turns: block.originals.len(),
+    }
+}
+
+/// For each term, the number of texts that contain it.
+fn doc_frequency(texts: &[&str], terms: &[String]) -> Vec<usize> {
+    let lowered: Vec<String> = texts.iter().map(|text| text.to_lowercase()).collect();
+    terms
+        .iter()
+        .map(|term| {
+            lowered
+                .iter()
+                .filter(|text| text.contains(term.as_str()))
+                .count()
+        })
+        .collect()
+}
+
+/// The term that occurs in `text` and is rarest across the searched texts; ties go to the earlier
+/// occurrence in `text`.
+fn anchor_term(text: &str, terms: &[String], freq: &[usize]) -> Option<String> {
+    terms
+        .iter()
+        .zip(freq)
+        .filter_map(|(term, &frequency)| {
+            find_lowercase(text, term).map(|(at, _)| (frequency, at, term))
+        })
+        .min_by_key(|&(frequency, at, _)| (frequency, at))
+        .map(|(_, _, term)| term.clone())
+}
+
+/// A window of `SNIPPET_TOTAL` characters with the anchor term in 【】, starting `SNIPPET_AHEAD`
+/// characters before it. Without an anchor, the summary's head.
+fn snippet_around(text: &str, anchor: Option<&str>) -> String {
+    let Some((match_start, match_end)) = anchor.and_then(|term| find_lowercase(text, term)) else {
+        let head: String = text.chars().take(SNIPPET_TOTAL).collect();
+        let more = if text.chars().count() > SNIPPET_TOTAL {
+            "..."
+        } else {
+            ""
+        };
+        return collapse_whitespace(&format!("{head}{more}"));
     };
-    let start = byte.saturating_sub(60);
-    let end = (byte + needle.len() + 100).min(summary.len());
-    let start = floor_char_boundary(summary, start);
-    let end = ceil_char_boundary(summary, end);
-    summary[start..end].trim().to_string()
+    let total = text.chars().count();
+    let match_char = text[..match_start].chars().count();
+    let start_char = match_char.saturating_sub(SNIPPET_AHEAD);
+    let end_char = (start_char + SNIPPET_TOTAL).min(total);
+    let start = byte_of_char(text, start_char);
+    let end = byte_of_char(text, end_char).max(match_end);
+    let mut out = String::new();
+    if start_char > 0 {
+        out.push_str("... ");
+    }
+    out.push_str(&text[start..match_start]);
+    out.push('【');
+    out.push_str(&text[match_start..match_end]);
+    out.push('】');
+    out.push_str(&text[match_end..end]);
+    if end_char < total {
+        out.push_str(" ...");
+    }
+    collapse_whitespace(&out)
 }
 
-fn floor_char_boundary(text: &str, mut index: usize) -> usize {
-    while index > 0 && !text.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
+fn byte_of_char(text: &str, index: usize) -> usize {
+    text.char_indices()
+        .nth(index)
+        .map_or(text.len(), |(at, _)| at)
 }
 
-fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
-    while index < text.len() && !text.is_char_boundary(index) {
-        index += 1;
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// When the query has three or more terms, a term no shown block contains but a lower-ranked
+/// block does: the model is told to search that term alone.
+fn narrowing_hint(terms: &[String], shown: &[&str], lower: &[&str]) -> Option<String> {
+    if terms.len() < 3 || lower.is_empty() {
+        return None;
     }
-    index
+    let mut best: Option<(&String, usize)> = None;
+    for term in terms {
+        if shown
+            .iter()
+            .any(|text| text.to_lowercase().contains(term.as_str()))
+        {
+            continue;
+        }
+        let count = lower
+            .iter()
+            .filter(|text| text.to_lowercase().contains(term.as_str()))
+            .count();
+        if count == 0 {
+            continue;
+        }
+        let better = match best {
+            None => true,
+            Some((best_term, best_count)) => {
+                count < best_count || (count == best_count && term.len() > best_term.len())
+            }
+        };
+        if better {
+            best = Some((term, count));
+        }
+    }
+    best.map(|(term, count)| {
+        format!(
+            "[tip: none of the top {} results contain \"{term}\" but {count} lower-ranked candidate(s) do — try searching \"{term}\" alone to surface its block directly]",
+            shown.len()
+        )
+    })
+}
+
+/// Byte range in `text` of the first case-insensitive match of `needle_lower` (already lowercase).
+/// An empty needle matches nothing. Lowercasing can change the byte length, so the match is
+/// located in the lowercased text and mapped back to the original characters that produced it.
+fn find_lowercase(text: &str, needle_lower: &str) -> Option<(usize, usize)> {
+    if needle_lower.is_empty() {
+        return None;
+    }
+    let mut lower = String::with_capacity(text.len());
+    let mut spans = Vec::with_capacity(text.len());
+    for (start, ch) in text.char_indices() {
+        let span = (start, start + ch.len_utf8());
+        for lowered in ch.to_lowercase() {
+            lower.push(lowered);
+            spans.extend(std::iter::repeat_n(span, lowered.len_utf8()));
+        }
+    }
+    let at = lower.find(needle_lower)?;
+    let last = at + needle_lower.len() - 1;
+    Some((spans[at].0, spans[last].1))
 }
 
 #[cfg(test)]
@@ -767,7 +1088,7 @@ mod tests {
         drop(compressor);
 
         let mut reloaded = NativeCompressor::new(dir.path()).unwrap();
-        assert_eq!(reloaded.search_context("x=1", 3).unwrap().len(), 1);
+        assert_eq!(reloaded.search_context("x=1", 3).unwrap().hits.len(), 1);
         let mut replay = turns();
         assert_eq!(reloaded.apply_skipping(&mut replay, &[]), 1);
         assert_eq!(replay, folded);
@@ -1337,11 +1658,257 @@ mod tests {
             .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
             .unwrap();
 
-        let hits = compressor.search_context("PLAN", 5).unwrap();
+        let hits = compressor.search_context("PLAN", 5).unwrap().hits;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].block_id, "b1");
-        assert!(compressor.search_context("absent", 5).unwrap().is_empty());
+        assert!(compressor
+            .search_context("absent", 5)
+            .unwrap()
+            .hits
+            .is_empty());
         assert!(compressor.search_context("  ", 5).is_err());
+    }
+
+    #[test]
+    fn snippet_stays_on_the_match_when_lowercasing_changes_the_byte_length() {
+        // 'İ' lowercases to two code points (3 bytes against 2), 'ẞ' shrinks (2 bytes against 3):
+        // the match offset must come from the text the snippet is cut from.
+        for prefix in ["İ".repeat(100), "ẞ".repeat(100)] {
+            let dir = tempdir().unwrap();
+            let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+            let mut contents = turns();
+            let call = CompressCall {
+                summary: format!("{prefix} target {}", "x".repeat(300)),
+                ..call()
+            };
+            compressor
+                .compress_batch(&mut contents, vec![call], &CompressPolicy::default())
+                .unwrap();
+
+            let hits = compressor.search_context("target", 5).unwrap().hits;
+            assert_eq!(hits.len(), 1);
+            assert!(hits[0].snippet.contains("target"), "{}", hits[0].snippet);
+        }
+    }
+
+    fn six_turns() -> Vec<Value> {
+        (0..6)
+            .map(|i| {
+                let role = if i == 5 { "user" } else { "model" };
+                json!({"role": role, "parts": [{"text": format!("turn {i}")}]})
+            })
+            .collect()
+    }
+
+    #[test]
+    fn search_ranks_the_block_matching_more_terms_first_without_needing_the_phrase() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let mut contents = six_turns();
+        let calls = vec![
+            CompressCall {
+                start: 1,
+                end: 2,
+                summary: "alpha only".into(),
+                topic: None,
+            },
+            CompressCall {
+                start: 3,
+                end: 5,
+                summary: "beta and alpha".into(),
+                topic: None,
+            },
+        ];
+        compressor
+            .compress_batch(&mut contents, calls, &CompressPolicy::default())
+            .unwrap();
+
+        // "alpha beta" is not a phrase in either summary: both match, the one with both terms first.
+        let hits = compressor.search_context("alpha beta", 5).unwrap().hits;
+        let ids: Vec<&str> = hits.iter().map(|hit| hit.block_id.as_str()).collect();
+        assert_eq!(ids, ["b2", "b1"]);
+
+        // The limit applies after ranking, so the best block survives a limit of one.
+        let top = compressor.search_context("alpha beta", 1).unwrap().hits;
+        assert_eq!(top[0].block_id, "b2");
+        assert!(compressor.search_context("  ", 5).is_err());
+    }
+
+    fn tool_turns() -> Vec<Value> {
+        vec![
+            json!({"role": "model", "parts": [{"functionCall": {"id": "c1", "name": "read", "args": {"path": "zoo.txt"}}}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "c1", "name": "read", "response": {"output": "the zebra was seen"}}}]}),
+            json!({"role": "model", "parts": [{"text": "📦 [acp] Compressed turns 1–2 into block b0\n\nmarker words"}]}),
+            json!({"role": "user", "parts": [{"text": "zebra in the visible message"}]}),
+            json!({"role": "user", "parts": [{"text": "last"}]}),
+        ]
+    }
+
+    #[test]
+    fn search_finds_terms_only_in_the_original_turns_of_a_block() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let mut contents = tool_turns();
+        let call = CompressCall {
+            start: 0,
+            end: 3,
+            summary: "the read finished".into(),
+            topic: None,
+        };
+        compressor
+            .compress_batch(&mut contents, vec![call], &CompressPolicy::default())
+            .unwrap();
+
+        // "zebra" is in the folded tool result only: found, and marked as original text.
+        let hits = compressor.search_context("zebra", 5).unwrap().hits;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].block_id, "b1");
+        assert!(hits[0].from_original);
+        assert!(hits[0].snippet.contains("zebra"));
+
+        // A summary match is not repeated as an original-text hit.
+        let summary_hits = compressor.search_context("finished", 5).unwrap().hits;
+        assert_eq!(summary_hits.len(), 1);
+        assert!(!summary_hits[0].from_original);
+
+        // Visible messages are not searched, and the marker text of a fold is not original content.
+        assert!(compressor
+            .search_context("visible", 5)
+            .unwrap()
+            .hits
+            .is_empty());
+        assert!(compressor
+            .search_context("compressed", 5)
+            .unwrap()
+            .hits
+            .is_empty());
+    }
+
+    fn one_block() -> (tempfile::TempDir, NativeCompressor, Vec<Value>) {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let mut contents = turns();
+        compressor
+            .compress_batch(&mut contents, vec![call()], &CompressPolicy::default())
+            .unwrap();
+        (dir, compressor, contents)
+    }
+
+    #[test]
+    fn render_marks_the_rarest_term_in_a_windowed_snippet() {
+        let (_dir, compressor, _) = one_block();
+        let report = compressor.search_context("agreed", 5).unwrap();
+        assert_eq!(
+            report.render(),
+            "Found 1 block(s) for \"agreed\":\n\n\
+             b1 \"plan\" [2 turns]\n  **second** and **third** 【agreed】 on `x=1`"
+        );
+    }
+
+    #[test]
+    fn render_shows_a_topic_only_hit_from_the_start_of_the_summary() {
+        let (_dir, compressor, _) = one_block();
+        let report = compressor.search_context("plan", 5).unwrap();
+        assert_eq!(
+            report.render(),
+            "Found 1 block(s) for \"plan\":\n\n\
+             b1 \"plan\" [2 turns]\n  **second** and **third** agreed on `x=1`"
+        );
+    }
+
+    #[test]
+    fn render_marks_a_restored_block_inactive() {
+        let (_dir, mut compressor, mut contents) = one_block();
+        compressor
+            .decompress(
+                &mut contents,
+                DecompressCall {
+                    block_id: "b1".into(),
+                    to_file: None,
+                },
+            )
+            .unwrap();
+        let text = compressor.search_context("agreed", 5).unwrap().render();
+        assert!(text.contains("b1 \"plan\" [2 turns] [inactive"), "{text}");
+    }
+
+    #[test]
+    fn render_says_what_was_searched_when_nothing_matches() {
+        let (_dir, compressor, _) = one_block();
+        assert_eq!(
+            compressor.search_context("absent", 5).unwrap().render(),
+            "No blocks matched \"absent\" among 1 block(s). Scope = compressed topics and \
+             summaries plus the original text of compressed blocks, NOT visible messages. \
+             Absence here does not mean the topic was never discussed."
+        );
+        let empty = NativeCompressor::new(tempdir().unwrap().path()).unwrap();
+        assert_eq!(
+            empty.search_context("absent", 5).unwrap().render(),
+            "No compressed blocks exist yet — nothing to search."
+        );
+    }
+
+    #[test]
+    fn render_notes_truncation_and_a_term_the_shown_blocks_lack() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let mut contents = six_turns();
+        let calls = vec![
+            CompressCall {
+                start: 1,
+                end: 2,
+                summary: "alpha only".into(),
+                topic: None,
+            },
+            CompressCall {
+                start: 3,
+                end: 5,
+                summary: "beta and alpha".into(),
+                topic: None,
+            },
+        ];
+        compressor
+            .compress_batch(&mut contents, calls, &CompressPolicy::default())
+            .unwrap();
+
+        // Both blocks score 2, so b1 leads; b2 is the candidate the limit leaves out.
+        let text = compressor
+            .search_context("alpha beta only", 1)
+            .unwrap()
+            .render();
+        assert!(
+            text.contains(
+                "[truncated: showing 1 of 2 candidates by relevance — pass limit:2 to see the rest]"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("try searching \"beta\" alone"), "{text}");
+    }
+
+    #[test]
+    fn render_lists_original_text_hits_under_their_own_heading() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let mut contents = tool_turns();
+        compressor
+            .compress_batch(
+                &mut contents,
+                vec![CompressCall {
+                    start: 0,
+                    end: 3,
+                    summary: "the read finished".into(),
+                    topic: None,
+                }],
+                &CompressPolicy::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            compressor.search_context("zebra", 5).unwrap().render(),
+            "Found 0 block(s) for \"zebra\":\n\n\
+             Original text, not in any summary:\n\n\
+             b1 \"(no topic)\" [3 turns]\n  \
+             read {\"path\":\"zoo.txt\"} the 【zebra】 was seen marker words"
+        );
     }
 
     #[test]

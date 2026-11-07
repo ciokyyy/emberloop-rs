@@ -15,7 +15,7 @@ pub mod wire;
 
 pub use compressor::{
     CompressCall, CompressPolicy, Compressor, CompressorStatus, DecompressCall, NativeCompressor,
-    SearchHit,
+    SearchHit, SearchReport,
 };
 pub use server::{router, ProxyConfig, ProxyState};
 pub use splice::{Splice, SpliceReport, SpliceStore};

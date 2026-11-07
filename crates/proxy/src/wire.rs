@@ -225,12 +225,12 @@ fn tool_specs(pins: &PinnedPrompts) -> Vec<ToolSpec> {
             name: "search_context",
             description: text(prompts::SEARCH_CONTEXT),
             google_props: json!({
-                "query": {"type": "STRING", "description": "Keyword to find in block summaries"},
-                "limit": {"type": "INTEGER", "description": "Maximum results (default 5)"}
+                "query": {"type": "STRING", "description": "Words to find, case-insensitive"},
+                "limit": {"type": "INTEGER", "description": "Maximum results"}
             }),
             json_props: json!({
-                "query": {"type": "string", "description": "Keyword to find in block summaries"},
-                "limit": {"type": "integer", "description": "Maximum results (default 5)"}
+                "query": {"type": "string", "description": "Words to find, case-insensitive"},
+                "limit": {"type": "integer", "description": "Maximum results"}
             }),
             required: json!(["query"]),
         },
