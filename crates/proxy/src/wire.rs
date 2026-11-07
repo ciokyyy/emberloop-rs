@@ -2,6 +2,7 @@ use prompts::PinnedPrompts;
 use serde_json::{json, Value};
 
 use crate::server::{ProxyCall, PROXY_TOOLS};
+use crate::turnkeys;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireKind {
@@ -414,9 +415,7 @@ pub fn write_core_contents(wire: WireKind, request: &mut Value, contents: Vec<Va
 
 /// Drops the proxy's own turn marks; upstream must not see them.
 fn unmarked(mut turn: Value) -> Value {
-    if let Some(map) = turn.as_object_mut() {
-        map.remove("_nudge");
-    }
+    turnkeys::strip_transient(&mut turn);
     turn
 }
 
@@ -432,7 +431,7 @@ fn chat_to_core(messages: &[Value]) -> Option<Vec<Value>> {
         turns.push(json!({
             "role": core_role,
             "parts": parts,
-            "_raw": msg
+            (turnkeys::RAW): msg
         }));
     }
     Some(turns)
@@ -476,7 +475,7 @@ fn chat_msg_parts(msg: &Value, role: &str) -> Vec<Value> {
 fn core_to_chat(contents: &[Value]) -> Vec<Value> {
     let mut out = Vec::new();
     for turn in contents {
-        if let Some(raw) = turn.get("_raw") {
+        if let Some(raw) = turn.get(turnkeys::RAW) {
             out.push(raw.clone());
             continue;
         }
@@ -556,7 +555,7 @@ fn anthropic_to_core(messages: &[Value]) -> Option<Vec<Value>> {
         turns.push(json!({
             "role": core_role,
             "parts": parts,
-            "_raw": msg
+            (turnkeys::RAW): msg
         }));
     }
     Some(turns)
@@ -610,7 +609,7 @@ fn anthropic_msg_parts(msg: &Value) -> Vec<Value> {
 fn core_to_anthropic(contents: &[Value]) -> Vec<Value> {
     let mut out = Vec::new();
     for turn in contents {
-        if let Some(raw) = turn.get("_raw") {
+        if let Some(raw) = turn.get(turnkeys::RAW) {
             out.push(raw.clone());
             continue;
         }
@@ -660,7 +659,7 @@ fn responses_to_core(items: &[Value]) -> Option<Vec<Value>> {
             turns.push(json!({
                 "role": "model",
                 "parts": [{ "functionCall": { "id": id, "name": name, "args": args } }],
-                "_raw": item
+                (turnkeys::RAW): item
             }));
         } else if item_type == "function_call_output" {
             let id = item
@@ -677,7 +676,7 @@ fn responses_to_core(items: &[Value]) -> Option<Vec<Value>> {
                         "response": { "result": output }
                     }
                 }],
-                "_raw": item
+                (turnkeys::RAW): item
             }));
         } else {
             let role = item.get("role").and_then(Value::as_str).unwrap_or("user");
@@ -686,7 +685,7 @@ fn responses_to_core(items: &[Value]) -> Option<Vec<Value>> {
             turns.push(json!({
                 "role": core_role,
                 "parts": [{ "text": text }],
-                "_raw": item
+                (turnkeys::RAW): item
             }));
         }
     }
@@ -696,7 +695,7 @@ fn responses_to_core(items: &[Value]) -> Option<Vec<Value>> {
 fn core_to_responses(contents: &[Value]) -> Vec<Value> {
     let mut out = Vec::new();
     for turn in contents {
-        if let Some(raw) = turn.get("_raw") {
+        if let Some(raw) = turn.get(turnkeys::RAW) {
             out.push(raw.clone());
             continue;
         }
