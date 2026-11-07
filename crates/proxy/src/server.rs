@@ -914,7 +914,16 @@ struct CompressibleView {
 }
 
 fn compressible_view(turns: &[Value], preserve_recent_messages: usize) -> CompressibleView {
-    let end = turns.len().saturating_sub(preserve_recent_messages);
+    // A range never includes the latest user message (`compress` refuses it), so the mass
+    // past it is not compressible and must not carry a nudge. Ranges start at turn 1, so a
+    // latest message at turn 0 cuts nothing.
+    let latest = latest_user_turn(turns)
+        .filter(|&latest| latest > 0)
+        .unwrap_or(usize::MAX);
+    let end = turns
+        .len()
+        .saturating_sub(preserve_recent_messages)
+        .min(latest);
     let (tokens, count) = if end > 1 {
         (turns_tokens(&turns[1..end]), end - 1)
     } else {
