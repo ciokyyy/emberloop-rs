@@ -1,0 +1,14 @@
+[
+  {"role": "user", "parts": [{"text": "Plan the billing migration."}], "_raw": {"role": "user", "content": "Plan the billing migration."}},
+  {"role": "model", "parts": [{"text": "I will read the billing code first."}], "_raw": {"role": "assistant", "content": "I will read the billing code first."}},
+  {"role": "model", "parts": [{"functionCall": {"id": "call_r1", "name": "read", "args": {"path": "src/billing.rs"}}, "thoughtSignature": "sig-1"}], "_raw": {"role": "assistant", "tool_calls": [{"id": "call_r1"}]}},
+  {"role": "user", "parts": [{"functionResponse": {"id": "call_r1", "name": "read", "response": {"result": "fn charge(acct) { ledger.push(acct) }"}}}], "_raw": {"role": "tool", "tool_call_id": "call_r1", "content": "fn charge(acct) { ledger.push(acct) }"}},
+  {"role": "model", "parts": [{"text": "The charge path needs a lock per account."}], "_raw": {"role": "assistant", "content": "The charge path needs a lock per account."}},
+  {"role": "user", "parts": [{"text": "Steer: keep the ledger append-only."}], "_raw": {"role": "user", "content": "Steer: keep the ledger append-only."}},
+  {"role": "model", "parts": [{"functionCall": {"id": "call_p", "name": "compress", "args": {}}}]},
+  {"role": "user", "parts": [{"functionResponse": {"id": "call_p", "name": "tool", "response": {"result": "folded\n[emberloop-splice:call_p]"}}}]},
+  {"role": "model", "parts": [{"text": "Agreed: append-only ledger, lock per account."}], "_raw": {"role": "assistant", "content": "Agreed: append-only ledger, lock per account."}},
+  {"role": "user", "parts": [{"text": "Now the indexes."}], "_raw": {"role": "user", "content": "Now the indexes."}},
+  {"role": "user", "parts": [{"text": "nudge: first"}], "_nudge": true},
+  {"role": "model", "parts": [{"text": "Indexes on account_id and posted_at."}], "_raw": {"role": "assistant", "content": "Indexes on account_id and posted_at."}}
+]

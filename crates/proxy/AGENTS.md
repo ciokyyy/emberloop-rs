@@ -36,6 +36,8 @@ Wiring: `prepare_request` reads a Settings snapshot, applies the compressor poli
 
 `tests/nudge.rs` covers the gate per window size, the band rules, configurable bands, tier triggers, the compress reset, the serde round trip, and replays `parity/golden/` decisions (inject, over-limit, emergency; never reason strings). Golden tests read the files at test time and need no Node.
 
+`tests/compressor_characterization.rs` pins the `Compressor` through its public API (turn matching, refold and skip, `fold_report`, summary marker, token estimate, policy, batch validation) against `tests/fixtures/compressor/`; its one `#[ignore]` test is the red atomic-batch spill test awaiting lane L4.
+
 `src/tests.rs` nudge tests: the first nudge rides the tool-result turn once and replays byte-exact, nothing fires below the threshold, and the gate survives a runtime rebuild through `nudge.json`. It also covers protected tools and the preserved tail, `acp_status` numbers against a golden frame, marker stripping, emergency truncation, preflight folding, and the `injectTool`/`injectNudge` switches. The compress-reset path is covered only by unit tests.
 `src/tests.rs` runs a fake upstream and a fake model catalogue. Covers token tamper, prompt/tool injection, usage with its window, byte-exact splice replay after reload, dropped-anchor and double-apply rules, SSE proxy-only continuation, mixed-turn rewriting, the 8-round cap, client disconnect, and round timeout.
 
