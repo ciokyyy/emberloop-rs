@@ -270,6 +270,59 @@ impl EventLog {
         Ok(None)
     }
 
+    /// The newest `limit` events of `kind`, oldest first. Reads the ring, then segments from the
+    /// newest back, and stops as soon as `limit` matches are found, so the cost follows the
+    /// result, not the Session's length.
+    pub async fn kind_tail(
+        &self,
+        kind: &EventKind,
+        limit: usize,
+    ) -> Result<Vec<SessionEvent>, EventLogError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut found: VecDeque<SessionEvent> = VecDeque::new();
+        {
+            let ring = self.ring.lock().await;
+            for event in ring.iter().rev().filter(|event| &event.kind == kind) {
+                found.push_front(event.clone());
+                if found.len() == limit {
+                    return Ok(found.into_iter().collect());
+                }
+            }
+        }
+        // The ring is the newest contiguous run of events, so any match at or after its oldest
+        // match is already in `found`.
+        let ring_floor = found.front().map(|event| event.seq);
+        let mut names = {
+            let state = self.state.lock().await;
+            state
+                .segments
+                .iter()
+                .map(|segment| segment.name.clone())
+                .collect::<Vec<_>>()
+        };
+        while let Some(name) = names.pop() {
+            let text = tokio::fs::read_to_string(self.dir.join(name)).await?;
+            for event in text
+                .lines()
+                .rev()
+                .filter(|line| !line.trim().is_empty())
+                .filter_map(|line| serde_json::from_str::<SessionEvent>(line).ok())
+                .filter(|event| &event.kind == kind)
+            {
+                if ring_floor.is_some_and(|floor| event.seq >= floor) {
+                    continue;
+                }
+                found.push_front(event);
+                if found.len() == limit {
+                    return Ok(found.into_iter().collect());
+                }
+            }
+        }
+        Ok(found.into_iter().collect())
+    }
+
     pub async fn recent(&self, limit: usize) -> Vec<SessionEvent> {
         let ring = self.ring.lock().await;
         let start = ring.len().saturating_sub(limit);
