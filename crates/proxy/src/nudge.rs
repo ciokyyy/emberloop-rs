@@ -2,15 +2,14 @@
 //! `load` and `save` are the only IO, for the Session's `nudge.json`.
 //!
 //! The first nudge fires when context tokens reach `min(75000, window / 2)` and the
-//! Session has compressible mass. Until one has fired, no pressure, emergency or tier
-//! nudge can fire. After it, another nudge fires as soon as the context has grown by
-//! `NUDGE_GROWTH_TOKENS` and nothing was folded, so a model that skipped one nudge is
-//! asked again. Pressure fires every turn while usage is at or over
-//! `maxContextLimit`, emergency over `emergencyThresholdPercent`, both only when
-//! compressible mass is at least `minPressureBenefitTokens` (default
-//! `max(5000, window / 100)`). Tiers fire once when the active block count reaches
-//! their trigger and usage is under the pressure band. A successful compress closes
-//! the gate again.
+//! Session has compressible mass. Pressure fires every turn while usage is at or over
+//! `maxContextLimit`, emergency over `emergencyThresholdPercent`; both win over the first
+//! nudge and need compressible mass of at least `minPressureBenefitTokens` (default
+//! `max(5000, window / 100)`). After a nudge, another fires as soon as the context has
+//! grown by `NUDGE_GROWTH_TOKENS` since the previous one, so a model that skipped one
+//! nudge is asked again. Tiers fire once when the active block count reaches their
+//! trigger and usage is under the pressure band. A successful compress closes the gate
+//! again.
 //!
 //! Bands and minimums follow the reference (billion-context, `maxContextLimit` 75%,
 //! `emergencyThresholdPercent` 95%, `minCompressRange` 5000, `nudgeGrowthTokens`
@@ -118,15 +117,17 @@ impl NudgeState {
         let over_limit = at_percent(tokens, window, config.max_context_limit_pct);
         let emergency = at_percent(tokens, window, config.emergency_threshold_pct);
         let floor = pressure_floor(window, config.min_pressure_benefit_tokens);
-        let kind = if !self.first_fired {
+        // Usage over a band wins over the gentle first nudge, so a Session already at
+        // 97 percent after a compress gets the emergency, not the first.
+        let kind = if emergency && compressible >= floor {
+            NudgeKind::Emergency
+        } else if over_limit && compressible >= floor {
+            NudgeKind::Pressure
+        } else if !self.first_fired {
             if compressible < MIN_COMPRESS_RANGE || tokens < first_threshold(window) {
                 return None;
             }
             NudgeKind::First
-        } else if emergency && compressible >= floor {
-            NudgeKind::Emergency
-        } else if over_limit && compressible >= floor {
-            NudgeKind::Pressure
         } else if compressible >= floor
             && tokens.saturating_sub(self.last_nudge_tokens) >= NUDGE_GROWTH_TOKENS
         {

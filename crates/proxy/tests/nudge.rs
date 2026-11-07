@@ -116,35 +116,45 @@ fn emergency_band_starts_at_95_percent() {
 }
 
 #[test]
-fn no_pressure_or_emergency_before_the_first_nudge() {
+fn the_bands_win_over_the_first_nudge_when_mass_allows_it() {
     let window = 64_000;
     let mut state = NudgeState::default();
-    // Compressible mass is too small for the first nudge, so the gate stays shut
-    // even though usage is far over the emergency band.
+    // Compressible mass is too small for any nudge, so the gate stays shut even
+    // though usage is far over the emergency band.
     assert_eq!(state.observe(63_000, window, MIN_COMPRESS_RANGE - 1), None);
-    // The first observation with enough mass fires the gate itself, never an emergency.
+    // With enough mass the band nudge fires first: the gentle first nudge never
+    // comes ahead of the emergency that the usage already calls for.
     let fired = state
         .observe(63_000, window, MIN_COMPRESS_RANGE)
         .expect("gate fires");
-    assert_eq!(fired.kind, NudgeKind::First);
+    assert_eq!(fired.kind, NudgeKind::Emergency);
 }
 
 #[test]
-fn compress_closes_the_gate_until_the_next_first_nudge() {
+fn compress_closes_the_gate_and_the_bands_win_over_the_first_nudge_again() {
     let window = 64_000;
     let mut state = NudgeState::default();
     observe(&mut state, 32_000, window);
     state.reset_after_compress();
+    // 62000 is 97 percent of the window: emergency, not the gentle first nudge.
     let fired = observe(&mut state, 62_000, window).expect("gate reopens");
-    assert_eq!(
-        fired.kind,
-        NudgeKind::First,
-        "after a compress the first nudge comes before emergency"
-    );
+    assert_eq!(fired.kind, NudgeKind::Emergency);
     assert_eq!(
         observe(&mut state, 62_500, window).map(|n| n.kind),
         Some(NudgeKind::Emergency)
     );
+}
+
+#[test]
+fn after_a_compress_the_first_nudge_still_fires_below_the_bands() {
+    let window = 64_000;
+    let mut state = NudgeState::default();
+    observe(&mut state, 32_000, window);
+    state.reset_after_compress();
+    // 40000 is 62 percent of the window: under the pressure band, so the first nudge.
+    let fired = observe(&mut state, 40_000, window).expect("gate reopens");
+    assert_eq!(fired.kind, NudgeKind::First);
+    assert!(!fired.over_limit);
 }
 
 #[test]
