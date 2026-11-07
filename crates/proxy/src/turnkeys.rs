@@ -146,6 +146,22 @@ mod tests {
     }
 
     #[test]
+    fn the_compressor_names_no_turn_key_outside_this_module() {
+        let source = include_str!("compressor.rs");
+        for key in [
+            "\"_nudge\"",
+            "\"_raw\"",
+            "\"thoughtSignature\"",
+            "emberloop-splice:",
+        ] {
+            assert!(
+                !source.contains(key),
+                "compressor.rs names {key}; use turnkeys"
+            );
+        }
+    }
+
+    #[test]
     fn splice_marker_carries_the_tool_result_id() {
         assert_eq!(splice_marker("call_p"), "emberloop-splice:call_p");
     }

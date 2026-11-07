@@ -1322,7 +1322,7 @@ mod tests {
                 json!({
                     "role": "user",
                     "parts": [{"text": format!("t{n}")}],
-                    "_raw": {"role": "user", "content": format!("t{n}")}
+                    (turnkeys::RAW): {"role": "user", "content": format!("t{n}")}
                 })
             })
             .collect()
@@ -1340,7 +1340,7 @@ mod tests {
         for turn in &mut contents {
             turn.as_object_mut()
                 .unwrap()
-                .insert("_raw".into(), json!({"role": "user"}));
+                .insert(turnkeys::RAW.into(), json!({"role": "user"}));
         }
         compressor
             .compress_batch(&mut contents, vec![range(1, 4)], &CompressPolicy::default())
@@ -1363,10 +1363,7 @@ mod tests {
         let mut contents = raw_turns();
         // The proxy inserts a nudge in every request while its gate holds, so a fold over the
         // history stores one; the harness never saw it and its next request lacks the turn.
-        contents.insert(
-            2,
-            json!({"role": "user", "parts": [{"text": "nudge: first"}], "_nudge": true}),
-        );
+        contents.insert(2, turnkeys::nudge_turn("nudge: first"));
         compressor
             .compress_batch(&mut contents, vec![range(1, 4)], &CompressPolicy::default())
             .unwrap();
@@ -1388,7 +1385,7 @@ mod tests {
         let mut contents = raw_turns();
         let pair = [
             json!({"role": "model", "parts": [{"functionCall": {"id": "call_p", "name": "compress", "args": {}}}]}),
-            json!({"role": "user", "parts": [{"functionResponse": {"id": "call_p", "name": "tool", "response": {"result": "folded\n[emberloop-splice:call_p]"}}}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "call_p", "name": "tool", "response": {"result": format!("folded\n[{}]", turnkeys::splice_marker("call_p"))}}}]}),
         ];
         contents.splice(2..2, pair.clone());
         compressor
@@ -1399,7 +1396,7 @@ mod tests {
         // response field, and the call's name instead of the wire's "tool".
         let skip = vec![
             pair[0].clone(),
-            json!({"role": "user", "parts": [{"functionResponse": {"id": "call_p", "name": "compress", "response": {"result": "folded", "splice": "emberloop-splice:call_p"}}}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "call_p", "name": "compress", "response": {"result": "folded", "splice": turnkeys::splice_marker("call_p")}}}]}),
         ];
         let mut rebuilt = raw_turns();
         assert_eq!(compressor.apply_skipping(&mut rebuilt, &skip), 1);
