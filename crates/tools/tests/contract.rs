@@ -268,3 +268,18 @@ fn bash_names_each_route_the_gate_refuses_and_the_tool_it_sends_to() {
         );
     }
 }
+
+#[test]
+fn the_no_rewrite_rule_lives_only_in_the_policy() {
+    let copies = ["fall back to a Python", "Python file I/O", "shell rewrite"];
+    for tool in advertised() {
+        let text = description(&tool);
+        for copy in copies {
+            assert!(
+                !text.contains(copy),
+                "{} repeats the policy's no-rewrite rule: {copy:?}",
+                tool.name
+            );
+        }
+    }
+}
