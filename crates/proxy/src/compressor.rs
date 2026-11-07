@@ -413,9 +413,14 @@ impl Compressor for NativeCompressor {
                     .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, &skip_ids))
                     .cloned()
                     .collect();
-                if let Some((start, end)) = find_span(contents, &wanted) {
-                    let replacement = [block.summary_turn.clone()];
-                    contents.splice(start..end, replacement);
+                if let Some(matched) = find_span(contents, &wanted) {
+                    fold_matched(
+                        contents,
+                        &matched,
+                        block.summary_turn.clone(),
+                        skip,
+                        &skip_ids,
+                    );
                     applied += 1;
                     moved = true;
                 }
@@ -563,10 +568,9 @@ fn token_count(turns: &[Value]) -> u64 {
 /// contiguous; a bigger gap is a different conversation, not a splice.
 const MAX_SPLICE_GAP: usize = 4;
 
-/// Where the folded turns sit in `contents`: the range from the first to the last of them, found
-/// in order with at most `MAX_SPLICE_GAP` unrelated turns between neighbours. The fast path is the
-/// exact contiguous window.
-fn find_span(contents: &[Value], originals: &[Value]) -> Option<(usize, usize)> {
+/// Indices in `contents` of the folded turns, in order, with at most `MAX_SPLICE_GAP` unrelated
+/// turns between neighbours. The fast path is the exact contiguous window.
+fn find_span(contents: &[Value], originals: &[Value]) -> Option<Vec<usize>> {
     if originals.is_empty() || originals.len() > contents.len() {
         return None;
     }
@@ -574,21 +578,53 @@ fn find_span(contents: &[Value], originals: &[Value]) -> Option<(usize, usize)> 
         .windows(originals.len())
         .position(|turns| turns.iter().zip(originals).all(|(a, b)| turn_eq(a, b)))
     {
-        return Some((start, start + originals.len()));
+        return Some((start..start + originals.len()).collect());
     }
     (0..contents.len())
         .filter(|&start| turn_eq(&contents[start], &originals[0]))
         .find_map(|start| span_from(contents, originals, start))
 }
 
-fn span_from(contents: &[Value], originals: &[Value], start: usize) -> Option<(usize, usize)> {
+fn span_from(contents: &[Value], originals: &[Value], start: usize) -> Option<Vec<usize>> {
+    let mut matched = vec![start];
     let mut at = start;
     for original in &originals[1..] {
         let next = (at + 1..contents.len().min(at + 2 + MAX_SPLICE_GAP))
             .find(|&index| turn_eq(&contents[index], original))?;
+        matched.push(next);
         at = next;
     }
-    Some((start, at + 1))
+    Some(matched)
+}
+
+/// Replaces the matched turns with `replacement` where the first one stood. Turns between them
+/// that the fold did not hold are kept, except the transient and skipped ones: a steer or a
+/// proxy pair the harness will not resend must not be deleted with the fold.
+fn fold_matched(
+    contents: &mut Vec<Value>,
+    matched: &[usize],
+    replacement: Value,
+    skip: &[Value],
+    skip_ids: &[&str],
+) {
+    let (Some(&first), Some(&last)) = (matched.first(), matched.last()) else {
+        return;
+    };
+    let old = std::mem::take(contents);
+    for (index, turn) in old.into_iter().enumerate() {
+        if index == first {
+            contents.push(replacement.clone());
+        } else if matched.contains(&index) {
+            continue;
+        } else if index > first
+            && index < last
+            && (is_transient(&turn) || is_skipped(&turn, skip, skip_ids))
+        {
+            continue;
+        } else {
+            contents.push(turn);
+        }
+    }
 }
 
 /// Turn equality that ignores `thoughtSignature` and `_raw`: the Google wire signs unsigned calls
@@ -912,8 +948,8 @@ mod tests {
         let mut contents = turns();
         compressor.compress(&mut contents, call()).unwrap();
 
-        // The harness resends the original turns; a stored steer and a proxy pair were put
-        // back between them before the block is looked for.
+        // The harness resends the original turns; a steer and a proxy pair the stored fold never
+        // held sit between them. They are not transient or skipped, so they must survive.
         let mut rebuilt = turns();
         rebuilt.insert(
             2,
@@ -921,12 +957,12 @@ mod tests {
         );
         rebuilt.insert(3, json!({"role": "user", "parts": [{"text": "pair"}]}));
         assert_eq!(compressor.apply(&mut rebuilt), 1);
-        assert!(rebuilt.iter().any(|turn| turn["parts"][0]["text"]
+        assert_eq!(rebuilt.len(), 5, "{rebuilt:?}");
+        assert!(rebuilt[1]["parts"][0]["text"]
             .as_str()
-            .is_some_and(|t| t.contains("block b1"))));
-        assert!(!rebuilt
-            .iter()
-            .any(|turn| turn["parts"][0]["text"].as_str() == Some("steer: spliced")));
+            .is_some_and(|t| t.contains("block b1")));
+        assert_eq!(rebuilt[2]["parts"][0]["text"], "steer: spliced");
+        assert_eq!(rebuilt[3]["parts"][0]["text"], "pair");
     }
 
     #[test]

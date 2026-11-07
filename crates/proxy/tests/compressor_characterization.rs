@@ -163,9 +163,16 @@ fn up_to_four_unrelated_turns_between_folded_neighbours_still_match() {
         );
     }
     assert_eq!(compressor.apply(&mut view), 1);
-    // The span runs from the first folded turn to the last one, so the steers inside it go too.
-    assert_eq!(view.len(), 8);
-    assert!(!view.iter().any(|turn| text(turn).starts_with("steer")));
+    // Only the folded turns are replaced; the steers between them are not in the stored fold,
+    // so they stay in the request after the summary.
+    assert_eq!(view.len(), 12);
+    assert!(text(&view[1]).starts_with("📦"), "{}", text(&view[1]));
+    assert_eq!(
+        view.iter()
+            .filter(|turn| text(turn).starts_with("steer"))
+            .count(),
+        4
+    );
 }
 
 #[test]
