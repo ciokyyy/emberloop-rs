@@ -9,6 +9,8 @@ pub struct Usage {
     pub output_tokens: u64,
     /// Input tokens the upstream served from its prompt cache, when it says so.
     pub cached_tokens: u64,
+    /// Input tokens the upstream wrote into its prompt cache on this request (Anthropic).
+    pub cache_creation_tokens: u64,
 }
 
 /// Extract usage from a Cloud Code SSE stream or a plain JSON response.
@@ -22,6 +24,9 @@ pub fn extract_usage(bytes: &[u8]) -> Option<Usage> {
             found = true;
             if usage.cached_tokens > 0 {
                 merged.cached_tokens = usage.cached_tokens;
+            }
+            if usage.cache_creation_tokens > 0 {
+                merged.cache_creation_tokens = usage.cache_creation_tokens;
             }
             if usage.input_tokens > 0 {
                 merged.input_tokens = usage.input_tokens;
@@ -80,6 +85,7 @@ fn gemini_usage(root: &Value) -> Option<Usage> {
         input_tokens: input,
         output_tokens: output,
         cached_tokens: number(usage, "cachedContentTokenCount"),
+        cache_creation_tokens: 0,
     })
 }
 
@@ -94,6 +100,7 @@ fn openai_usage(root: &Value) -> Option<Usage> {
         input_tokens: input,
         output_tokens: output,
         cached_tokens: cached_tokens(usage),
+        cache_creation_tokens: number(usage, "cache_creation_input_tokens"),
     })
 }
 
@@ -177,7 +184,8 @@ mod tests {
             Some(Usage {
                 input_tokens: 120,
                 output_tokens: 7,
-                cached_tokens: 0
+                cached_tokens: 0,
+                cache_creation_tokens: 0
             })
         );
     }
@@ -191,7 +199,8 @@ mod tests {
             Some(Usage {
                 input_tokens: 9,
                 output_tokens: 3,
-                cached_tokens: 0
+                cached_tokens: 0,
+                cache_creation_tokens: 0
             })
         );
     }
@@ -204,7 +213,8 @@ mod tests {
             Some(Usage {
                 input_tokens: 44,
                 output_tokens: 2,
-                cached_tokens: 0
+                cached_tokens: 0,
+                cache_creation_tokens: 0
             })
         );
     }
@@ -218,7 +228,8 @@ mod tests {
             Some(Usage {
                 input_tokens: 31,
                 output_tokens: 14,
-                cached_tokens: 0
+                cached_tokens: 0,
+                cache_creation_tokens: 0
             })
         );
         let responses =
@@ -228,7 +239,8 @@ mod tests {
             Some(Usage {
                 input_tokens: 52,
                 output_tokens: 8,
-                cached_tokens: 0
+                cached_tokens: 0,
+                cache_creation_tokens: 0
             })
         );
     }
@@ -262,7 +274,21 @@ mod tests {
                 input_tokens: 87000,
                 output_tokens: 1,
                 cached_tokens: 80000,
+                cache_creation_tokens: 5000
             })
+        );
+    }
+
+    #[test]
+    fn anthropic_cache_writes_are_read_apart_from_cache_reads() {
+        let body = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":2000,\"cache_read_input_tokens\":80000,\"cache_creation_input_tokens\":5000,\"output_tokens\":1}}}\n\n";
+        let usage = extract_usage(body.as_bytes()).unwrap();
+        assert_eq!(usage.cache_creation_tokens, 5000);
+        assert_eq!(usage.cached_tokens, 80000);
+        let openai = r#"{"usage":{"prompt_tokens":44,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":30}}}"#;
+        assert_eq!(
+            extract_usage(openai.as_bytes()).map(|u| u.cache_creation_tokens),
+            Some(0)
         );
     }
 
@@ -276,6 +302,7 @@ mod tests {
                 input_tokens: 87000,
                 output_tokens: 14,
                 cached_tokens: 80000,
+                cache_creation_tokens: 5000
             })
         );
     }
