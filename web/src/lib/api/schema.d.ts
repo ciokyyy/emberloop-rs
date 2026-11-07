@@ -543,6 +543,8 @@ export interface components {
             key: string;
         };
         Settings: {
+            /** @default gemini-3.8-flash */
+            default_model: string;
             /**
              * Format: int32
              * @description Reference `compress.emergencyThresholdPercent`.

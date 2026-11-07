@@ -1606,6 +1606,10 @@
       "Settings": {
         "type": "object",
         "properties": {
+          "default_model": {
+            "type": "string",
+            "default": "gemini-3.8-flash"
+          },
           "emergency_threshold_percent": {
             "type": "integer",
             "format": "int32",
