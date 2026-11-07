@@ -172,9 +172,9 @@ impl SpliceStore {
     /// A self-anchored splice (one the harness never saw, such as a proxy tool
     /// pair) goes right after the turn it followed when it was recorded, so its
     /// index stays fixed as the history grows. When that turn is gone (folded or
-    /// rewritten) it attaches before the newest model turn, as it always did, and
-    /// records the turn before its new place as its anchor so that later requests
-    /// keep it there. The record is appended to the file.
+    /// rewritten) it goes after the nearest user turn before the newest model
+    /// turn, as before, and records that user turn as its anchor so that later
+    /// requests keep it there. The record is appended to the file.
     pub fn apply(&mut self, contents: &mut Vec<Value>) -> std::io::Result<SpliceReport> {
         let mut report = SpliceReport::default();
         for index in 0..self.splices.len() {
@@ -287,21 +287,31 @@ fn insert_turns(contents: &mut Vec<Value>, index: usize, turns: &[Value]) {
         contents.insert(index + offset, signed_for_replay(turn));
     }
 }
-/// Where a stored model turn may go: before the newest model turn, where a
-/// user turn precedes it, or in a gap between two user turns when folding left
-/// no model turn. Anywhere else the wire rejects the turn order.
+/// Where a stored model turn may go: right after the nearest user turn before
+/// the newest model turn (directly before it in a history that alternates), or
+/// in a gap between two user turns when folding left no model turn. Anywhere
+/// else the wire rejects the turn order.
 fn replay_index(contents: &[Value]) -> Option<usize> {
     let last_model = contents
         .iter()
-        .rposition(|turn| turn.get("role").and_then(Value::as_str) == Some("model"))
+        .rposition(|turn| role_of(turn) == Some("model"))
         .filter(|index| *index > 0);
-    last_model.or_else(|| {
-        let role = |turn: &Value| turn.get("role").and_then(Value::as_str).map(str::to_string);
-        (1..contents.len()).rev().find(|index| {
-            role(&contents[*index - 1]).as_deref() == Some("user")
-                && role(&contents[*index]).as_deref() == Some("user")
-        })
-    })
+    match last_model {
+        Some(model) => {
+            let user_before = contents[..model]
+                .iter()
+                .rposition(|turn| role_of(turn) == Some("user"));
+            Some(user_before.map_or(model, |user| user + 1))
+        }
+        None => (1..contents.len()).rev().find(|index| {
+            role_of(&contents[*index - 1]) == Some("user")
+                && role_of(&contents[*index]) == Some("user")
+        }),
+    }
+}
+
+fn role_of(turn: &Value) -> Option<&str> {
+    turn.get("role").and_then(Value::as_str)
 }
 
 /// Google rejects a replayed model turn whose first function call carries no
@@ -638,6 +648,22 @@ mod tests {
         next.push(user_text("d"));
         reloaded.apply(&mut next).unwrap();
         assert_eq!(next[1], pair[0]);
+    }
+
+    #[test]
+    fn a_fallback_never_puts_a_model_turn_after_a_model_turn() {
+        // The newest model turn follows another model turn: the pair goes after the user turn
+        // before them both, so its own model turn still follows a user turn.
+        let mut contents = vec![user_text("go"), model_text("a"), model_text("b")];
+        let pair = proxy_pair("p1");
+        let mut store = SpliceStore::default();
+        store
+            .insert(Splice::new("p1", pair.clone()).with_marker("marker-p1"))
+            .unwrap();
+        store.apply(&mut contents).unwrap();
+        assert_eq!(contents[1], pair[0]);
+        assert_eq!(contents[2], pair[1]);
+        assert_eq!(contents[3], model_text("a"));
     }
 
     #[test]

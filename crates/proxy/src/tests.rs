@@ -2807,6 +2807,65 @@ async fn prefix_is_stable_across_a_mid_run_compress() {
     assert_run_is_prefix_stable("mid-run compress", &requests);
 }
 
+/// A proxy-only pair whose anchor turn is then folded away: the pair is re-placed once, stays
+/// there, and the Session keeps its prefix after the fold.
+#[tokio::test]
+async fn prefix_is_stable_after_a_compress_folds_the_pairs_anchor() {
+    let fixture = fixture_with(echoed_usage_fake()).await;
+    let pair_id = "call_s";
+    let requests = drive_growing(&fixture, 0, 9, |index, fixture| {
+        if index == 1 {
+            // `acp_status` is answered by the proxy, so the pair follows this request's newest result.
+            fixture.fake.script.lock().unwrap().extend([
+                json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
+                    "functionCall": {"id": pair_id, "name": "acp_status", "args": {}},
+                    "thoughtSignature": "SIG-S"
+                }]}}]}}),
+                json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{ "text": "done" }]}}]}}),
+            ]);
+        }
+        if index == 5 {
+            // Turns 1..8 hold the anchor result and the pair (turn 0 is the task).
+            fixture.fake.script.lock().unwrap().extend([
+                json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
+                    "functionCall": {"id": "call_c", "name": "compress",
+                        "args": {"start": 1, "end": 8, "summary": "folded the anchor"}},
+                    "thoughtSignature": "SIG-C"
+                }]}}]}}),
+                json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{ "text": "done" }]}}]}}),
+            ]);
+        }
+        (index == 6).then_some(Break::Fold(1))
+    })
+    .await;
+    let pair_responses = |body: &Value| {
+        body["contents"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|turn| {
+                turn["parts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|part| part["functionResponse"]["id"].as_str() == Some(pair_id))
+            })
+            .count()
+    };
+    assert!(
+        requests[6].0["contents"][1]["parts"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("folded the anchor")),
+        "the fold replaced the anchor turn on the next request"
+    );
+    for (index, (body, _)) in requests.iter().enumerate().skip(2) {
+        let count = pair_responses(body);
+        // The pair exists from request 2 on, once: a fold that drops it is re-placed, never doubled.
+        assert_eq!(count, 1, "request {index} carries the pair once");
+    }
+    assert_run_is_prefix_stable("folded anchor", &requests);
+}
+
 #[tokio::test]
 async fn prefix_is_stable_after_emergency_truncation_stops() {
     let fixture = fixture_with(echoed_usage_fake()).await;
