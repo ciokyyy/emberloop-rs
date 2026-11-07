@@ -214,3 +214,57 @@ fn read_path_names_every_form_read_accepts() {
         assert!(path.contains(form), "read path text lacks {form}: {path}");
     }
 }
+
+#[test]
+fn every_enum_value_is_named_in_its_tool_text() {
+    let mut failures = Vec::new();
+    for tool in advertised() {
+        let mut values = BTreeSet::new();
+        enum_values(&schema(&tool), &mut values);
+        let spans = code_spans(&description(&tool));
+        for value in values {
+            if !spans.contains(&value) {
+                failures.push(format!(
+                    "{}: enum value `{value}` is not named in its text",
+                    tool.name
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn bash_names_each_route_the_gate_refuses_and_the_tool_it_sends_to() {
+    let tools = advertised();
+    let bash = tools.iter().find(|tool| tool.name == "bash").expect("bash");
+    let text = description(bash);
+    let spans = code_spans(&text);
+    for (command, marker, tool) in [
+        ("sed -i 's/a/b/' notes.txt", "sed -i", "edit"),
+        ("perl -i -pe 's/a/b/' notes.txt", "perl -i", "edit"),
+        (
+            "awk -i inplace '{print}' notes.txt",
+            "awk -i inplace",
+            "edit",
+        ),
+        ("python3 -c 'print(1)'", "python3 -c", "execute"),
+        ("python3 <<'PY'\nprint(1)\nPY", "heredoc", "execute"),
+        ("echo hi > out.txt", "redirect", "write"),
+        ("echo hi | tee out.txt", "tee", "write"),
+        ("nohup sleep 1", "nohup", "background"),
+        ("sleep 5 &", "&", "background"),
+    ] {
+        let rule = tools::intercept::blocked(command)
+            .unwrap_or_else(|| panic!("{command} is not refused"));
+        assert_eq!(rule.tool, tool, "{command}");
+        assert!(
+            text.contains(marker),
+            "bash text lacks {marker:?} for {command}: {text}"
+        );
+        assert!(
+            spans.iter().any(|span| span == tool),
+            "bash text does not name `{tool}`: {text}"
+        );
+    }
+}
