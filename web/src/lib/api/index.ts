@@ -1,4 +1,5 @@
 import type {
+  UsageRecord,
   UsageView,
   LoginView,
   Model,
@@ -95,6 +96,11 @@ export const api = {
 
   providerUsage: (provider: string, refresh = false): Promise<UsageView> =>
     request(`/api/providers/${encodeURIComponent(provider)}/usage?refresh=${refresh}`),
+  /** The newest `limit` model requests of a Session, oldest first; the server default is 200. */
+  sessionUsage: (id: string, limit?: number) =>
+    request<UsageRecord[]>(
+      `/api/sessions/${encodeURIComponent(id)}/usage${limit ? `?limit=${limit}` : ''}`
+    ),
   listProviders: () => request<ProviderView[]>('/api/providers'),
   startAgyLogin: (label: string) =>
     request<LoginView>('/api/providers/agy/login', {
