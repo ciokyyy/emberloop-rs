@@ -42,6 +42,7 @@ use crate::state::{AppState, Settings};
         refresh_models,
         crate::providers::list_providers,
         crate::providers::provider_usage,
+        crate::usage::session_usage_handler,
         crate::providers::start_agy_login,
         crate::providers::get_agy_login,
         crate::providers::cancel_agy_login,
@@ -72,6 +73,7 @@ use crate::state::{AppState, Settings};
             PromptTextDto,
             ModelEntry,
             crate::providers::ProviderView,
+            crate::usage::UsageRecord,
             crate::providers::UsageView,
             crate::providers::UsageWindow,
             crate::providers::UsageBalance,
@@ -901,6 +903,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/sessions/{id}/history",
             get(crate::sse::session_history_handler),
+        )
+        .route(
+            "/api/sessions/{id}/usage",
+            get(crate::usage::session_usage_handler),
         )
         .route(
             "/api/version",
