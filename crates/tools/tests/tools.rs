@@ -205,6 +205,10 @@ fn read_refuses_binary_and_oversized_files() {
     fs::write(&big, vec![b'a'; 2 * 1024 * 1024 + 1]).expect("big");
     let error = call(&fixture, "read", json!({"path": "huge.txt"})).expect_err("size cap");
     assert!(error.to_string().contains("byte read limit"), "{error}");
+    assert!(
+        error.to_string().contains("grep") && error.to_string().contains("sed -n"),
+        "the refusal names a next step: {error}"
+    );
 }
 
 #[test]
