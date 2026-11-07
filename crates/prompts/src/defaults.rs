@@ -34,3 +34,5 @@ pub const TOOL_TODO: &str = include_str!("../prompts/tool.todo.md");
 pub const TOOL_GIT: &str = include_str!("../prompts/tool.git.md");
 pub const TOOL_CHECK: &str = include_str!("../prompts/tool.check.md");
 pub const TOOL_CTX_SEARCH: &str = include_str!("../prompts/tool.ctx_search.md");
+pub const TODO_REMINDER: &str = include_str!("../prompts/todo.reminder.md");
+pub const ACP_STATUS_REPORT: &str = include_str!("../prompts/acp_status.report.md");

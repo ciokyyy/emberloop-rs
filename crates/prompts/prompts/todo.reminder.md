@@ -1,0 +1,1 @@
+Reminder {{ reminder_sent }} of {{ reminder_max }}: {{ open_todos }} still open. Mark each item completed or cancelled with todo(action: "update") when its work is done, or say what blocks it.
