@@ -22,9 +22,89 @@ fn write_override(dir: &Path, id: &str, text: &str) {
 fn tool_guidance_keeps_edits_anchored_and_graph_calls_discoverable() {
     assert!(default_text(POLICY).contains("Use hashline `edit` for existing files"));
     assert!(default_text(TOOL_EDIT).contains("PUT 4.=4:"));
-    assert!(!default_text(TOOL_EXECUTE).contains("open(\"notes.md\", \"w\")"));
+    // Python edits route through the hashline tool, not around it.
+    assert!(default_text(TOOL_EXECUTE).contains("tools.edit(input="));
     assert!(default_text(SKILL_CODEBASE_MEMORY).contains("tools.call('graph.search_graph'"));
     assert!(default_text(SKILL_CODEBASE_MEMORY).contains("not a complete runtime call graph"));
+}
+
+/// Tools the harness is offered, as `tools::mcp` declares them. The prompts crate
+/// cannot depend on the tools crate (it is far heavier and `tool_specs` is private),
+/// so this list is pinned here and must be kept in step with that declaration.
+const OFFERED_TOOLS: &[&str] = &[
+    "read",
+    "grep",
+    "edit",
+    "bash",
+    "background",
+    "write",
+    "find",
+    "todo",
+    "websearch",
+    "git",
+    "check",
+    "ctx_search",
+    "execute",
+];
+/// Tools the proxy injects into every request.
+const PROXY_TOOLS: &[&str] = &["compress", "decompress", "search_context", "acp_status"];
+/// Bare identifiers the model-facing texts may quote that are neither tools nor
+/// tool arguments: the `compress` range fields and the `search_context` arguments.
+const ARGUMENTS: &[&str] = &[
+    "ranges", "start", "end", "summary", "topic", "contents", "query", "limit",
+];
+
+fn backticked(text: &str) -> Vec<&str> {
+    text.split('`').skip(1).step_by(2).collect()
+}
+
+#[test]
+fn every_offered_tool_is_named_in_policy_or_has_a_description_id() {
+    let policy = default_text(POLICY);
+    for name in OFFERED_TOOLS.iter().chain(PROXY_TOOLS) {
+        let id = format!("tool.{name}.description");
+        assert!(
+            policy.contains(&format!("`{name}`")) || PROMPT_IDS.contains(&id.as_str()),
+            "{name} is offered but neither named in policy nor described by {id}"
+        );
+    }
+}
+
+/// Shell commands the prompts quote as examples of output to drop; they are not tools.
+const SHELL_COMMANDS: &[&str] = &["npm", "ls"];
+
+#[test]
+fn backticked_identifiers_in_model_text_name_a_real_tool_or_argument() {
+    let texts = [
+        POLICY,
+        COMPRESS,
+        SEARCH_CONTEXT,
+        NUDGE_FIRST,
+        NUDGE_PRESSURE,
+        NUDGE_EMERGENCY,
+        NUDGE_TIER2,
+        NUDGE_TIER3,
+    ];
+    for id in texts {
+        for span in backticked(default_text(id)) {
+            let bare = !span.is_empty() && span.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+            if bare {
+                assert!(
+                    OFFERED_TOOLS.contains(&span)
+                        || PROXY_TOOLS.contains(&span)
+                        || ARGUMENTS.contains(&span)
+                        || SHELL_COMMANDS.contains(&span),
+                    "`{span}` in {id} is not a known tool or argument"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn search_before_decompress_is_stated_only_in_policy() {
+    assert!(default_text(POLICY).contains("Call `search_context` before `decompress`"));
+    assert!(!default_text(SEARCH_CONTEXT).contains("before decompress"));
 }
 
 #[test]
@@ -246,14 +326,48 @@ fn wait_until(mut done: impl FnMut() -> bool) {
 }
 
 #[test]
-fn nudge_ids_are_listed_and_emergency_shares_the_pressure_body() {
+fn nudge_ids_are_listed_and_emergency_has_its_own_header_over_the_pressure_body() {
     assert!(PROMPT_IDS.contains(&NUDGE_FIRST));
     assert!(PROMPT_IDS.contains(&NUDGE_PRESSURE));
     assert!(PROMPT_IDS.contains(&NUDGE_EMERGENCY));
-    assert_eq!(default_text(NUDGE_EMERGENCY), default_text(NUDGE_PRESSURE));
+    let emergency = default_text(NUDGE_EMERGENCY);
+    assert_ne!(emergency, default_text(NUDGE_PRESSURE));
+    assert!(emergency.starts_with("Emergency:"));
+    assert!(emergency.contains("truncated by the proxy"));
+    assert!(emergency.ends_with(default_text(NUDGE_PRESSURE)));
     assert_ne!(default_text(NUDGE_FIRST), default_text(NUDGE_PRESSURE));
     assert!(default_text(NUDGE_FIRST).starts_with("This is an efficiency nudge"));
     assert!(default_text(NUDGE_PRESSURE).starts_with("⚠️ Context limit reached"));
+}
+
+#[test]
+fn nudges_fold_only_genuinely_consumed_ranges_and_define_protected_tools() {
+    let all = [
+        NUDGE_FIRST,
+        NUDGE_PRESSURE,
+        NUDGE_EMERGENCY,
+        NUDGE_TIER2,
+        NUDGE_TIER3,
+    ];
+    for id in all {
+        let text = default_text(id);
+        assert!(
+            !text.contains("should be compressed"),
+            "{id} asks for every range"
+        );
+        assert!(
+            !text.contains("protected content"),
+            "{id} uses an undefined term"
+        );
+        assert!(
+            text.contains("genuinely consumed"),
+            "{id} lacks the fold rule"
+        );
+        assert!(
+            text.contains("protected tools"),
+            "{id} does not name protected tools"
+        );
+    }
 }
 
 #[test]

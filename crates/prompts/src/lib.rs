@@ -39,7 +39,7 @@ pub const TOOL_WEBSEARCH: &str = "tool.websearch.description";
 pub const TOOL_EXECUTE: &str = "tool.execute.description";
 pub const TOOL_TODO: &str = "tool.todo.description";
 /// Billion-context nudges (ticket 20). Derived from the reference wording; the
-/// emergency id shares the pressure body. Raw templates: see `PinnedPrompts::pin`.
+/// emergency id is its own header over the pressure body. Raw templates: see `PinnedPrompts::pin`.
 pub const NUDGE_FIRST: &str = "nudge.first";
 pub const NUDGE_PRESSURE: &str = "nudge.pressure";
 pub const NUDGE_EMERGENCY: &str = "nudge.emergency";
@@ -106,7 +106,8 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_TODO => defaults::TOOL_TODO,
         SKILL_CODEBASE_MEMORY => defaults::SKILL_CODEBASE_MEMORY,
         NUDGE_FIRST => defaults::NUDGE_FIRST,
-        NUDGE_PRESSURE | NUDGE_EMERGENCY => defaults::NUDGE_PRESSURE,
+        NUDGE_PRESSURE => defaults::NUDGE_PRESSURE,
+        NUDGE_EMERGENCY => defaults::NUDGE_EMERGENCY,
         NUDGE_TIER2 => defaults::NUDGE_TIER2,
         NUDGE_TIER3 => defaults::NUDGE_TIER3,
         _ => "",
