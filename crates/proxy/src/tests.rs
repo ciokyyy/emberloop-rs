@@ -1857,14 +1857,15 @@ async fn conversation_reset_archives_blocks_without_reloading_or_overwriting_the
             json!({"role": "user", "parts": [{"text": "latest"}]}),
         ];
         compressor
-            .compress(
+            .compress_batch(
                 &mut contents,
-                CompressCall {
+                vec![CompressCall {
                     start: 0,
                     end: 1,
                     summary: "saved plan".into(),
                     topic: None,
-                },
+                }],
+                &CompressPolicy::default(),
             )
             .unwrap();
         let bytes = std::fs::read(spill.join("blocks/b1.json")).unwrap();

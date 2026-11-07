@@ -1,9 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 //! Characterization of the compression engine through its public API: turn matching
-//! (`turn_eq`, `find_span`, `is_transient`), refolding (`apply`, `apply_skipping`), `fold_report`,
-//! the summary marker, `token_count`, the policy and batch validation. Every expectation is what
-//! the code does today. `fixtures/compressor/conversation.json` is a 12-turn chat history with
+//! (`turn_eq`, `find_span`, `is_transient`), refolding (`apply_skipping`), `fold_report`,
+//! the summary marker, `token_count`, the policy and batch validation. Each expectation states
+//! a behaviour the compressor must keep. `fixtures/compressor/conversation.json` is a 12-turn chat history with
 //! `_raw` copies, a thought signature, a steer, a proxy splice pair and a transient nudge.
 
 use proxy::compressor::{
@@ -86,14 +86,16 @@ fn a_turn_that_differs_only_in_raw_or_thought_signature_still_matches() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
     assert!(contents[1].get("_raw").is_some(), "stored turns carry _raw");
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
     assert!(conversation()[2]["parts"][0]
         .get("thoughtSignature")
         .is_some());
     assert!(view[2]["parts"][0].get("thoughtSignature").is_none());
-    assert_eq!(compressor.apply(&mut view), 1);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 1);
     assert_eq!(
         text(&view[1]),
         "📦 [acp] Compressed turns 1–4 into block b1\n\nsummary of 1..5"
@@ -104,11 +106,13 @@ fn a_turn_that_differs_only_in_raw_or_thought_signature_still_matches() {
 fn a_turn_whose_text_changed_does_not_match_the_stored_fold() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
     view[1]["parts"][0]["text"] = json!("a different answer");
-    assert_eq!(compressor.apply(&mut view), 0);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 0);
     assert_eq!(view.len(), 11);
 }
 
@@ -116,23 +120,27 @@ fn a_turn_whose_text_changed_does_not_match_the_stored_fold() {
 fn an_extra_field_other_than_raw_or_thought_signature_stops_a_match() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
     view[3]["meta"] = json!(1);
-    assert_eq!(compressor.apply(&mut view), 0);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 0);
 }
 
 #[test]
 fn reapplying_a_fold_to_its_own_result_changes_nothing() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
-    assert_eq!(compressor.apply(&mut view), 1);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 1);
     let once = view.clone();
-    assert_eq!(compressor.apply(&mut view), 0);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 0);
     assert_eq!(view, once);
 }
 
@@ -140,11 +148,13 @@ fn reapplying_a_fold_to_its_own_result_changes_nothing() {
 fn contiguous_folded_turns_are_replaced_by_the_stored_summary_turn_byte_for_byte() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
     let stored_summary = contents[1].clone();
 
     let mut view = harness_view(&conversation());
-    assert_eq!(compressor.apply(&mut view), 1);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 1);
     assert_eq!(view.len(), 8);
     assert_eq!(view[1], stored_summary);
 }
@@ -153,7 +163,9 @@ fn contiguous_folded_turns_are_replaced_by_the_stored_summary_turn_byte_for_byte
 fn up_to_four_unrelated_turns_between_folded_neighbours_still_match() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
     for n in 0..4 {
@@ -162,7 +174,7 @@ fn up_to_four_unrelated_turns_between_folded_neighbours_still_match() {
             json!({"role": "user", "parts": [{"text": format!("steer {n}")}]}),
         );
     }
-    assert_eq!(compressor.apply(&mut view), 1);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 1);
     // Only the folded turns are replaced; the steers between them are not in the stored fold,
     // so they stay in the request after the summary.
     assert_eq!(view.len(), 12);
@@ -179,7 +191,9 @@ fn up_to_four_unrelated_turns_between_folded_neighbours_still_match() {
 fn five_unrelated_turns_between_folded_neighbours_break_the_match() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
     for n in 0..5 {
@@ -188,18 +202,20 @@ fn five_unrelated_turns_between_folded_neighbours_break_the_match() {
             json!({"role": "user", "parts": [{"text": format!("steer {n}")}]}),
         );
     }
-    assert_eq!(compressor.apply(&mut view), 0);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 0);
 }
 
 #[test]
 fn folded_turns_out_of_their_stored_order_do_not_match() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
     view.swap(2, 3);
-    assert_eq!(compressor.apply(&mut view), 0);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 0);
 }
 
 #[test]
@@ -208,14 +224,20 @@ fn a_nudge_in_the_stored_fold_is_not_needed_for_a_later_match() {
     let mut contents = conversation();
     // Turns 10..12 hold the transient nudge at 10; the fold stores it. Turn 9, the latest user
     // message, is outside the fold.
-    compressor.compress(&mut contents, fold(10, 12)).unwrap();
+    compressor
+        .compress_batch(
+            &mut contents,
+            vec![fold(10, 12)],
+            &CompressPolicy::default(),
+        )
+        .unwrap();
     assert!(contents[10]["parts"][0]["text"]
         .as_str()
         .unwrap()
         .starts_with("📦"));
 
     let mut view = harness_view(&conversation());
-    assert_eq!(compressor.apply(&mut view), 1);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 1);
     assert_eq!(view.len(), 11);
 }
 
@@ -223,29 +245,35 @@ fn a_nudge_in_the_stored_fold_is_not_needed_for_a_later_match() {
 fn a_nudge_in_the_request_counts_as_one_unrelated_turn_between_folded_turns() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
     view.insert(3, nudge());
-    assert_eq!(compressor.apply(&mut view), 1);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 1);
 }
 
 #[test]
 fn apply_without_skip_misses_a_fold_whose_splice_pair_the_harness_does_not_resend() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(4, 9)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(4, 9)], &CompressPolicy::default())
+        .unwrap();
 
     // The harness has no steer (5) and no proxy pair (6, 7); the splice store puts them back.
     let mut view = harness_view(&without(&conversation(), &[5, 6, 7]));
-    assert_eq!(compressor.apply(&mut view), 0);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 0);
 }
 
 #[test]
 fn apply_skipping_matches_a_fold_once_the_splice_turns_are_skipped_even_with_a_changed_shape() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(4, 9)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(4, 9)], &CompressPolicy::default())
+        .unwrap();
 
     // The skipped pair is matched by call id: the response's name and marker field differ.
     let mut response = conversation()[7].clone();
@@ -269,7 +297,9 @@ fn apply_skipping_matches_a_fold_once_the_splice_turns_are_skipped_even_with_a_c
 fn apply_skipping_an_unrelated_turn_leaves_the_match_alone() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
     assert_eq!(
@@ -282,12 +312,16 @@ fn apply_skipping_an_unrelated_turn_leaves_the_match_alone() {
 fn a_fold_over_an_earlier_fold_marker_resolves_in_one_apply() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
     // Folding turns 0 and 1 folds the first block's marker into block b2.
-    compressor.compress(&mut contents, fold(0, 2)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(0, 2)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
-    assert_eq!(compressor.apply(&mut view), 2);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 2);
     assert_eq!(view.len(), 7);
     assert!(text(&view[0]).contains("block b2"), "{}", text(&view[0]));
 }
@@ -296,7 +330,9 @@ fn a_fold_over_an_earlier_fold_marker_resolves_in_one_apply() {
 fn a_restored_block_is_no_longer_refolded() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
     let restored = compressor
         .decompress(
             &mut contents,
@@ -309,7 +345,7 @@ fn a_restored_block_is_no_longer_refolded() {
     assert_eq!(restored, "Restored 4 turns from block b1");
 
     let mut view = harness_view(&conversation());
-    assert_eq!(compressor.apply(&mut view), 0);
+    assert_eq!(compressor.apply_skipping(&mut view, &[]), 0);
 }
 
 #[test]
@@ -320,7 +356,9 @@ fn the_summary_marker_names_the_range_block_and_topic() {
         topic: Some("billing".into()),
         ..fold(1, 5)
     };
-    compressor.compress(&mut contents, call).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![call], &CompressPolicy::default())
+        .unwrap();
 
     assert_eq!(contents[1]["role"], "user");
     assert_eq!(contents[1]["parts"].as_array().unwrap().len(), 1);
@@ -334,7 +372,9 @@ fn the_summary_marker_names_the_range_block_and_topic() {
 fn the_summary_marker_has_no_topic_separator_without_a_topic() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
     assert_eq!(
         text(&contents[1]),
         "📦 [acp] Compressed turns 1–4 into block b1\n\nsummary of 1..5"
@@ -345,7 +385,9 @@ fn the_summary_marker_has_no_topic_separator_without_a_topic() {
 fn compress_returns_the_one_line_report_for_a_single_range() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    let report = compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    let report = compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
     assert_eq!(
         report,
         "Compressed turns 1–4 into block b1. Originals kept in the session spill dir."
@@ -373,7 +415,9 @@ fn a_batch_returns_one_report_line_per_range_in_history_order() {
 fn tokens_compressed_estimates_each_folded_turn_as_its_json_bytes_over_four() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let expected: u64 = conversation()[1..5].iter().map(estimate).sum();
     let status = compressor.status();
@@ -389,7 +433,9 @@ fn tokens_compressed_estimates_each_folded_turn_as_its_json_bytes_over_four() {
 fn a_restored_block_stops_counting_toward_the_status_totals() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
     compressor
         .decompress(
             &mut contents,
@@ -412,7 +458,9 @@ fn a_restored_block_stops_counting_toward_the_status_totals() {
 fn fold_report_is_silent_when_the_stored_fold_matches() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
     assert_eq!(
         compressor.fold_report(&harness_view(&conversation()), &[]),
         None
@@ -429,7 +477,9 @@ fn fold_report_is_silent_with_no_stored_fold() {
 fn fold_report_says_the_first_stored_turn_is_missing_from_the_request() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let view = without(&harness_view(&conversation()), &[1]);
     assert_eq!(
@@ -442,7 +492,9 @@ fn fold_report_says_the_first_stored_turn_is_missing_from_the_request() {
 fn fold_report_names_the_first_turn_that_differs_after_the_matched_head() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(1, 5)).unwrap();
+    compressor
+        .compress_batch(&mut contents, vec![fold(1, 5)], &CompressPolicy::default())
+        .unwrap();
 
     let mut view = harness_view(&conversation());
     view[4]["parts"][0]["text"] = json!("changed");
@@ -457,7 +509,13 @@ fn fold_report_names_the_first_turn_that_differs_after_the_matched_head() {
 fn fold_report_ignores_a_nudge_and_skipped_splice_turns() {
     let (_dir, mut compressor) = fresh();
     let mut contents = conversation();
-    compressor.compress(&mut contents, fold(10, 12)).unwrap();
+    compressor
+        .compress_batch(
+            &mut contents,
+            vec![fold(10, 12)],
+            &CompressPolicy::default(),
+        )
+        .unwrap();
     assert_eq!(
         compressor.fold_report(&harness_view(&conversation()), &[]),
         None
@@ -465,7 +523,9 @@ fn fold_report_ignores_a_nudge_and_skipped_splice_turns() {
 
     let (_dir2, mut compressor2) = fresh();
     let mut contents2 = conversation();
-    compressor2.compress(&mut contents2, fold(4, 9)).unwrap();
+    compressor2
+        .compress_batch(&mut contents2, vec![fold(4, 9)], &CompressPolicy::default())
+        .unwrap();
     let view = harness_view(&without(&conversation(), &[5, 6, 7]));
     let skip = vec![
         conversation()[5].clone(),
@@ -482,7 +542,10 @@ fn fold_report_ignores_a_nudge_and_skipped_splice_turns() {
 #[test]
 fn preserve_recent_messages_keeps_the_tail_out_of_every_fold() {
     let (_dir, mut compressor) = fresh();
-    let policy = CompressPolicy::default().with_recent(3);
+    let policy = CompressPolicy {
+        preserve_recent_messages: 3,
+        ..CompressPolicy::default()
+    };
     let mut contents = conversation();
     assert!(compressor
         .compress_batch(&mut contents, vec![fold(0, 9)], &policy)
@@ -501,7 +564,10 @@ fn preserve_recent_messages_keeps_the_tail_out_of_every_fold() {
 #[test]
 fn preserving_more_turns_than_the_history_refuses_every_fold() {
     let (_dir, mut compressor) = fresh();
-    let policy = CompressPolicy::default().with_recent(50);
+    let policy = CompressPolicy {
+        preserve_recent_messages: 50,
+        ..CompressPolicy::default()
+    };
     let error = compressor
         .compress_batch(&mut conversation(), vec![fold(0, 1)], &policy)
         .unwrap_err();
@@ -571,7 +637,10 @@ fn each_batch_is_checked_against_the_policy_it_is_given() {
 #[test]
 fn a_protected_tool_call_inside_the_range_refuses_the_fold_and_names_the_tool() {
     let (_dir, mut compressor) = fresh();
-    let policy = CompressPolicy::default().with_protected_tools(vec!["read".into()]);
+    let policy = CompressPolicy {
+        protected_tools: vec!["read".into()],
+        ..CompressPolicy::default()
+    };
     let error = compressor
         .compress_batch(&mut conversation(), vec![fold(1, 5)], &policy)
         .unwrap_err();
@@ -584,7 +653,10 @@ fn a_protected_tool_call_inside_the_range_refuses_the_fold_and_names_the_tool() 
 #[test]
 fn a_protected_tool_result_alone_inside_the_range_refuses_the_fold() {
     let (_dir, mut compressor) = fresh();
-    let policy = CompressPolicy::default().with_protected_tools(vec!["read".into()]);
+    let policy = CompressPolicy {
+        protected_tools: vec!["read".into()],
+        ..CompressPolicy::default()
+    };
     let error = compressor
         .compress_batch(&mut conversation(), vec![fold(3, 4)], &policy)
         .unwrap_err();
@@ -594,7 +666,10 @@ fn a_protected_tool_result_alone_inside_the_range_refuses_the_fold() {
 #[test]
 fn a_bad_range_in_a_batch_refuses_the_whole_batch_and_names_it() {
     let (_dir, mut compressor) = fresh();
-    let policy = CompressPolicy::default().with_protected_tools(vec!["tool".into()]);
+    let policy = CompressPolicy {
+        protected_tools: vec!["tool".into()],
+        ..CompressPolicy::default()
+    };
     let mut contents = conversation();
     let before = contents.clone();
     let error = compressor
@@ -692,16 +767,24 @@ fn an_empty_batch_a_blank_summary_and_a_range_out_of_bounds_are_refused() {
         ..fold(1, 5)
     };
     assert_eq!(
-        compressor.compress(&mut contents, blank).unwrap_err(),
+        compressor
+            .compress_batch(&mut contents, vec![blank], &CompressPolicy::default())
+            .unwrap_err(),
         "summary must not be empty"
     );
     assert_eq!(
-        compressor.compress(&mut contents, fold(5, 5)).unwrap_err(),
+        compressor
+            .compress_batch(&mut contents, vec![fold(5, 5)], &CompressPolicy::default())
+            .unwrap_err(),
         "invalid range 5..5 for 12 turns"
     );
     assert_eq!(
         compressor
-            .compress(&mut contents, fold(10, 13))
+            .compress_batch(
+                &mut contents,
+                vec![fold(10, 13)],
+                &CompressPolicy::default()
+            )
             .unwrap_err(),
         "invalid range 10..13 for 12 turns"
     );
