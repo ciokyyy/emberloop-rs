@@ -49,6 +49,7 @@ fn wiring(workdir: &Path, token: Option<&str>) -> HarnessWiring {
         thought_level: None,
         resume_token: token.map(str::to_string),
         workdir: Some(workdir.to_path_buf()),
+        system_prompt: None,
     }
 }
 

@@ -11,6 +11,8 @@
   let providers = $state<ProviderView[]>([]);
   let login = $state<LoginView | null>(null);
   let codex = $state<LoginView | null>(null);
+  let claude = $state<LoginView | null>(null);
+  let code = $state('');
   let label = $state('');
   let address = $state('');
   let search = $state('');
@@ -21,6 +23,7 @@
   let copied = $state(false);
   let poll: ReturnType<typeof setInterval> | null = null;
   let codexPoll: ReturnType<typeof setInterval> | null = null;
+  let claudePoll: ReturnType<typeof setInterval> | null = null;
 
   async function refresh() {
     try {
@@ -75,6 +78,70 @@
   function stopCodexWatch() {
     if (codexPoll) clearInterval(codexPoll);
     codexPoll = null;
+  }
+
+  function watchClaude(id: string) {
+    stopClaudeWatch();
+    claudePoll = setInterval(() => {
+      void (async () => {
+        try {
+          claude = await api.getClaudeLogin(id);
+          if (claude.state !== 'running') {
+            stopClaudeWatch();
+            await refresh();
+            if (claude.state === 'succeeded') onmodels(await api.refreshModels());
+          }
+        } catch (cause) {
+          error = String(cause);
+          stopClaudeWatch();
+        }
+      })();
+    }, 1000);
+  }
+
+  function stopClaudeWatch() {
+    if (claudePoll) clearInterval(claudePoll);
+    claudePoll = null;
+  }
+
+  async function startClaude() {
+    loading = true;
+    error = '';
+    try {
+      claude = await api.startClaudeLogin();
+      code = '';
+      watchClaude(claude.id);
+    } catch (cause) {
+      error = String(cause);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function completeClaude() {
+    if (!claude) return;
+    loading = true;
+    error = '';
+    try {
+      claude = await api.completeClaudeLogin(claude.id, code);
+      code = '';
+    } catch (cause) {
+      error = String(cause);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function cancelClaude() {
+    if (!claude) return;
+    stopClaudeWatch();
+    try {
+      await api.cancelClaudeLogin(claude.id);
+      claude = null;
+      await refresh();
+    } catch (cause) {
+      error = String(cause);
+    }
   }
 
   async function startCodex() {
@@ -186,11 +253,13 @@
     return () => {
       stopWatch();
       stopCodexWatch();
+      stopClaudeWatch();
     };
   });
   onDestroy(() => {
     stopWatch();
     stopCodexWatch();
+    stopClaudeWatch();
   });
 </script>
 
@@ -296,6 +365,58 @@
     </div>
   {/if}
 
+
+  {#if claude}
+    <div class="mt-6 rounded border border-border p-4">
+      <div class="flex items-center justify-between">
+        <div class="font-medium">
+          {#if claude.state === 'running'}Connect Claude
+          {:else if claude.state === 'succeeded'}Claude connected
+          {:else if claude.state === 'canceled'}Login canceled
+          {:else}Login failed{/if}
+        </div>
+        {#if claude.state === 'running'}
+          <button class="btn" onclick={() => void cancelClaude()}>Cancel</button>
+        {/if}
+      </div>
+
+      {#if claude.state === 'running'}
+        {#if claude.url}
+          <p class="mt-3 text-[13px] text-fg-3">
+            Open
+            <a class="underline" href={claude.url} target="_blank" rel="noreferrer">
+              the Claude sign-in page
+            </a>
+            and approve access. Then paste the code the page shows.
+          </p>
+          <div class="mt-2 flex gap-2">
+            <input class="input min-w-0 flex-1" placeholder="Paste code" bind:value={code} />
+            <button class="btn" disabled={loading || !code.trim()} onclick={() => void completeClaude()}>
+              Complete
+            </button>
+          </div>
+        {:else}
+          <p class="mt-3 text-[13px] text-fg-3">Waiting for the CLI to print the sign-in link…</p>
+        {/if}
+      {:else if claude.state === 'succeeded'}
+        <p class="mt-2 text-[13px] text-fg-3">
+          Tier {claude.tier || 'unknown'}. Claude Sessions copy this credential into their own home.
+        </p>
+      {:else if claude.error}
+        <p class="mt-2 text-[13px] text-status-failed">{claude.error}</p>
+      {:else if claude.output}
+        <pre class="mt-2 overflow-x-auto text-[12px] text-fg-3">{claude.output}</pre>
+      {/if}
+    </div>
+  {:else}
+    <div class="mt-6 rounded border border-border p-4">
+      <div class="font-medium">Sign in to Claude</div>
+      <p class="mt-1 text-[12px] text-fg-3">
+        Runs `claude auth login` in the daemon's own Claude home. The credential stays there.
+      </p>
+      <button class="btn mt-2" disabled={loading} onclick={() => void startClaude()}>Sign in</button>
+    </div>
+  {/if}
 
   {#if login}
     <div class="mt-6 rounded border border-border p-4">

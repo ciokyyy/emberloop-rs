@@ -767,6 +767,7 @@ dependencies = [
  "futures",
  "harness",
  "harness-agy",
+ "harness-claude",
  "harness-pi",
  "pi-ai",
  "prompts",
@@ -1060,6 +1061,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "harness-claude"
+version = "0.0.12"
+dependencies = [
+ "async-trait",
+ "harness",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
 ]
 
 [[package]]

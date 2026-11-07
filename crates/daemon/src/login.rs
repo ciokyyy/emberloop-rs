@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::claude_login::ClaudeLogin;
 use crate::codex::CodexLogin;
 use api::providers::{AccountView, LoginError, LoginView, ProviderLogin, ProviderView};
 use async_trait::async_trait;
@@ -123,6 +124,7 @@ pub struct AgyLogin {
     active: Mutex<Option<Arc<ActiveLogin>>>,
     http: reqwest::Client,
     codex: CodexLogin,
+    claude: ClaudeLogin,
     usage_cache: Mutex<HashMap<String, (std::time::Instant, api::providers::UsageView)>>,
 }
 
@@ -140,6 +142,7 @@ impl AgyLogin {
             active: Mutex::new(None),
             http,
             codex: CodexLogin::new(PathBuf::new()),
+            claude: ClaudeLogin::new(PathBuf::new(), PathBuf::new()),
             usage_cache: Mutex::new(HashMap::new()),
         }
     }
@@ -161,6 +164,11 @@ impl AgyLogin {
 
     pub fn with_pi_auth(mut self, auth_file: impl Into<PathBuf>) -> Self {
         self.codex = CodexLogin::new(auth_file);
+        self
+    }
+
+    pub fn with_claude(mut self, claude: ClaudeLogin) -> Self {
+        self.claude = claude;
         self
     }
 
@@ -236,6 +244,7 @@ impl AgyLogin {
             active: Mutex::new(None),
             http: self.http.clone(),
             codex: CodexLogin::new(self.codex.auth_path()),
+            claude: self.claude.clone(),
         }
     }
 
@@ -349,6 +358,7 @@ impl ProviderLogin for AgyLogin {
             self.keys_file.as_deref(),
             self.codex.auth_path(),
             &self.home(),
+            &self.claude.home(),
         )
         .await
         {
@@ -386,6 +396,7 @@ impl ProviderLogin for AgyLogin {
             accounts,
         }];
         list.push(self.codex.provider().await);
+        list.push(self.claude.provider().await);
         if let Some(keys) = &self.keys_file {
             list.push(key_view(keys, "opencode-go", "OpenCode Go"));
             list.extend(
@@ -526,6 +537,9 @@ impl ProviderLogin for AgyLogin {
         if id == "openai-codex" {
             return self.codex.sign_out().await;
         }
+        if id == "claude" {
+            return self.claude.sign_out().await;
+        }
         if is_key_provider(id) {
             return self.clear_key(id).await;
         }
@@ -555,6 +569,22 @@ impl ProviderLogin for AgyLogin {
 
     async fn cancel_codex(&self, id: &str) -> Result<(), LoginError> {
         self.codex.cancel(id).await
+    }
+
+    async fn start_claude(&self, label: &str) -> Result<LoginView, LoginError> {
+        self.claude.start(label).await
+    }
+
+    async fn claude_status(&self, id: &str) -> Option<LoginView> {
+        self.claude.status(id).await
+    }
+
+    async fn cancel_claude(&self, id: &str) -> Result<(), LoginError> {
+        self.claude.cancel(id).await
+    }
+
+    async fn complete_claude(&self, id: &str, code: &str) -> Result<LoginView, LoginError> {
+        self.claude.complete(id, code).await
     }
 }
 

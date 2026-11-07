@@ -24,6 +24,10 @@ pub struct HarnessWiring {
     /// The Session's thinking effort / thought level (`off`, `low`, `medium`, `high`).
     #[serde(default)]
     pub thought_level: Option<String>,
+    /// The one policy text from `crates/prompts`, for a harness whose wire the
+    /// proxy does not see. The harness passes it through, never composes it.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,7 +36,7 @@ pub struct PromptImage {
     pub data_base64: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum HarnessEvent {
     AssistantChunk(String),

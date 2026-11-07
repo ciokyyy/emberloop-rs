@@ -45,6 +45,7 @@ pub(crate) async fn fetch(
     keys: Option<&Path>,
     auth: &Path,
     home: &Path,
+    claude: &Path,
 ) -> Result<UsageView, String> {
     let data = match provider {
         "agy" => {
@@ -102,6 +103,22 @@ pub(crate) async fn fetch(
                 client
                     .get(url)
                     .bearer_auth(key)
+                    .header("Accept", "application/json"),
+            )
+            .await?
+        }
+        "claude" => {
+            let credentials = read(&claude.join(".credentials.json")).await?;
+            let access = credentials["claudeAiOauth"]["accessToken"]
+                .as_str()
+                .ok_or("Claude is not signed in. Connect it in Providers.")?;
+            response(
+                client
+                    .get("https://api.anthropic.com/api/oauth/usage")
+                    .bearer_auth(access)
+                    .header("anthropic-beta", "oauth-2025-04-20")
+                    .header("anthropic-version", "2023-06-01")
+                    .header("User-Agent", "claude-cli/2.1.319")
                     .header("Accept", "application/json"),
             )
             .await?
@@ -206,6 +223,18 @@ fn parse(provider: &str, data: &Value) -> Result<UsageView, String> {
                     .into(),
                 remaining: number(&item["total_balance"])?,
             });
+        }
+        "claude" => {
+            for (field, label) in [("five_hour", "5-hour"), ("seven_day", "Weekly")] {
+                let item = &data[field];
+                if !item.is_null() {
+                    view.windows.push(window(
+                        label.into(),
+                        &item["utilization"],
+                        &item["resets_at"],
+                    )?);
+                }
+            }
         }
         _ => return Err("This provider has no supported usage endpoint.".into()),
     }

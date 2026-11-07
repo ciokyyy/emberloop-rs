@@ -118,6 +118,7 @@ impl PiHarness {
             thought_level: None,
             resume_token: None,
             workdir: None,
+            system_prompt: None,
         };
         let session = self.open("_catalogue", wiring, None).await?;
         Ok(model_options(&session.config_options))

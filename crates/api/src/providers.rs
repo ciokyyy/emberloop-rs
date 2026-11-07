@@ -102,6 +102,12 @@ pub struct CompleteLoginRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct CompleteClaudeLoginRequest {
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SetKeyRequest {
     pub key: String,
 }
@@ -178,6 +184,18 @@ pub trait ProviderLogin: Send + Sync {
     }
     async fn cancel_codex(&self, _id: &str) -> Result<(), LoginError> {
         Err(LoginError::not_found("the ChatGPT login is not running"))
+    }
+    async fn start_claude(&self, _label: &str) -> Result<LoginView, LoginError> {
+        Err(LoginError::unavailable("the daemon has no Claude login"))
+    }
+    async fn claude_status(&self, _id: &str) -> Option<LoginView> {
+        None
+    }
+    async fn cancel_claude(&self, _id: &str) -> Result<(), LoginError> {
+        Err(LoginError::not_found("the Claude login is not running"))
+    }
+    async fn complete_claude(&self, _id: &str, _code: &str) -> Result<LoginView, LoginError> {
+        Err(LoginError::not_found("the Claude login is not running"))
     }
     async fn set_key(&self, _provider: &str, _key: &str) -> Result<(), LoginError> {
         Err(LoginError::unavailable(
@@ -330,6 +348,77 @@ pub async fn set_provider_key(
 }
 
 #[utoipa::path(
+    post,
+    path = "/api/providers/claude/login",
+    request_body = LoginRequest,
+    responses(
+        (status = 201, body = LoginView),
+        (status = 409, description = "a login already runs"),
+        (status = 503, description = "the claude CLI is not installed")
+    )
+)]
+pub async fn start_claude_login(
+    State(state): State<AppState>,
+    Json(request): Json<LoginRequest>,
+) -> Result<(StatusCode, Json<LoginView>), LoginError> {
+    let view = login(&state)?.start_claude(&request.label).await?;
+    Ok((StatusCode::CREATED, Json(view)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/providers/claude/login/{id}",
+    params(("id" = String, Path, description = "login id")),
+    responses((status = 200, body = LoginView), (status = 404, description = "unknown login"))
+)]
+pub async fn get_claude_login(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<LoginView>, LoginError> {
+    login(&state)?
+        .claude_status(&id)
+        .await
+        .map(Json)
+        .ok_or_else(|| LoginError::not_found("the Claude login is not running"))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/providers/claude/login/{id}",
+    params(("id" = String, Path, description = "login id")),
+    responses((status = 200, description = "canceled"), (status = 404, description = "unknown login"))
+)]
+pub async fn cancel_claude_login(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, LoginError> {
+    login(&state)?.cancel_claude(&id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/providers/claude/login/{id}/complete",
+    params(("id" = String, Path, description = "login id")),
+    request_body = CompleteClaudeLoginRequest,
+    responses(
+        (status = 200, body = LoginView),
+        (status = 404, description = "unknown login"),
+        (status = 409, description = "the login is not running")
+    )
+)]
+pub async fn complete_claude_login(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<CompleteClaudeLoginRequest>,
+) -> Result<Json<LoginView>, LoginError> {
+    login(&state)?
+        .complete_claude(&id, &request.code)
+        .await
+        .map(Json)
+}
+
+#[utoipa::path(
     delete,
     path = "/api/providers/{id}/key",
     params(("id" = String, Path, description = "provider id")),
@@ -420,5 +509,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/providers/openai-codex/login/{id}",
             get(get_codex_login).delete(cancel_codex_login),
+        )
+        .route("/api/providers/claude/login", post(start_claude_login))
+        .route(
+            "/api/providers/claude/login/{id}",
+            get(get_claude_login).delete(cancel_claude_login),
+        )
+        .route(
+            "/api/providers/claude/login/{id}/complete",
+            post(complete_claude_login),
         )
 }

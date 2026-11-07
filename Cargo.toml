@@ -10,6 +10,7 @@ members = [
     "crates/harness-acp",
     "crates/harness-agy",
     "crates/harness-pi",
+    "crates/harness-claude",
     "crates/api",
     "crates/daemon",
 ]
@@ -28,6 +29,7 @@ harness = { path = "crates/harness" }
 harness-acp = { path = "crates/harness-acp" }
 harness-agy = { path = "crates/harness-agy" }
 harness-pi = { path = "crates/harness-pi" }
+harness-claude = { path = "crates/harness-claude" }
 tools = { path = "crates/tools" }
 prompts = { path = "crates/prompts" }
 proxy = { path = "crates/proxy" }

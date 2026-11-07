@@ -9,7 +9,7 @@
   let error = $state('');
   let loading = $state(false);
 
-  const subscription = (id: string) => id === 'agy' || id === 'openai-codex';
+  const subscription = (id: string) => id === 'agy' || id === 'openai-codex' || id === 'claude';
 
   function resetLabel(value: string) {
     const date = new Date(/^\d+$/.test(value) ? Number(value) * 1000 : value);

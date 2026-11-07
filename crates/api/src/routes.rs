@@ -53,6 +53,10 @@ use crate::state::{AppState, Settings};
         crate::providers::start_codex_login,
         crate::providers::get_codex_login,
         crate::providers::cancel_codex_login,
+        crate::providers::start_claude_login,
+        crate::providers::get_claude_login,
+        crate::providers::cancel_claude_login,
+        crate::providers::complete_claude_login,
     ),
     components(
         schemas(
@@ -81,6 +85,7 @@ use crate::state::{AppState, Settings};
             crate::providers::LoginView,
             crate::providers::LoginRequest,
             crate::providers::CompleteLoginRequest,
+            crate::providers::CompleteClaudeLoginRequest,
             crate::providers::SetKeyRequest,
         )
     ),

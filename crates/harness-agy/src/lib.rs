@@ -133,6 +133,7 @@ mod tests {
             thought_level: None,
             resume_token: None,
             workdir: None,
+            system_prompt: None,
         };
         assert_eq!(harness.model_for(&wiring), "gemini-4-argon");
         wiring.model = None;
@@ -151,6 +152,7 @@ mod tests {
             thought_level: None,
             resume_token: None,
             workdir: None,
+            system_prompt: None,
         };
         let launch = harness.launch(&wiring, PathBuf::from("/tmp"));
         assert_eq!(launch.client_name, "zed");
@@ -169,6 +171,7 @@ mod tests {
             thought_level: None,
             resume_token: None,
             workdir: None,
+            system_prompt: None,
         };
         let config = harness.config(&wiring);
         assert_eq!(config.command(), std::path::Path::new("/bin/agy"));

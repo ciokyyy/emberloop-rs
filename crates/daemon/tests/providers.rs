@@ -156,7 +156,7 @@ async fn opencode_key_and_chatgpt_are_stored_privately_and_listed() {
     let providers = login.providers().await;
     assert_eq!(
         providers.len(),
-        3 + emberloop_core::providers::KEY_PROVIDERS.len()
+        4 + emberloop_core::providers::KEY_PROVIDERS.len()
     );
     let opencode = providers
         .iter()
@@ -168,6 +168,11 @@ async fn opencode_key_and_chatgpt_are_stored_privately_and_listed() {
         .find(|provider| provider.id == "openai-codex")
         .unwrap();
     assert!(!chatgpt.signed_in);
+    let claude = providers
+        .iter()
+        .find(|provider| provider.id == "claude")
+        .unwrap();
+    assert!(!claude.signed_in);
 
     login.set_key("opencode-go", "  sk-oc-123  ").await.unwrap();
     let mode = std::fs::metadata(&keys).unwrap().permissions().mode() & 0o777;

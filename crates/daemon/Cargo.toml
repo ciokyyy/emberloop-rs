@@ -14,6 +14,7 @@ api = { workspace = true }
 harness = { workspace = true }
 harness-agy = { workspace = true }
 harness-pi = { workspace = true }
+harness-claude = { workspace = true }
 tools = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

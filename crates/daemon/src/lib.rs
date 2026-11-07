@@ -19,6 +19,7 @@ use emberloop_core::context::{Context, ContextError, Plugin};
 use emberloop_core::events::{EventBus, EventKind, SessionEvent};
 use harness::HarnessWiring;
 use harness_agy::AgyHarness;
+use harness_claude::ClaudeHarness;
 use harness_pi::PiHarness;
 use prompts::{PromptStore, PromptWatcher};
 use proxy::{ProxyConfig, ProxyState};
@@ -26,6 +27,7 @@ use rust_embed::RustEmbed;
 use store::{DataRoot, ProjectsStore, SessionsStore};
 use tools::{McpServer, ToolConfig, Toolbox};
 
+pub mod claude_login;
 mod codegraph;
 pub mod codex;
 pub mod login;
@@ -35,6 +37,24 @@ pub mod todo_reminder;
 pub mod tooldisplay;
 pub mod update;
 mod usage;
+
+/// Which harness serves a model id.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HarnessKind {
+    Agy,
+    Pi,
+    Claude,
+}
+
+pub fn harness_kind(model: Option<&str>) -> HarnessKind {
+    if model.is_some_and(|model| model.starts_with("claude/")) {
+        HarnessKind::Claude
+    } else if is_pi_model(model) {
+        HarnessKind::Pi
+    } else {
+        HarnessKind::Agy
+    }
+}
 
 pub fn is_pi_model(model: Option<&str>) -> bool {
     model
@@ -48,6 +68,7 @@ pub fn is_pi_model(model: Option<&str>) -> bool {
 struct MultiHarness {
     agy: Arc<dyn harness::Harness>,
     pi: Arc<dyn harness::Harness>,
+    claude: Arc<dyn harness::Harness>,
 }
 
 #[async_trait::async_trait]
@@ -57,10 +78,10 @@ impl harness::Harness for MultiHarness {
         session_id: &str,
         wiring: HarnessWiring,
     ) -> Result<Box<dyn harness::HarnessSession>, harness::HarnessError> {
-        if is_pi_model(wiring.model.as_deref()) {
-            self.pi.spawn(session_id, wiring).await
-        } else {
-            self.agy.spawn(session_id, wiring).await
+        match harness_kind(wiring.model.as_deref()) {
+            HarnessKind::Claude => self.claude.spawn(session_id, wiring).await,
+            HarnessKind::Pi => self.pi.spawn(session_id, wiring).await,
+            HarnessKind::Agy => self.agy.spawn(session_id, wiring).await,
         }
     }
 }
@@ -71,6 +92,7 @@ struct HarnessPlugin {
     agy_bin: PathBuf,
     agy_home: PathBuf,
     pi: Arc<PiHarness>,
+    claude: Arc<ClaudeHarness>,
 }
 
 impl Plugin for HarnessPlugin {
@@ -81,8 +103,43 @@ impl Plugin for HarnessPlugin {
     fn apply(&self, ctx: &Context) -> Result<(), ContextError> {
         let agy = Arc::new(AgyHarness::new(self.agy_bin.clone(), self.agy_home.clone()));
         let pi: Arc<dyn harness::Harness> = self.pi.clone();
-        ctx.provide::<Arc<dyn harness::Harness>>(Arc::new(MultiHarness { agy, pi }));
+        let claude: Arc<dyn harness::Harness> = self.claude.clone();
+        ctx.provide::<Arc<dyn harness::Harness>>(Arc::new(MultiHarness { agy, pi, claude }));
         Ok(())
+    }
+}
+
+/// The fixed model aliases the real `claude` CLI accepts; the CLI resolves each
+/// alias to the newest model its subscription serves.
+struct ClaudeSource;
+
+#[async_trait::async_trait]
+impl api::models::Source for ClaudeSource {
+    fn name(&self) -> &'static str {
+        "claude"
+    }
+
+    async fn fetch(&self) -> Result<Vec<api::models::ModelEntry>, api::models::CatalogueError> {
+        const ALL: &[&str] = &["low", "medium", "high"];
+        Ok([
+            ("opus", "Claude Opus"),
+            ("sonnet", "Claude Sonnet"),
+            ("haiku", "Claude Haiku"),
+        ]
+        .into_iter()
+        .map(|(alias, label)| api::models::ModelEntry {
+            id: format!("claude/{alias}"),
+            provider: "claude".to_string(),
+            label: label.to_string(),
+            kind: "chat".to_string(),
+            efforts: ALL.iter().map(ToString::to_string).collect(),
+            image_input: true,
+            context_window: 200_000,
+            source: "claude".to_string(),
+            stale: false,
+            updated_at: 0,
+        })
+        .collect())
     }
 }
 
@@ -317,11 +374,19 @@ impl Daemon {
             "pi",
         );
         let keys_file = config.config_root.join("keys.json");
+        let claude_bin = resolve_bin(
+            "EMBERLOOP_CLAUDE_BIN",
+            &config.data_root,
+            "claude/2.1.319/claude",
+            "claude",
+        );
         let pi_auth = config.config_root.join("pi/agent/auth.json");
         let pi_harness = Arc::new(
             PiHarness::new(pi_bin, data_root.root().join("pi-homes"), keys_file.clone())
                 .with_auth(pi_auth.clone()),
         );
+        let claude_homes = data_root.root().join("claude-homes");
+        let claude_harness = Arc::new(ClaudeHarness::new(claude_bin.clone(), claude_homes.clone()));
         let models = Arc::new(api::models::ModelCatalogue::new(
             data_root.model_catalogue_file(),
             vec![
@@ -329,6 +394,7 @@ impl Daemon {
                 Arc::new(PiSource {
                     harness: Arc::clone(&pi_harness),
                 }),
+                Arc::new(ClaudeSource),
             ],
         ));
         let mut app_state = AppState::with_prompts(
@@ -367,6 +433,7 @@ impl Daemon {
             agy_bin: agy_bin.clone(),
             agy_home: accounts_dir.join("default"),
             pi: pi_harness,
+            claude: claude_harness,
         });
         let harness = Arc::unwrap_or_clone(
             ctx.require::<Arc<dyn harness::Harness>>()
@@ -375,7 +442,8 @@ impl Daemon {
         let login = Arc::new(
             login::AgyLogin::new(accounts_dir, agy_bin)
                 .with_keys(keys_file.clone())
-                .with_pi_auth(pi_auth.clone()),
+                .with_pi_auth(pi_auth.clone())
+                .with_claude(claude_login::ClaudeLogin::new(claude_bin, claude_homes)),
         );
         let proxy_base = format!("http://{}:{}", config.host, config.port);
         let runner = Arc::new(
@@ -514,6 +582,7 @@ impl Daemon {
             thought_level: meta.thought_level.clone(),
             resume_token: None,
             workdir: None,
+            system_prompt: None,
         }))
     }
 

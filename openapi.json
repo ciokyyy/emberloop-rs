@@ -492,6 +492,145 @@
         }
       }
     },
+    "/api/providers/claude/login": {
+      "post": {
+        "tags": [
+          "crate::providers"
+        ],
+        "operationId": "start_claude_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "a login already runs"
+          },
+          "503": {
+            "description": "the claude CLI is not installed"
+          }
+        }
+      }
+    },
+    "/api/providers/claude/login/{id}": {
+      "get": {
+        "tags": [
+          "crate::providers"
+        ],
+        "operationId": "get_claude_login",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "login id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "unknown login"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "crate::providers"
+        ],
+        "operationId": "cancel_claude_login",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "login id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "canceled"
+          },
+          "404": {
+            "description": "unknown login"
+          }
+        }
+      }
+    },
+    "/api/providers/claude/login/{id}/complete": {
+      "post": {
+        "tags": [
+          "crate::providers"
+        ],
+        "operationId": "complete_claude_login",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "login id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteClaudeLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "unknown login"
+          },
+          "409": {
+            "description": "the login is not running"
+          }
+        }
+      }
+    },
     "/api/providers/openai-codex/login": {
       "post": {
         "tags": [
@@ -1093,6 +1232,17 @@
             "type": "boolean"
           },
           "tier": {
+            "type": "string"
+          }
+        }
+      },
+      "CompleteClaudeLoginRequest": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
             "type": "string"
           }
         }

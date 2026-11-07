@@ -134,6 +134,22 @@ export const api = {
     }),
   getCodexLogin: (id: string) =>
     request<LoginView>(`/api/providers/openai-codex/login/${encodeURIComponent(id)}`),
+  startClaudeLogin: (label = '') =>
+    request<LoginView>('/api/providers/claude/login', {
+      method: 'POST',
+      body: JSON.stringify({ label })
+    }),
+  getClaudeLogin: (id: string) =>
+    request<LoginView>(`/api/providers/claude/login/${encodeURIComponent(id)}`),
+  cancelClaudeLogin: (id: string) =>
+    request<{ ok: boolean }>(`/api/providers/claude/login/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    }),
+  completeClaudeLogin: (id: string, code: string) =>
+    request<LoginView>(`/api/providers/claude/login/${encodeURIComponent(id)}/complete`, {
+      method: 'POST',
+      body: JSON.stringify({ code })
+    }),
   cancelCodexLogin: (id: string) =>
     request<{ ok: boolean }>(`/api/providers/openai-codex/login/${encodeURIComponent(id)}`, {
       method: 'DELETE'

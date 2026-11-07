@@ -133,6 +133,7 @@ impl PiHarness {
             workdir: None,
             model: None,
             thought_level: None,
+            system_prompt: None,
         };
         write_session_files(&home, &cwd, &wiring, &keys, self.auth.as_deref())?;
         let mut child = Command::new(&self.bin)

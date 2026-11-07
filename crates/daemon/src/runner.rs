@@ -10,7 +10,7 @@ use emberloop_core::events::{EventBus, EventKind, SessionEvent};
 use emberloop_core::steer::{deliver_idle, SteerKind, SteerQueue, SteerQueues, SteerWaker};
 use futures::StreamExt;
 use harness::{Harness, HarnessEvent, HarnessSession, HarnessWiring, PromptImage};
-use prompts::PromptStore;
+use prompts::{PromptStore, PromptVars};
 use proxy::ProxyState;
 use store::{DataRoot, EventLog, ProjectsStore, SessionMeta, SessionsStore};
 use tokio::sync::{Mutex, RwLock};
@@ -126,6 +126,12 @@ impl SessionRunner {
             thought_level: meta.thought_level.clone(),
             resume_token: meta.resume_token.clone(),
             workdir: Some(self.data_root.session_dir(session_id).join("agent-work")),
+            // The proxy owns its wire; a harness with its own wire gets the same policy text.
+            system_prompt: self
+                .proxy
+                .prompts()
+                .render(prompts::POLICY, &PromptVars::default())
+                .ok(),
         }
     }
 
@@ -229,12 +235,11 @@ impl SessionDriver for SessionRunner {
         text: &str,
         images: Vec<PromptImageDto>,
     ) -> Result<(), String> {
-        let is_pi = self
-            .sessions
-            .get(session_id)
-            .await
-            .is_some_and(|meta| crate::is_pi_model(Some(&meta.model)));
-        if !is_pi {
+        let is_agy =
+            self.sessions.get(session_id).await.is_some_and(|meta| {
+                crate::harness_kind(Some(&meta.model)) == crate::HarnessKind::Agy
+            });
+        if is_agy {
             if let Some(home) = &self.account_home {
                 if !home.join("antigravity-acp/acp_token.json").exists() {
                     let message = "no Antigravity account is signed in; open Providers to sign in";
@@ -317,7 +322,7 @@ impl SessionDriver for SessionRunner {
             .get(session_id)
             .await
             .ok_or("Session not found")?;
-        if crate::is_pi_model(Some(&meta.model)) != crate::is_pi_model(Some(model)) {
+        if crate::harness_kind(Some(&meta.model)) != crate::harness_kind(Some(model)) {
             return Err(
                 "This model uses a different harness. Create a new Session to use it.".into(),
             );
