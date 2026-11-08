@@ -1,5 +1,4 @@
-//! Real `claude` turns. Ignored: needs a logged-in CLI, a non-root user (the
-//! CLI refuses `bypassPermissions` as root) and the `emberloop-mcp` binary.
+//! Real `claude` turns. Ignored: needs a logged-in CLI and the `emberloop-mcp` binary.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use harness::{EventStream, Harness, HarnessEvent, HarnessSession, HarnessWiring};
@@ -17,7 +16,9 @@ fn wiring() -> HarnessWiring {
     let work = path_env("LIVE_WORK");
     let spill = path_env("LIVE_SPILL");
     HarnessWiring {
-        proxy_url: "http://127.0.0.1:9/p/tok".into(),
+        // A running proxy's `/proxy/<token>` URL; the CLI reaches its `/claude` route through it.
+        proxy_url: std::env::var("LIVE_PROXY_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:9/proxy/tok".into()),
         mcp_url: None,
         mcp_command: Some(vec![
             path_env("LIVE_MCP").display().to_string(),
@@ -27,7 +28,6 @@ fn wiring() -> HarnessWiring {
             spill.display().to_string(),
         ]),
         env: Vec::new(),
-        system_prompt: None,
         model: Some("claude/haiku".into()),
         thought_level: Some("low".into()),
         resume_token: None,
@@ -64,7 +64,7 @@ async fn turn_text(events: &mut EventStream) -> String {
 }
 
 #[tokio::test]
-#[ignore = "needs a logged-in claude CLI and a non-root user"]
+#[ignore = "needs a logged-in claude CLI"]
 async fn a_haiku_turn_answers_with_text() {
     let session = live().await;
     let mut events = session.events();
@@ -78,23 +78,7 @@ async fn a_haiku_turn_answers_with_text() {
 }
 
 #[tokio::test]
-#[ignore = "needs a logged-in claude CLI and a non-root user"]
-async fn a_system_prompt_passed_on_the_command_line_is_followed() {
-    let mut wiring = wiring();
-    wiring.system_prompt = Some("Always reply with exactly the word PONG.".into());
-    let harness = ClaudeHarness::new(
-        std::env::var("LIVE_CLAUDE_BIN").unwrap_or_else(|_| "claude".into()),
-        path_env("LIVE_HOMES"),
-    );
-    let session = harness.spawn("live", wiring).await.unwrap();
-    let mut events = session.events();
-    session.send("ping", Vec::new()).await.unwrap();
-    let text = turn_text(&mut events).await;
-    assert!(text.contains("PONG"), "{text:?}");
-}
-
-#[tokio::test]
-#[ignore = "needs a logged-in claude CLI and a non-root user"]
+#[ignore = "needs a logged-in claude CLI"]
 async fn a_message_sent_mid_turn_reaches_the_running_turn() {
     let session = live().await;
     let mut events = session.events();
@@ -124,4 +108,63 @@ async fn a_message_sent_mid_turn_reaches_the_running_turn() {
         text.to_lowercase().contains("steered"),
         "before: {before:?} after: {text:?}"
     );
+}
+
+#[tokio::test]
+#[ignore = "needs a logged-in claude CLI and emberloop-mcp"]
+async fn an_allowed_mcp_tool_runs_without_a_permission_prompt() {
+    let session = live().await;
+    let mut events = session.events();
+    session.send("Use the MCP bash tool to run `printf emberloop-live-tool-ok`. Report its output. You must run the tool before answering.", Vec::new()).await.unwrap();
+    let mut ran = false;
+    let mut text = String::new();
+    loop {
+        match next(&mut events).await {
+            HarnessEvent::ToolStarted { name, .. } => {
+                assert!(
+                    name.starts_with("mcp__el"),
+                    "unexpected native tool: {name}"
+                );
+                ran = true;
+            }
+            HarnessEvent::ToolFinished { status, .. } => {
+                assert_ne!(status.as_deref(), Some("error"))
+            }
+            HarnessEvent::AssistantChunk(chunk) => text.push_str(&chunk),
+            HarnessEvent::TurnFinished { .. } => break,
+            HarnessEvent::Error(error) => panic!("turn failed: {error}"),
+            _ => {}
+        }
+    }
+    assert!(ran, "no MCP tool ran: {text}");
+    assert!(text.contains("emberloop-live-tool-ok"), "{text}");
+}
+
+/// A message sent while a tool call runs: the CLI may fold it into the running turn (one result)
+/// or answer it as a second turn (two results). The harness must end the turn after the work
+/// either way.
+#[tokio::test]
+#[ignore = "needs a logged-in claude CLI and emberloop-mcp"]
+async fn a_message_sent_during_a_tool_call_ends_the_turn_once_it_is_answered() {
+    let session = live().await;
+    let mut events = session.events();
+    session
+        .send(
+            "Use the MCP bash tool for each of these, one call at a time: `sleep 5; echo a`, then `sleep 5; echo b`. Then say done.",
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    loop {
+        if matches!(next(&mut events).await, HarnessEvent::ToolStarted { .. }) {
+            break;
+        }
+    }
+    session
+        .send("Change of plan: do not run the second command. Reply with exactly one word now: steered", Vec::new())
+        .await
+        .unwrap();
+    let text = turn_text(&mut events).await;
+    eprintln!("final text: {text:?}");
+    assert!(text.to_lowercase().contains("steered"), "{text:?}");
 }

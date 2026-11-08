@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Build the daemon as the next version and write the release files: the raw binary and the
+# `latest.json` manifest `emberloop update` reads. `--publish` uploads them as a GitHub release
+# (latest); without it the files stay in target/release-dist for a look first. `--major` steps the
+# first number; `EMBERLOOP_VERSION=x` pins one. The version is read from the installed release.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
+publish=0
+args=()
+for arg in "$@"; do
+    if [ "$arg" = "--publish" ]; then publish=1; else args+=("$arg"); fi
+done
+
+data_root="${EMBERLOOP_HOME:-$HOME/.local/share/emberloop-rs}"
+version="${EMBERLOOP_VERSION:-$("$data_root/current/emberloop-daemon" update --next-version "${args[@]}")}"
+triple="$(rustc -vV | awk '/^host:/ {print $2}')"
+
+# The daemon embeds web/build at compile time.
+(cd web && bun install --frozen-lockfile && bun run build)
+EMBERLOOP_BUILD_VERSION="$version" cargo build --release -p emberloop-daemon
+reported=$(target/release/emberloop-daemon --version | awk '{print $NF}')
+if [ "$reported" != "$version" ]; then
+    echo "built binary reports $reported, expected $version" >&2
+    exit 1
+fi
+
+dist=target/release-dist
+rm -rf "$dist" && mkdir -p "$dist"
+asset="emberloop-daemon-$triple"
+cp target/release/emberloop-daemon "$dist/$asset"
+sum=$(sha256sum "$dist/$asset" | awk '{print $1}')
+url="https://github.com/ciokyyy/emberloop-rs/releases/download/v$version/$asset"
+printf '{"version":"%s","targets":{"%s":{"url":"%s","sha256":"%s"}}}\n' \
+    "$version" "$triple" "$url" "$sum" > "$dist/latest.json"
+echo "release $version ($triple) written to $dist"
+
+if [ "$publish" = 1 ]; then
+    gh release create "v$version" "$dist/$asset" "$dist/latest.json" \
+        --repo ciokyyy/emberloop-rs --title "emberloop $version" --notes "emberloop $version" --latest
+    echo "published v$version; run \`emberloop-daemon update\` to install it"
+else
+    echo "not published; rerun with --publish to upload"
+fi

@@ -22,7 +22,8 @@ use store::{DataRoot, ProjectsStore, SessionsStore};
 use tokio::time::timeout;
 
 use crate::compressor::{
-    latest_user_turn, CompressCall, CompressPolicy, Compressor, DecompressCall, NativeCompressor,
+    foldable_runs, latest_user_turn, CompressCall, CompressPolicy, Compressor, DecompressCall,
+    NativeCompressor,
 };
 use crate::ctx::CtxStore;
 use crate::marker;
@@ -33,13 +34,17 @@ use crate::token::{TokenError, TokenSigner};
 use crate::tokens::turns_tokens;
 use crate::turnkeys;
 use crate::wire::{
-    extract_core_contents, extract_proxy_call_from_payload, inject_prompts_for_wire,
-    inject_tools_for_wire, write_core_contents, WireKind,
+    anthropic_model_turn, extract_core_contents, extract_proxy_call_from_payload,
+    inject_prompts_for_wire, inject_tools_for_wire, write_core_contents, AnthropicBlocks, WireKind,
 };
 pub const DEFAULT_UPSTREAM: &str = "https://daily-cloudcode-pa.googleapis.com";
 /// Unverified with a real key: docs.opencode.ai names `/inference/go`, third-party guides `/zen/go/v1`.
 pub const DEFAULT_OPENCODE_UPSTREAM: &str = "https://opencode.ai/inference/go";
+pub const DEFAULT_CLAUDE_UPSTREAM: &str = "https://api.anthropic.com";
 const DEFAULT_ROUND_TIMEOUT: Duration = Duration::from_secs(120);
+/// Extra tries after a connect failure or a gateway status, each waiting one more step.
+const SEND_RETRIES: u32 = 2;
+const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_TOOL_ROUNDS: usize = 8;
 const MAX_BODY_BYTES: usize = 128 * 1024 * 1024;
 pub(crate) const PROXY_TOOLS: &[&str] = &["compress", "decompress", "search_context", "acp_status"];
@@ -54,12 +59,16 @@ pub struct ProxyConfig {
     pub token_secret: Vec<u8>,
     /// OpenCode Go origin the pi wires (chat, responses, messages) stream to.
     pub opencode_upstream: String,
+    /// Origin the `claude/<path>` route forwards to; tests point it at a fake.
+    pub claude_upstream: String,
     /// Replaces every key provider's origin on `x/<id>/…` routes; tests point it at a fake.
     pub provider_origin: Option<String>,
     /// The `execute` tool can reach the code graph, so the skill is worth the tokens.
     pub codebase_memory: bool,
     /// How long one upstream round may take to answer or to produce its next chunk.
     pub round_timeout: Duration,
+    /// The wait before the first retry of a failed send; the next waits twice as long.
+    pub retry_backoff: Duration,
 }
 
 impl ProxyConfig {
@@ -68,9 +77,11 @@ impl ProxyConfig {
             upstream_base: DEFAULT_UPSTREAM.to_string(),
             token_secret: token_secret.into(),
             opencode_upstream: DEFAULT_OPENCODE_UPSTREAM.to_string(),
+            claude_upstream: DEFAULT_CLAUDE_UPSTREAM.to_string(),
             provider_origin: None,
             codebase_memory: false,
             round_timeout: DEFAULT_ROUND_TIMEOUT,
+            retry_backoff: DEFAULT_RETRY_BACKOFF,
         }
     }
 
@@ -88,6 +99,11 @@ impl ProxyConfig {
 }
 
 impl ProxyConfig {
+    pub fn with_claude_upstream(mut self, origin: impl Into<String>) -> Self {
+        self.claude_upstream = origin.into();
+        self
+    }
+
     pub fn with_provider_origin(mut self, origin: impl Into<String>) -> Self {
         self.provider_origin = Some(origin.into());
         self
@@ -100,6 +116,11 @@ impl ProxyConfig {
 
     pub fn with_round_timeout(mut self, round_timeout: Duration) -> Self {
         self.round_timeout = round_timeout;
+        self
+    }
+
+    pub fn with_retry_backoff(mut self, retry_backoff: Duration) -> Self {
+        self.retry_backoff = retry_backoff;
         self
     }
 }
@@ -118,6 +139,8 @@ pub enum ProxyError {
     Json(#[from] serde_json::Error),
     #[error("upstream error: {0}")]
     Upstream(#[from] reqwest::Error),
+    #[error("upstream answered {0}")]
+    UpstreamStatus(String),
     #[error("{0}")]
     Encoding(#[from] crate::encoding::Error),
     #[error("request body too large")]
@@ -252,6 +275,12 @@ impl ProxyState {
         Arc::clone(&self.inner.prompts)
     }
 
+    /// The context window of the Session's model, `None` when the catalogue does not know it.
+    pub async fn context_window(&self, session_id: &str) -> Option<usize> {
+        let meta = self.inner.sessions.get(session_id).await?;
+        self.inner.models.window(&meta.model).await
+    }
+
     pub fn token_for(&self, session_id: &str) -> String {
         self.inner.signer.sign(session_id)
     }
@@ -281,13 +310,20 @@ impl ProxyState {
             .await
             .ok_or(ProxyError::UnknownSession)?;
         let project = self.inner.projects.get(&meta.project_id).await;
+        let level = self
+            .inner
+            .settings
+            .read()
+            .await
+            .ponytail_default_level
+            .clone();
         let vars = PromptVars {
             project_name: project.as_ref().map(|p| p.name.clone()).unwrap_or_default(),
             project_root: project
                 .as_ref()
                 .map(|p| p.root.to_string_lossy().to_string())
                 .unwrap_or_default(),
-            level: meta.ponytail_level.clone(),
+            level,
             date: String::new(),
             session_id: session_id.to_string(),
             ..Default::default()
@@ -365,16 +401,24 @@ async fn dispatch(
         .map_err(|_| ProxyError::BodyTooLarge)?;
 
     let config = &state.inner.config;
-    let (base, path, wire) = match provider_route(config, &rest)? {
-        Some((origin, path)) => {
-            let wire = WireKind::from_rest(&path).map(|(wire, _)| wire);
-            (origin, path, wire)
+    let (base, path, wire) = if let Some(path) = rest.strip_prefix("claude/") {
+        // The Claude CLI's own credential passes through; only the generation path is a wire.
+        let wire = (path == "v1/messages").then_some(WireKind::Anthropic);
+        (config.claude_upstream.clone(), path.to_string(), wire)
+    } else {
+        match provider_route(config, &rest)? {
+            Some((origin, path)) => {
+                let wire = WireKind::from_rest(&path).map(|(wire, _)| wire);
+                (origin, path, wire)
+            }
+            None => match WireKind::from_rest(&rest) {
+                Some((wire, Some(pi_path))) => {
+                    (config.opencode_upstream.clone(), pi_path, Some(wire))
+                }
+                Some((wire, None)) => (config.upstream_base.clone(), rest, Some(wire)),
+                None => (config.upstream_base.clone(), rest, None),
+            },
         }
-        None => match WireKind::from_rest(&rest) {
-            Some((wire, Some(pi_path))) => (config.opencode_upstream.clone(), pi_path, Some(wire)),
-            Some((wire, None)) => (config.upstream_base.clone(), rest, Some(wire)),
-            None => (config.upstream_base.clone(), rest, None),
-        },
     };
     let Some(wire) = wire else {
         return forward_plain(&state, &method, &base, &path, uri.query(), &headers, body).await;
@@ -491,7 +535,7 @@ async fn handle_generation(
         &url,
         headers,
         &sent,
-        state.inner.config.round_timeout,
+        &state.inner.config,
     )
     .await
     {
@@ -609,7 +653,7 @@ async fn buffered_generation(
                     &url,
                     headers,
                     &sent,
-                    state.inner.config.round_timeout,
+                    &state.inner.config,
                 )
                 .await?
             }
@@ -621,6 +665,7 @@ async fn buffered_generation(
             final_response = Some((status, content_type, bytes));
             break;
         };
+        let assistant = response_content(wire, &bytes);
         let (turns, after) = run_proxy_tool(
             state,
             session_id,
@@ -628,6 +673,7 @@ async fn buffered_generation(
             wire,
             &mut request,
             call,
+            &assistant,
             &settings,
             window,
         )?;
@@ -640,6 +686,17 @@ async fn buffered_generation(
     let sent = outgoing_body(&runtime, wire, &request);
     publish_usage(state, session_id, &runtime, &bytes, wire, &sent).await;
     Ok(response_with(status, content_type.as_deref(), bytes))
+}
+
+/// The content blocks of a buffered Anthropic response; the other wires keep none.
+fn response_content(wire: WireKind, bytes: &Bytes) -> Vec<Value> {
+    if wire != WireKind::Anthropic {
+        return Vec::new();
+    }
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|payload| payload.get("content").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
 }
 
 struct PrepareOutcome {
@@ -746,15 +803,19 @@ fn preflight_fold(
             break;
         }
         let end = compressible_end(contents, policy.preserve_recent_messages);
-        if end <= 1 {
+        let Some(run) = foldable_runs(contents, end)
+            .into_iter()
+            .find(|run| run.len() > 1)
+        else {
             break;
-        }
+        };
         let call = CompressCall {
-            start: 1,
-            end,
+            start: run.start,
+            end: run.end,
             summary: format!(
-                "Preflight fold: the request exceeded the context window, so the proxy folded turns 1–{} automatically. The originals are in the session spill dir and `decompress` restores them.",
-                end - 1
+                "Preflight fold: the request exceeded the context window, so the proxy folded turns {}–{} automatically. The originals are in the session spill dir and `decompress` restores them.",
+                run.start,
+                run.end - 1
             ),
             topic: Some("preflight".to_string()),
         };
@@ -908,26 +969,8 @@ fn truncate_emergency(contents: &mut [Value]) {
         }
         if let Some((id, text)) = truncated_raw {
             if let Some(raw) = turn.get_mut(turnkeys::RAW) {
-                set_raw_tool_result(raw, &id, &text);
+                crate::wire::set_raw_result_text(raw, &id, &text);
             }
-        }
-    }
-}
-
-fn set_raw_tool_result(raw: &mut Value, id: &str, text: &str) {
-    if raw.get("tool_call_id").and_then(Value::as_str) == Some(id) {
-        raw["content"] = json!(text);
-        return;
-    }
-    let Some(blocks) = raw.get_mut("content").and_then(Value::as_array_mut) else {
-        return;
-    };
-    for block in blocks {
-        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
-            continue;
-        }
-        if block.get("tool_use_id").and_then(Value::as_str) == Some(id) {
-            block["content"] = json!(text);
         }
     }
 }
@@ -969,21 +1012,30 @@ fn compressible_end(turns: &[Value], preserve_recent_messages: usize) -> usize {
         .min(latest)
 }
 
+/// The compressible view: only the foldable runs inside `1..end` count, so protected turns
+/// (system reminders) add neither tokens nor a range to the nudge.
 fn compressible_view(turns: &[Value], preserve_recent_messages: usize) -> CompressibleView {
     let end = compressible_end(turns, preserve_recent_messages);
-    let (tokens, count) = if end > 1 {
-        (turns_tokens(&turns[1..end]), end - 1)
-    } else {
-        (0, 0)
-    };
-    let ranges = if count == 0 {
+    let runs = foldable_runs(turns, end);
+    let tokens: u64 = runs
+        .iter()
+        .map(|run| turns_tokens(&turns[run.clone()]))
+        .sum();
+    let ranges = if runs.is_empty() {
         "Compressible ranges (1, oldest first): none".to_string()
     } else {
-        format!(
-            "Compressible ranges (1, oldest first):\n  turns 1–{}  {count} turns  {} tokens",
-            end - 1,
-            kilo(tokens)
-        )
+        let mut lines = vec!["Compressible ranges (1, oldest first):".to_string()];
+        for run in &runs {
+            // The compress arguments verbatim: `end` is exclusive there.
+            lines.push(format!(
+                "  start {}, end {}  {} turns  {} tokens",
+                run.start,
+                run.end,
+                run.len(),
+                kilo(turns_tokens(&turns[run.clone()]))
+            ));
+        }
+        lines.join("\n")
     };
     CompressibleView {
         tokens,
@@ -1243,6 +1295,7 @@ fn run_proxy_tool(
     wire: WireKind,
     request: &mut Value,
     call: ProxyCall,
+    assistant: &[Value],
     settings: &Settings,
     window: usize,
 ) -> Result<(Vec<Value>, Option<String>), ProxyError> {
@@ -1259,7 +1312,12 @@ fn run_proxy_tool(
         settings,
         window,
     );
-    let turns = proxy_pair(&call, &text, &turnkeys::splice_marker(&call.id));
+    let turns = proxy_turns(
+        wire,
+        assistant,
+        &[(&call, text.as_str())],
+        &turnkeys::splice_marker(&call.id),
+    );
     contents.extend(turns.clone());
     write_core_contents(wire, request, contents);
     Ok((turns, after))
@@ -1317,17 +1375,46 @@ fn publish_compression_event(
     ));
 }
 
-fn proxy_pair(call: &ProxyCall, text: &str, marker: &str) -> Vec<Value> {
-    let response_part = json!({
+fn proxy_result_part(call: &ProxyCall, text: &str, marker: &str) -> Value {
+    json!({
         "functionResponse": {
             "name": call.name,
             "id": call.id,
             "response": { "result": text, "splice": marker }
         }
-    });
+    })
+}
+
+fn proxy_pair(call: &ProxyCall, text: &str, marker: &str) -> Vec<Value> {
     vec![
         json!({ "role": "model", "parts": [call.part.clone()] }),
-        json!({ "role": "user", "parts": [response_part] }),
+        json!({ "role": "user", "parts": [proxy_result_part(call, text, marker)] }),
+    ]
+}
+
+/// The turns a round of proxy calls adds to the request. Anthropic gets one model turn holding the
+/// response's own blocks and one user turn with every result, as the Messages API requires; the
+/// other wires get a model/user pair per call.
+fn proxy_turns(
+    wire: WireKind,
+    assistant: &[Value],
+    completed: &[(&ProxyCall, &str)],
+    marker: &str,
+) -> Vec<Value> {
+    if wire != WireKind::Anthropic {
+        return completed
+            .iter()
+            .flat_map(|(call, text)| proxy_pair(call, text, marker))
+            .collect();
+    }
+    let calls: Vec<&ProxyCall> = completed.iter().map(|(call, _)| *call).collect();
+    let results: Vec<Value> = completed
+        .iter()
+        .map(|(call, text)| proxy_result_part(call, text, marker))
+        .collect();
+    vec![
+        anthropic_model_turn(assistant, &calls),
+        json!({ "role": "user", "parts": results }),
     ]
 }
 
@@ -1336,31 +1423,25 @@ fn store_proxy_splice(
     turns: &[Value],
     after: Option<String>,
 ) -> Result<String, ProxyError> {
-    let marker = turns
-        .first()
-        .and_then(|turn| turn.get("parts"))
-        .and_then(Value::as_array)
-        .and_then(|parts| parts.first())
-        .and_then(|part| part.get("functionCall"))
-        .and_then(|call| call.get("id"))
-        .and_then(Value::as_str)
-        .map(turnkeys::splice_marker)
+    let marker = first_part_id(turns, "functionCall")
+        .map(|id| turnkeys::splice_marker(&id))
         .unwrap_or_else(|| turnkeys::splice_marker("unknown"));
-    let anchor = turns
-        .get(1)
-        .and_then(|turn| turn.get("parts"))
-        .and_then(Value::as_array)
-        .and_then(|parts| parts.first())
-        .and_then(|part| part.get("functionResponse"))
-        .and_then(|response| response.get("id"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+    let anchor = first_part_id(turns, "functionResponse").unwrap_or_default();
     let splice = Splice::new(&anchor, turns.to_vec())
         .with_marker(marker)
         .with_after_turn(after);
     lock(&runtime.splices)?.insert(splice)?;
     Ok(anchor)
+}
+
+/// The id of the first part of `kind` (a call or a result) across the turns.
+fn first_part_id(turns: &[Value], kind: &str) -> Option<String> {
+    turns
+        .iter()
+        .filter_map(|turn| turn.get("parts")?.as_array())
+        .flatten()
+        .find_map(|part| part.get(kind)?.get("id")?.as_str())
+        .map(str::to_string)
 }
 
 fn execute_tool(
@@ -1521,25 +1602,48 @@ fn number_arg(args: &Value, key: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("{key} must be a non-negative integer"))
 }
 
+/// The wait between two sends of a retried request: product behaviour, zero in tests.
+#[allow(clippy::disallowed_methods)]
+async fn backoff(wait: Duration) {
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
+}
+
+/// Sends one generation request, trying again after a connect failure or a gateway status
+/// (502/503/504): nothing has reached the harness yet, so a retry is invisible to it.
 async fn send_stream(
     client: &reqwest::Client,
     url: &str,
     headers: &HeaderMap,
     body: &Value,
-    round_timeout: Duration,
+    config: &ProxyConfig,
 ) -> Result<reqwest::Response, ProxyError> {
     let bytes = serde_json::to_vec(body)?;
     let encoding = headers
         .get(header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok());
     let bytes = crate::encoding::encode(encoding, bytes)?;
-    let mut request = client.post(url);
-    request = with_headers(request, headers);
-    let request = request.header(header::CONTENT_TYPE, "application/json");
-    timeout(round_timeout, request.body(bytes).send())
-        .await
-        .map_err(|_| ProxyError::Timeout)?
-        .map_err(ProxyError::Upstream)
+    let mut attempt = 0;
+    loop {
+        let mut request = client.post(url);
+        request = with_headers(request, headers);
+        let request = request.header(header::CONTENT_TYPE, "application/json");
+        let sent = timeout(config.round_timeout, request.body(bytes.clone()).send())
+            .await
+            .map_err(|_| ProxyError::Timeout)
+            .and_then(|result| result.map_err(ProxyError::Upstream));
+        let retryable = match &sent {
+            Ok(response) => matches!(response.status().as_u16(), 502..=504),
+            Err(ProxyError::Upstream(error)) => error.is_connect() || error.is_request(),
+            Err(_) => false,
+        };
+        if !retryable || attempt >= SEND_RETRIES {
+            return sent;
+        }
+        backoff(config.retry_backoff * 2u32.pow(attempt)).await;
+        attempt += 1;
+    }
 }
 
 async fn send_generation(
@@ -1547,9 +1651,10 @@ async fn send_generation(
     url: &str,
     headers: &HeaderMap,
     body: &Value,
-    round_timeout: Duration,
+    config: &ProxyConfig,
 ) -> Result<(StatusCode, Option<String>, Bytes), ProxyError> {
-    let response = send_stream(client, url, headers, body, round_timeout).await?;
+    let round_timeout = config.round_timeout;
+    let response = send_stream(client, url, headers, body, config).await?;
     let status = axum_status(response.status());
     let content_type = header_value(response.headers(), header::CONTENT_TYPE.as_str());
     let bytes = timeout(round_timeout, response.bytes())
@@ -1605,10 +1710,7 @@ async fn publish_usage_event(
     usage: meter::Usage,
     breakdown: crate::context::ContextBreakdown,
 ) {
-    let window = match state.inner.sessions.get(session_id).await {
-        Some(meta) => state.inner.models.window(&meta.model).await,
-        None => None,
-    };
+    let window = state.context_window(session_id).await;
     let mut data = json!({
         "inputTokens": usage.input_tokens,
         "outputTokens": usage.output_tokens,
@@ -1689,7 +1791,7 @@ fn error_response(error: &ProxyError) -> Response<Body> {
         | ProxyError::Splice(_)
         | ProxyError::Compression(_)
         | ProxyError::Lock => StatusCode::BAD_GATEWAY,
-        ProxyError::Upstream(_) => StatusCode::BAD_GATEWAY,
+        ProxyError::Upstream(_) | ProxyError::UpstreamStatus(_) => StatusCode::BAD_GATEWAY,
     };
     response_with(
         status,
@@ -1729,6 +1831,8 @@ struct SseState {
     stream_events: Vec<Bytes>,
     stream_finish: Vec<Bytes>,
     proxy_round: bool,
+    /// The response's content blocks as streamed, kept for an Anthropic follow-up.
+    anthropic: AnthropicBlocks,
     settings: Settings,
     window: usize,
 }
@@ -1776,6 +1880,7 @@ impl SseState {
             stream_events: Vec::new(),
             stream_finish: Vec::new(),
             proxy_round: false,
+            anthropic: AnthropicBlocks::default(),
             settings,
             window,
         }
@@ -1787,7 +1892,7 @@ impl SseState {
         let Some(usage) = meter::extract_usage(bytes) else {
             return;
         };
-        if self.published == Some(usage) {
+        if self.published.is_some_and(|last| last.same_context(&usage)) {
             return;
         }
         self.published = Some(usage);
@@ -1813,13 +1918,20 @@ impl SseState {
             &self.url,
             &self.headers,
             &sent,
-            self.proxy.inner.config.round_timeout,
+            &self.proxy.inner.config,
         )
         .await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let body: String = body.chars().take(500).collect();
+            return Err(ProxyError::UpstreamStatus(format!("{status}: {body}")));
+        }
         self.stream = Some(response.bytes_stream().boxed());
         self.published = None;
         self.step_signature = None;
         self.proxy_round = false;
+        self.anthropic = AnthropicBlocks::default();
         self.stream_calls.clear();
         self.rounds += 1;
         Ok(())
@@ -1832,11 +1944,12 @@ impl SseState {
         }
         let first_id = self.completed[0].call.id.clone();
         let marker = turnkeys::splice_marker(&first_id);
-        let turns = self
+        let calls: Vec<(&ProxyCall, &str)> = self
             .completed
             .iter()
-            .flat_map(|completed| proxy_pair(&completed.call, &completed.text, &marker).into_iter())
-            .collect::<Vec<_>>();
+            .map(|completed| (&completed.call, completed.text.as_str()))
+            .collect();
+        let turns = proxy_turns(self.wire, &self.anthropic.content(), &calls, &marker);
 
         if let Some(anchor) = self.harness_call_id.clone() {
             let splice = Splice::new(&anchor, turns).with_marker(&marker);
@@ -1877,6 +1990,9 @@ impl SseState {
         let Ok(mut payload) = serde_json::from_str::<Value>(&data) else {
             return Ok((!self.proxy_round || data.trim() != "[DONE]").then_some(raw));
         };
+        if self.wire == WireKind::Anthropic {
+            self.anthropic.observe(&payload);
+        }
         self.capture_usage(event).await;
         if !self.proxy_round && self.wire != WireKind::Google {
             if let Some(text) = meter::thinking_delta(&payload) {
@@ -2408,7 +2524,13 @@ async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error
             }
             Ok(Some(Err(error))) => {
                 state.done = true;
-                return Some((Ok(error_event(&ProxyError::Upstream(error))), state));
+                let error = ProxyError::Upstream(error);
+                publish_error(
+                    &state.proxy.inner.events,
+                    &state.session_id,
+                    format!("{error}"),
+                );
+                return Some((Ok(error_event(&error)), state));
             }
             Ok(None) => {
                 state.stream = None;

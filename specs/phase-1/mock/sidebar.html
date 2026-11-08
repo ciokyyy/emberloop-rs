@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emberloop sidebar prototype</title>
+<style>
+/* Sidebar prototype: top = Project and new Session; middle = Sessions; bottom = Usage, Providers, Settings.
+   Icons: Lucide (already a web dependency as @lucide/svelte), inline SVG, stroke 1.75, 16px. Tokens copied from web/src/app.css. */
+:root{
+  color-scheme:dark;
+  --s0:#212121;--s1:#2a2a2a;--s2:#2f2f2f;--s3:#383838;--side:#171717;
+  --f1:#ececec;--f2:#c7c7cc;--f3:#9b9ba1;--f4:#6e6e73;
+  --bd:#3a3a3c;--ring:#0a84ff;
+  --working:#5aa9ff;--needs:#ffb340;--done:#3fd070;--failed:#ff6b63;--paused:#a1a1a8;
+  --brand:#6c63ff;--brand2:#4f46e5;
+  --claude:#d6a87b;--pi:#8b7cf6;--agy:#5b9ac6;
+  --font-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
+  --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;height:100vh;background:var(--s0);color:var(--f1);font:14px/1.4 var(--font-sans);display:flex}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;text-align:left}
+button:focus-visible{outline:2px solid var(--ring);outline-offset:-2px}
+svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+
+aside{width:280px;flex:none;display:flex;flex-direction:column;background:var(--side);border-right:1px solid var(--bd)}
+main{flex:1;display:grid;place-items:center;color:var(--f4);font-size:13px}
+
+/* Top: one row. Project switch as plain text on the left, icon-only New session on the right. */
+.top{padding:10px 10px 6px 12px;display:flex;align-items:center;gap:6px}
+.proj{flex:1;min-width:0;display:flex;align-items:center;gap:6px;height:32px;padding:0 6px;margin-left:-6px;border-radius:8px;font-size:15px;font-weight:600;color:var(--f1)}
+.proj:hover{background:var(--s2)}
+.proj .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.proj svg{color:var(--f3)}
+.new{width:32px;height:32px;flex:none;display:grid;place-items:center;border-radius:8px;color:var(--f2)}
+.new:hover{background:var(--s2);color:var(--f1)}
+
+/* Middle: Sessions */
+.list{flex:1;min-height:0;overflow-y:auto;padding:4px 8px}
+.label{padding:10px 8px 4px;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--f4)}
+.row{position:relative;display:flex;align-items:center;gap:8px;border-radius:8px;margin-bottom:1px}
+.row:hover,.row.sel{background:var(--s2)}
+.row.sel{background:var(--s3)}
+.open{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:7px 8px}
+.bar{width:3px;height:18px;border-radius:2px;flex:none}
+.title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.time{font-size:11px;color:var(--f3);flex:none}
+.act{display:none;gap:2px;margin-right:4px}
+.row:hover .act,.row:focus-within .act,.row.sel .act{display:flex}
+.act button{width:24px;height:24px;display:grid;place-items:center;border-radius:6px;color:var(--f3)}
+.act button:hover{background:var(--s1);color:var(--f1)}
+.act button.del:hover{color:var(--failed)}
+.pulse{animation:p 1.4s ease-in-out infinite}
+@keyframes p{50%{opacity:.35}}
+.empty{padding:8px;color:var(--f4);font-size:13px}
+
+/* Bottom: footer tray, icon over label */
+.foot{border-top:1px solid var(--bd);padding:8px;display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+.tab{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border-radius:8px;color:var(--f3);font-size:12px}
+.tab:hover{background:var(--s2);color:var(--f1)}
+.tab.on{background:var(--s3);color:var(--f1)}
+</style>
+</head>
+<body>
+<aside>
+  <div class="top">
+    <button class="proj" aria-label="Switch Project">
+      <span class="name">emberloop-rs</span>
+      <svg viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>
+    </button>
+    <button class="new" aria-label="New session" title="New session">
+      <svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+    </button>
+  </div>
+
+  <nav class="list" aria-label="Sessions">
+    <div class="label">Sessions</div>
+
+    <div class="row sel">
+      <button class="open" aria-current="true">
+        <span class="bar pulse" style="background:var(--claude)"></span>
+        <span class="title">Fix sidebar overflow on narrow screens</span>
+        <span class="time">2m</span>
+      </button>
+      <div class="act">
+        <button aria-label="Rename session" title="Rename"><svg viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg></button>
+        <button class="del" aria-label="Delete session" title="Delete"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="open">
+        <span class="bar" style="background:var(--pi)"></span>
+        <span class="title">Add Ponytail level switch</span>
+        <span class="time">1h</span>
+      </button>
+    </div>
+
+    <div class="row">
+      <button class="open">
+        <span class="bar" style="background:var(--agy)"></span>
+        <span class="title">Steer queue ordering</span>
+        <span class="time">Yesterday</span>
+      </button>
+    </div>
+  </nav>
+
+  <div class="foot">
+    <button class="tab" aria-label="Usage">
+      <svg viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+      Usage
+    </button>
+    <button class="tab" aria-label="Providers">
+      <svg viewBox="0 0 24 24"><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z"/><path d="m2 22 3-3"/><path d="M7.5 13.5 10 11"/><path d="M10.5 16.5 13 14"/><path d="m18 3-4 4h6l-4 4"/></svg>
+      Providers
+    </button>
+    <button class="tab on" aria-label="Settings" aria-current="page">
+      <svg viewBox="0 0 24 24"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>
+      Settings
+    </button>
+  </div>
+</aside>
+<main>Prototype: sidebar only</main>
+</body>
+</html>

@@ -29,7 +29,6 @@ fn meta(id: &str, updated_at: u64) -> SessionMeta {
         id: id.into(),
         project_id: "proj_1".into(),
         title: "Session".into(),
-        ponytail_level: "full".into(),
         created_at: updated_at,
         updated_at,
         prompt_hashes: Default::default(),

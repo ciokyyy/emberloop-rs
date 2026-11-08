@@ -5,6 +5,7 @@
     "": {
       "name": "emberloop-web",
       "dependencies": {
+        "@lobehub/icons-static-svg": "^1.102.0",
         "@lucide/svelte": "^1.70.0",
         "@tanstack/svelte-virtual": "^3.13.52",
         "bits-ui": "^2.20.6",
@@ -14,6 +15,7 @@
         "tailwind-merge": "^3.3.1",
       },
       "devDependencies": {
+        "@internationalized/date": "^3.12.0",
         "@sveltejs/adapter-static": "^3.0.9",
         "@sveltejs/kit": "^2.30.0",
         "@sveltejs/vite-plugin-svelte": "^6.1.0",
@@ -136,6 +138,8 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.6.0", "", {}, "sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
+
+    "@lobehub/icons-static-svg": ["@lobehub/icons-static-svg@1.102.0", "", {}, "sha512-3Na6S2kdslmsfnBjuL0PQWQClrmuWe/pWThRN/3J2VzPg5MhVghy8knVu7kd1/lqA9ydZBvwmnKLzuBo0Wm6Qw=="],
 
     "@lucide/svelte": ["@lucide/svelte@1.70.0", "", { "peerDependencies": { "svelte": "^5" } }, "sha512-zvx7K/WLxo82c4ZYqbsfcYUPDVFrq4561xH0NHfSHJJbajj0AONTQ14EO095/WnfI4XUEl1tyS/nbjQNNiNxdQ=="],
 

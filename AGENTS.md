@@ -17,21 +17,21 @@ Web tooling is bun: `bun`, `bunx` and `bun.lock` everywhere, never npm or anothe
 
 One command, `scripts/check`, is the repo check and must pass before any change is done; CI runs the same script. It runs, in order:
 
-- `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` with the `[workspace.lints]` table (including `cognitive_complexity`, its threshold in `clippy.toml`);
-- `cargo nextest run --workspace` and `cargo test --doc`;
-- `cargo deny check` and `cargo machete`;
+- `cargo fmt --check`, `cargo deny check` and `cargo machete`, then `cargo clippy --workspace --all-targets -- -D warnings` with the `[workspace.lints]` table (including `cognitive_complexity`, its threshold in `clippy.toml`);
+- the OpenAPI document is dumped, the TypeScript client regenerated, and `git diff --exit-code` passes; an unchanged client keeps its modification time;
 - in `web/`: `bun install --frozen-lockfile`, `svelte-check --incremental` (which covers `tsc`), a blocking Fallow complexity check with the Go repo's thresholds, the web tests and `bun run build`, because the daemon embeds `web/build/` at compile time and `crates/daemon/tests/web_bundle.rs` fails on a bundle older than `web/src`;
-- the OpenAPI document is dumped, the TypeScript client regenerated, and `git diff --exit-code` passes.
+- `cargo nextest run --workspace` and `cargo test --doc`, after the bundle is built so the staleness test sees a fresh one;
+- the slowest tests.
 
 The check has a time budget (spec decision O): the loop check 30 s or less, the full check 3 minutes or less. A slow test, a real sleep or a real harness in the check is a defect. No stage is skipped, softened with `|| true`, or guarded by "if the tool exists".
 
-The web stage is skipped when `web/`'s input tree hashes the same as the green run before it and `web/build/` exists: same inputs, same result. A missing or stale build always runs it. Every other stage always runs.
+The web stage is skipped when `web/`'s input tree hashes the same as the green run before it, `web/build/` exists and holds no file older than a web source: same inputs, same result. A missing or stale build always runs it. Every other stage always runs.
 
 A threshold is never raised to make a change pass; the function is split instead.
 
-## Local update
+## Release and update
 
-Run `scripts/check`, then `scripts/dev-update` from this checkout. The update builds the daemon with the next release version and queues a safe restart when called inside a Session. The check builds the embedded web bundle when its inputs change. Do not stop the daemon to force the update. See `crates/daemon/AGENTS.md` for the update, resume, and verification contract.
+Everyone updates with `emberloop-daemon update`, in a Session or from a terminal: it only queues, and the running daemon installs and restarts into the new build once no Session has a turn running. Run `scripts/check`, then `scripts/release` to build the next version into `target/release-dist`; `scripts/release --publish` uploads it as the GitHub release `emberloop-daemon update` reads. For a build not yet released, `emberloop-daemon update --file <binary>`. Do not stop the daemon to force the update. See `crates/daemon/AGENTS.md` for the update, resume, and verification contract.
 
 ## Test-first
 
@@ -55,7 +55,7 @@ Only after the User picks does implementation start, test-first. This does not a
 - A third-party stdio MCP server listed in `<config root>/mcp.json` is reachable only from the `execute` tool, never declared to a harness, and the proxy only adds its skill text when the daemon reports the code graph usable.
 - Pre-0.1 releases are 0.0.x. Until v0.1, an update may drop Sessions and data-root layout without migration; that is not a defect and needs no compatibility code.
 - No auth, loopback bind only. A non-loopback bind needs an explicit flag.
-- Claude subscription traffic stays on the real `claude` binary. The proxy never holds a subscription token or talks upstream with one.
+- Claude runs as the real `claude` binary through the proxy's `claude` route; the proxy forwards the client's own Authorization header in transit and never stores, logs or generates a token.
 
 ## Child DOX Index
 

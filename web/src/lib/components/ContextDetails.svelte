@@ -52,6 +52,8 @@
       <p class="text-[12px] text-fg-3">{breakdown.imageCount} image(s) in context. Image token cost is not available; image bytes are excluded from the text estimate.</p>
     {/if}
     <p class="text-[11px] text-fg-3">Text estimates use UTF-8 bytes ÷ 4. Provider tokenizers, message framing and hidden overhead differ. Compression counts retained summaries, not the original folded text.</p>
+  {:else if used !== null}
+    <p class="rounded-xl border border-dashed border-border p-4 text-[13px] text-fg-3">Not available for this harness: the proxy never sees its requests, so there is no request body to break down.</p>
   {:else}
     <p class="rounded-xl border border-dashed border-border p-4 text-[13px] text-fg-3">Send a prompt to inspect the next request’s context breakdown.</p>
   {/if}

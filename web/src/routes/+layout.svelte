@@ -17,7 +17,7 @@
   import CacheView from '$lib/components/CacheView.svelte';
   import Composer from '$lib/components/Composer.svelte';
   import Feed from '$lib/components/Feed.svelte';
-  import ModelPicker from '$lib/components/ModelPicker.svelte';
+  import DraftSession from '$lib/components/DraftSession.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
   import PlanCard from '$lib/components/PlanCard.svelte';
   import Providers from '$lib/components/Providers.svelte';
@@ -39,6 +39,7 @@
   let settings = $state<SettingsDto>({
     title_generation: true,
     title_model: 'openrouter/openrouter/free',
+    default_model: 'gemini-3.8-flash',
     proxy_compression: true,
     ponytail_default_level: 'full',
     todo_reminders: true,
@@ -67,10 +68,9 @@
   // The dialog asks for a Session by default; the "New project" button asks for
   // a path instead.
   let newProject = $state(false);
-  // The draft: the model and level picked before a Session exists. `draftProject` remembers which
-  // Project's draft already took the defaults, so a model pick does not reset the level.
+  // The draft: the model picked before a Session exists. `draftProject` remembers which
+  // Project's draft already took the defaults, so a model pick does not reset the draft.
   let draftModel = $state('');
-  let draftLevel = $state('full');
   let draftProject: string | null = null;
   let drawer = $state(false);
   let settingsSaving = $state(false);
@@ -274,21 +274,20 @@
     newOpen = true;
   }
 
-  // A draft starts from the first model and the default level, once per Project.
+  // A draft takes the configured defaults once per Project.
   $effect(() => {
     if (view !== 'new' || !models.length || draftProject === scope) return;
     draftProject = scope;
-    draftModel = models[0].id;
-    draftLevel = settings.ponytail_default_level;
+    draftModel = models.some((entry) => entry.id === settings.default_model) ? settings.default_model : models[0].id;
   });
 
   // The draft's first prompt creates the Session, then sends: the URL moves to the real one.
-  async function sendDraft(text: string, files: File[]) {
+  async function sendDraft(text: string, files: File[], thoughtLevel: string) {
     const projectId = scope ?? projects[0]?.id;
     if (!projectId) throw new Error('Choose a Project first.');
     if (!draftModel) throw new Error('Choose a model first.');
     const images = await Promise.all(files.map(toPromptImage));
-    const created = await api.createSession(projectId, undefined, draftLevel, draftModel);
+    const created = await api.createSession(projectId, undefined, draftModel, thoughtLevel || undefined);
     sessions = [created, ...sessions];
     await api.prompt(created.id, text, images);
     // The draft's text is spent; the new Session keeps its own.
@@ -299,7 +298,6 @@
   async function createSession(input: {
     projectId?: string;
     root?: string;
-    ponytailLevel: string;
     model?: string;
     thoughtLevel?: string;
   }) {
@@ -323,9 +321,8 @@
     const page = view === 'session' || view === 'new' || view === 'cache' ? 'settings' : view;
     void goto(latest ? sessionPath(id, latest.id) : viewPath(id, page));
   }
-  async function renameSession(session: Session) {
-    const title = window.prompt('Rename session', session.title)?.trim();
-    if (!title || title === session.title) return;
+  async function renameSession(session: Session, title: string) {
+    if (title === session.title) return;
     try {
       const updated = await api.updateSession(session.id, { title });
       sessions = sessions.map((item) => (item.id === session.id ? updated : item));
@@ -335,7 +332,7 @@
   }
 
   async function deleteSession(session: Session) {
-    if (!window.confirm(`Delete “${session.title}”? This cannot be undone.`)) return;
+    // The Sidebar's confirm dialog asks first.
     try {
       await api.deleteSession(session.id);
       sessions = sessions.filter((item) => item.id !== session.id);
@@ -423,7 +420,7 @@
         newProject = true;
         newOpen = true;
       }}
-      onrename={(session) => void renameSession(session)}
+      onrename={(session, title) => void renameSession(session, title)}
       ondelete={(session) => void deleteSession(session)}
       onsettings={() => openView('settings')}
       onproviders={() => openView('providers')}
@@ -482,35 +479,9 @@
     {:else if view === 'cache' && current}
       <CacheView sessionId={current.id} status={feed.status} />
     {:else if view === 'new'}
-      <!-- The draft page: the harness and model are picked here, and the Session starts with the
-           first prompt. Its row in the sidebar wears the harness color of this pick. -->
-      <div class="grid flex-1 place-items-center px-4">
-        <div class="flex w-full max-w-[420px] flex-col gap-4">
-          <p class="text-[13px] text-fg-3">
-            Pick the harness and model. The Session starts with your first prompt.
-          </p>
-          <ModelPicker {models} bind:value={draftModel} />
-          <div class="flex flex-col gap-1.5 text-[13px] text-fg-3">
-            Ponytail level
-            <div class="seg self-start">
-              {#each ['off', 'lite', 'full', 'ultra'] as option (option)}
-                <button type="button" aria-pressed={draftLevel === option} onclick={() => (draftLevel = option)}>
-                  {option}
-                </button>
-              {/each}
-            </div>
-          </div>
-        </div>
-      </div>
       {#key scope}
-        <Composer
-          sessionId={`draft:${scope ?? ''}`}
-          model={draftOf?.label ?? draftModel}
-          contextSize={chosenWindow(draftOf?.context_window, 0)}
-          imageInput={draftOf?.image_input ?? false}
-          onsubmit={sendDraft}
-          oncancel={() => {}}
-        />
+        <DraftSession sessionId={`draft:${scope ?? ''}`} {models}
+          bind:model={draftModel} onsubmit={sendDraft} />
       {/key}
     {:else if current}
       <Feed {feed} {hasMore} {loadingMore} onloadmore={loadEarlier} />
@@ -561,6 +532,6 @@
   projects={listed}
   newProject={newProject}
   {models}
-  defaultLevel={settings.ponytail_default_level}
+  defaultModel={settings.default_model}
   oncreate={createSession}
 />

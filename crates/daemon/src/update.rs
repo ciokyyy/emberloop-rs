@@ -360,7 +360,9 @@ pub fn installed_message(from: &str, to: &str, in_session: bool) -> String {
              The daemon installs it once you are idle, restarts, and prompts you again when the new build is up."
         )
     } else {
-        format!("Binary updated {from} -> {to}; restart the daemon to run it.")
+        format!(
+            "Update {from} -> {to} is queued; the running daemon restarts into it once no Session has a turn running."
+        )
     }
 }
 
@@ -391,6 +393,35 @@ pub fn write_request(data_root: &Path, request: &InstallRequest) -> std::io::Res
 
 pub fn read_request(data_root: &Path) -> Option<InstallRequest> {
     serde_json::from_slice(&std::fs::read(request_path(data_root)).ok()?).ok()
+}
+
+/// queue_local queues a binary already on this machine; the release is named by the version the
+/// binary reports. The running daemon installs and restarts into it when it is idle.
+pub fn queue_local(
+    data_root: &Path,
+    file: &Path,
+    session: Option<String>,
+) -> anyhow::Result<String> {
+    let version = binary_version(file)?;
+    write_request(
+        data_root,
+        &InstallRequest {
+            to: version.clone(),
+            artifact: None,
+            file: Some(absolute(file)?),
+            session,
+        },
+    )?;
+    Ok(version)
+}
+
+/// due is the queued request the daemon may apply now: none while a turn is running, so the
+/// restart never cuts a model off.
+pub fn due(data_root: &Path, turn_active: bool) -> Option<InstallRequest> {
+    if turn_active {
+        return None;
+    }
+    read_request(data_root)
 }
 
 /// apply_request installs the requested release, switches `current` to it and leaves the marker
@@ -665,6 +696,33 @@ mod tests {
         install_local(&binary, "0.0.7", root.path()).unwrap();
         activate(root.path(), "0.0.7").unwrap();
         assert_eq!(std::fs::read(current_binary(root.path())).unwrap(), b"new");
+    }
+
+    #[test]
+    fn a_queued_local_build_waits_for_the_daemon_instead_of_installing() {
+        let data = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let binary = script(dir.path(), "built", "0.0.9");
+        let version = queue_local(data.path(), &binary, None).unwrap();
+        assert_eq!(version, "0.0.9");
+        let request = read_request(data.path()).unwrap();
+        assert_eq!(request.to, "0.0.9");
+        assert!(request.file.unwrap().is_absolute());
+        assert!(
+            current_version(data.path()).is_none(),
+            "nothing is installed yet"
+        );
+    }
+
+    #[test]
+    fn a_queued_update_is_due_only_while_no_turn_is_running() {
+        let data = tempfile::tempdir().unwrap();
+        assert!(due(data.path(), false).is_none(), "nothing queued");
+        let dir = tempfile::tempdir().unwrap();
+        let binary = script(dir.path(), "built", "0.0.9");
+        queue_local(data.path(), &binary, None).unwrap();
+        assert!(due(data.path(), true).is_none());
+        assert_eq!(due(data.path(), false).unwrap().to, "0.0.9");
     }
 
     #[tokio::test]

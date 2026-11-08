@@ -5,6 +5,7 @@
   import ModelPicker from './ModelPicker.svelte';
   import ContextDetails from './ContextDetails.svelte';
   import Button from './ui/button.svelte';
+  import Select from './Select.svelte';
 
   let { open = $bindable(false), tab = $bindable<'model' | 'context'>('model'), models = [],
     model = '', thoughtLevel = '', used = null, size = 0, breakdown = null, disabled = false, onapply, oncache }: {
@@ -70,12 +71,12 @@
         <div id="session-model-panel" role="tabpanel" aria-labelledby="session-model-tab" in:slideDown class="flex flex-col gap-4">
           <ModelPicker searchable {models} bind:value={picked} disabled={disabled || busy} />
           {#if efforts.length}
-            <label class="flex flex-col gap-1.5 text-[12px] text-fg-3">
+            <div class="flex flex-col gap-1.5 text-[12px] text-fg-3">
               Reasoning effort
-              <select class="field" bind:value={effort} disabled={disabled || busy}>
-                {#each efforts as option (option)}<option value={option}>{option}</option>{/each}
-              </select>
-            </label>
+              <Select label="Reasoning effort" value={effort} disabled={disabled || busy}
+                options={efforts.map((option) => ({ value: option, label: option }))}
+                onchange={(next) => (effort = next)} />
+            </div>
           {:else}
             <p class="text-[12px] text-fg-3">This model has no configurable reasoning effort.</p>
           {/if}

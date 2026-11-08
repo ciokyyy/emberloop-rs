@@ -255,27 +255,6 @@ fn tool_specs() -> Vec<Value> {
             }
         },
         {
-            "name": "git",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "args": {"type": "array", "items": {"type": "string"}, "description": "Git arguments starting with the subcommand, e.g. [\"log\", \"--oneline\", \"-5\"]. Branch and tag need a list flag."},
-                    "timeout": {"type": "integer", "description": "Seconds, default 120, max 600."}
-                },
-                "required": ["args"]
-            }
-        },
-        {
-            "name": "check",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Which named check to run (default \"default\")."},
-                    "args": {"type": "string", "description": "Substituted into the command's {args} slot only."}
-                }
-            }
-        },
-        {
             "name": "ctx_search",
             "inputSchema": {
                 "type": "object",

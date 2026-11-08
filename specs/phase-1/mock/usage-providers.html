@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emberloop usage and providers prototype</title>
+<style>
+/* Prototype: Usage and Providers. One card per provider; a login flow sits inside its card.
+   Tokens from sidebar.html. Logos: @lobehub/icons-static-svg (MIT), copied into ./logos. */
+:root{
+  color-scheme:dark;
+  --s0:#212121;--s1:#2a2a2a;--s2:#2f2f2f;--s3:#383838;
+  --f1:#ececec;--f3:#9b9ba1;--f4:#6e6e73;
+  --bd:#3a3a3c;--ring:#0a84ff;--accent:#6c63ff;--ok:#3fd070;--warn:#ffb340;--failed:#ff6b63;--working:#5aa9ff;
+  --font-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
+  --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--s0);color:var(--f1);font:14px/1.4 var(--font-sans)}
+button,a,input{font:inherit;color:inherit}
+button:focus-visible,input:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
+[hidden]{display:none!important}
+
+.wrap{max-width:720px;margin:0 auto;padding:32px 16px;display:flex;flex-direction:column;gap:20px}
+.page{display:flex;align-items:flex-end;justify-content:space-between;gap:12px}
+h1{margin:0;font-size:26px;font-weight:600;letter-spacing:-.02em}
+.sub{margin:4px 0 0;font-size:13px;color:var(--f3)}
+.tabs{display:inline-flex;gap:2px;padding:3px;background:var(--s1);border:1px solid var(--bd);border-radius:10px}
+.tabs button{height:30px;padding:0 12px;border-radius:7px;color:var(--f3);font-size:13px}
+.tabs button[aria-selected="true"]{background:var(--s3);color:var(--f1)}
+
+/* Buttons: one height, three kinds. */
+.btn{height:32px;padding:0 12px;display:inline-flex;align-items:center;gap:6px;border-radius:8px;border:1px solid var(--bd);background:var(--s2);font-size:13px;font-weight:500;cursor:pointer;text-decoration:none;white-space:nowrap}
+.btn:hover{background:var(--s3)}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.pri:hover{background:#5a52e8}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--f3)}
+.btn.ghost:hover{color:var(--f1);background:var(--s2)}
+.btn.danger:hover{color:var(--failed)}
+
+.input{height:32px;padding:0 10px;border-radius:8px;border:1px solid var(--bd);background:var(--s0);font-size:13px;min-width:0}
+.chip{font-size:11px;height:20px;padding:0 8px;display:inline-flex;align-items:center;border-radius:999px;background:var(--s3);color:var(--f3)}
+.chip.ok{color:var(--ok)}
+
+/* One card per provider. */
+.card{background:var(--s1);border:1px solid var(--bd);border-radius:16px;overflow:hidden}
+.head{display:flex;align-items:center;gap:12px;padding:14px 16px}
+.head .grow{flex:1;min-width:0}
+.logo{width:32px;height:32px;flex:none;border-radius:9px;background:var(--s2);display:grid;place-items:center}
+.logo img{width:18px;height:18px}
+.logo img.mono{filter:invert(1)}
+.name{font-weight:600}
+.meta{font-size:12px;color:var(--f3)}
+.body{border-top:1px solid var(--bd);padding:14px 16px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;border-top:1px solid var(--bd)}
+.muted{color:var(--f3);font-size:13px}
+
+/* Usage */
+.big{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
+.win+.win{margin-top:14px}
+.win-top{display:flex;justify-content:space-between;font-size:13px}
+.win-top span:last-child{color:var(--f3);font-variant-numeric:tabular-nums}
+.bar{height:6px;margin-top:6px;border-radius:999px;background:var(--s3);overflow:hidden}
+.bar>i{display:block;height:100%;border-radius:999px;background:var(--ok)}
+.bar>i.warn{background:var(--warn)}
+.reset{margin-top:6px;font-size:11px;color:var(--f4)}
+
+/* Providers: flow inside card */
+.flow-title{font-weight:500;font-size:14px;display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--working);animation:p 1.2s ease-in-out infinite}
+@keyframes p{50%{opacity:.3}}
+.code{display:inline-block;margin-top:10px;padding:8px 12px;border-radius:8px;background:var(--s3);font:600 18px var(--font-mono);letter-spacing:.12em}
+.field{display:flex;gap:8px;margin-top:10px}
+.field .input{flex:1}
+.actions{display:flex;gap:8px;margin-top:12px}
+
+.add-list{list-style:none;margin:10px 0 0;padding:0;max-height:240px;overflow-y:auto}
+.add-list li{border-top:1px solid var(--bd)}
+.add-list .pick{width:100%;height:44px;display:flex;align-items:center;gap:10px;padding:0 4px;background:none;border:0;cursor:pointer;text-align:left}
+.add-list .pick:hover{background:var(--s2)}
+.add-list .field{padding:0 4px 12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="page">
+    <div>
+      <h1 id="title">Usage</h1>
+      <p class="sub" id="sub">Subscription windows and key balances.</p>
+    </div>
+    <div class="tabs" role="tablist" aria-label="Page">
+      <button role="tab" aria-selected="true" data-tab="usage">Usage</button>
+      <button role="tab" aria-selected="false" data-tab="providers">Providers</button>
+    </div>
+  </header>
+
+  <!-- USAGE -->
+  <section id="usage" style="display:flex;flex-direction:column;gap:16px">
+    <div class="card">
+      <div class="head">
+        <div class="logo"><img src="logos/claude-color.svg" alt=""></div>
+        <div class="grow"><div class="name">Claude</div><div class="meta">Subscription · Pro</div></div>
+        <span class="chip ok">Ready</span>
+      </div>
+      <div class="body">
+        <div class="win">
+          <div class="win-top"><span>5-hour</span><span>42%</span></div>
+          <div class="bar" role="progressbar" aria-label="5-hour" aria-valuenow="42" aria-valuemin="0" aria-valuemax="100"><i style="width:42%"></i></div>
+          <div class="reset">Resets 14:20</div>
+        </div>
+        <div class="win" style="margin-top:14px">
+          <div class="win-top"><span>Weekly</span><span>81%</span></div>
+          <div class="bar" role="progressbar" aria-label="Weekly" aria-valuenow="81" aria-valuemin="0" aria-valuemax="100"><i class="warn" style="width:81%"></i></div>
+          <div class="reset">Resets Mon 09:00</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="head">
+        <div class="logo"><img class="mono" src="logos/openrouter.svg" alt=""></div>
+        <div class="grow"><div class="name">OpenRouter</div><div class="meta">API key</div></div>
+        <span class="chip ok">Ready</span>
+      </div>
+      <div class="body"><div class="big">USD 12.34 <span class="muted" style="font-size:13px;font-weight:400">left</span></div></div>
+    </div>
+
+    <div class="card">
+      <div class="head">
+        <div class="logo"><img src="logos/antigravity-color.svg" alt=""></div>
+        <div class="grow"><div class="name">Antigravity</div><div class="meta">Subscription</div></div>
+        <span class="chip">Off</span>
+      </div>
+      <div class="body muted">Connect on Providers.</div>
+    </div>
+  </section>
+
+  <!-- PROVIDERS -->
+  <section id="providers" hidden style="display:flex;flex-direction:column;gap:16px">
+
+    <div class="card">
+      <div class="head">
+        <div class="logo"><img class="mono" src="logos/openrouter.svg" alt=""></div>
+        <div class="grow"><div class="name">OpenRouter</div><div class="meta">API key · Connected</div></div>
+        <button class="btn ghost danger">Remove key</button>
+      </div>
+    </div>
+
+    <!-- Login flow running: lives INSIDE the provider card -->
+    <div class="card">
+      <div class="head">
+        <div class="logo"><img class="mono" src="logos/openai.svg" alt=""></div>
+        <div class="grow"><div class="name">ChatGPT</div><div class="meta">Browser sign-in · Not connected</div></div>
+      </div>
+      <div class="body">
+        <div class="flow-title"><span class="dot"></span>Waiting for sign-in</div>
+        <div class="muted" style="margin-top:8px">Open <a href="#" style="text-decoration:underline">auth.example/device</a> and enter the code.</div>
+        <div><span class="code">ABCD-1234</span></div>
+        <div class="actions"><button class="btn">Cancel</button></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="head">
+        <div class="logo"><img src="logos/claude-color.svg" alt=""></div>
+        <div class="grow"><div class="name">Claude</div><div class="meta">Browser sign-in · Connected</div></div>
+        <button class="btn">Add account</button>
+      </div>
+      <div class="row">
+        <div><div>Work</div><div class="meta">Pro</div></div>
+        <button class="btn ghost danger">Sign out</button>
+      </div>
+    </div>
+
+    <!-- Paste step inside the card -->
+    <div class="card">
+      <div class="head">
+        <div class="logo"><img src="logos/antigravity-color.svg" alt=""></div>
+        <div class="grow"><div class="name">Antigravity</div><div class="meta">Browser sign-in · Not connected</div></div>
+      </div>
+      <div class="body">
+        <div class="muted">Paste the 127.0.0.1 address the browser opens on.</div>
+        <div class="field">
+          <input class="input" placeholder="http://127.0.0.1:…" aria-label="Callback address">
+          <button class="btn pri">Complete</button>
+        </div>
+        <div class="actions"><a class="btn" href="#">Open sign-in page</a><button class="btn">Copy link</button><button class="btn ghost">Cancel</button></div>
+      </div>
+    </div>
+
+    <!-- Harness: no login; shown for identity only -->
+    <div class="card">
+      <div class="head">
+        <div class="logo" style="color:#8b7cf6"><img class="mono" src="logos/pi.svg" alt=""></div>
+        <div class="grow"><div class="name">Pi</div><div class="meta">Harness · built in</div></div>
+        <span class="chip ok">Ready</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="head"><div class="grow"><div class="name">Add provider</div></div></div>
+      <div class="body">
+        <input class="input" style="width:100%" placeholder="Search providers" aria-label="Search providers">
+        <ul class="add-list">
+          <li><button class="pick"><span class="logo" style="width:24px;height:24px;border-radius:7px"><img src="logos/mistral-color.svg" alt="" style="width:14px;height:14px"></span>Mistral</button></li>
+          <li>
+            <button class="pick"><span class="logo" style="width:24px;height:24px;border-radius:7px"><img src="logos/deepseek-color.svg" alt="" style="width:14px;height:14px"></span>DeepSeek</button>
+            <div class="field"><input class="input" type="password" placeholder="DeepSeek API key"><button class="btn pri">Save key</button></div>
+          </li>
+          <li><button class="pick"><span class="logo" style="width:24px;height:24px;border-radius:7px"><img class="mono" src="logos/xai.svg" alt="" style="width:14px;height:14px"></span>xAI</button></li>
+        </ul>
+      </div>
+    </div>
+
+  </section>
+
+</div>
+<script>
+  const tabs = document.querySelectorAll('[data-tab]');
+  const titles = { usage: ['Usage', 'Subscription windows and key balances.'], providers: ['Providers', 'Credentials stay in the daemon.'] };
+  tabs.forEach((tab) => tab.addEventListener('click', () => {
+    tabs.forEach((t) => t.setAttribute('aria-selected', String(t === tab)));
+    for (const id of ['usage', 'providers']) document.getElementById(id).hidden = id !== tab.dataset.tab;
+    document.getElementById('title').textContent = titles[tab.dataset.tab][0];
+    document.getElementById('sub').textContent = titles[tab.dataset.tab][1];
+  }));
+</script>
+</body>
+</html>

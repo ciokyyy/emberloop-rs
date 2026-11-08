@@ -100,6 +100,12 @@
     </section>
 
     <section class="flex flex-col gap-3">
+      <h3 class="text-[1.0625rem] font-semibold">New Sessions</h3>
+      <ModelPicker label="Default model" {models} value={settings.default_model}
+        onchange={(default_model) => onsave({ ...settings, default_model })} />
+    </section>
+
+    <section class="flex flex-col gap-3">
       <h3 class="text-[1.0625rem] font-semibold">Session titles</h3>
       <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
         <label class="flex items-center justify-between gap-4">

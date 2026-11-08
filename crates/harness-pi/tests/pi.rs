@@ -20,7 +20,6 @@ fn wiring() -> HarnessWiring {
         thought_level: None,
         resume_token: None,
         workdir: None,
-        system_prompt: None,
     }
 }
 

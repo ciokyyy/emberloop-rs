@@ -4,6 +4,7 @@
   import type { Model, Project } from '$lib/api/types';
   import Button from './ui/button.svelte';
   import ModelPicker from './ModelPicker.svelte';
+  import Select from './Select.svelte';
 
   let {
     open = $bindable(false),
@@ -11,18 +12,17 @@
     // Asking for a new Project by path only: no Project list.
     newProject = false,
     models = [],
-    defaultLevel = 'full',
+    defaultModel = '',
     oncreate
   }: {
     open?: boolean;
     projects: Project[];
     newProject?: boolean;
     models?: Model[];
-    defaultLevel?: string;
+    defaultModel?: string;
     oncreate: (input: {
       projectId?: string;
       root?: string;
-      ponytailLevel: string;
       model?: string;
       thoughtLevel?: string;
     }) => Promise<void> | void;
@@ -30,7 +30,6 @@
 
   let projectId = $state('');
   let root = $state('');
-  let level = $state('full');
   let model = $state('');
   let effort = $state('');
   const efforts = $derived(models.find((entry) => entry.id === model)?.efforts ?? []);
@@ -38,14 +37,11 @@
   let error = $state('');
   let busy = $state(false);
 
-  const levels = ['off', 'lite', 'full', 'ultra'];
-
   $effect(() => {
     if (open) {
       projectId = projects[0]?.id ?? '';
       root = '';
-      level = defaultLevel;
-      model = models[0]?.id ?? '';
+      model = models.some((entry) => entry.id === defaultModel) ? defaultModel : models[0]?.id ?? '';
       error = '';
     }
   });
@@ -67,7 +63,6 @@
       await oncreate({
         projectId: targetProject,
         root: root.trim() || undefined,
-        ponytailLevel: level,
         model: model || undefined,
         thoughtLevel: effort || undefined
       });
@@ -103,14 +98,12 @@
 
       <form class="flex flex-col gap-4" onsubmit={submit}>
         {#if projects.length && !newProject}
-          <label class="flex flex-col gap-1.5 text-[13px] text-fg-3">
+          <div class="flex flex-col gap-1.5 text-[13px] text-fg-3">
             Project
-            <select class="field" bind:value={projectId} disabled={!!root.trim()}>
-              {#each projects as project (project.id)}
-                <option value={project.id}>{project.name} — {project.root}</option>
-              {/each}
-            </select>
-          </label>
+            <Select label="Project" value={projectId} disabled={!!root.trim()}
+              options={projects.map((project) => ({ value: project.id, label: `${project.name} — ${project.root}` }))}
+              onchange={(next) => (projectId = next)} />
+          </div>
         {/if}
 
         <label class="flex flex-col gap-1.5 text-[13px] text-fg-3">
@@ -121,24 +114,12 @@
         {#if !newProject}
         <ModelPicker searchable {models} bind:value={model} />
         {#if efforts.length}
-          <label class="flex flex-col gap-1.5 text-[12px] text-fg-3">
+          <div class="flex flex-col gap-1.5 text-[12px] text-fg-3">
             Reasoning effort
-            <select class="field" bind:value={effort}>
-              {#each efforts as option (option)}<option value={option}>{option}</option>{/each}
-            </select>
-          </label>
-        {/if}
-
-        <div class="flex flex-col gap-1.5 text-[13px] text-fg-3">
-          Ponytail level
-          <div class="seg self-start">
-            {#each levels as option (option)}
-              <button type="button" aria-pressed={level === option} onclick={() => (level = option)}>
-                {option}
-              </button>
-            {/each}
+            <Select label="Reasoning effort" value={effort} options={efforts.map((option) => ({ value: option, label: option }))}
+              onchange={(next) => (effort = next)} />
           </div>
-        </div>
+        {/if}
 
         {/if}
 

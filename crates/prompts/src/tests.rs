@@ -46,8 +46,6 @@ const OFFERED_TOOLS: &[&str] = &[
     "find",
     "todo",
     "websearch",
-    "git",
-    "check",
     "ctx_search",
     "execute",
 ];
@@ -110,6 +108,16 @@ fn backticked_identifiers_in_model_text_name_a_real_tool_or_argument() {
 fn search_before_decompress_is_stated_only_in_policy() {
     assert!(default_text(POLICY).contains("Call `search_context` before `decompress`"));
     assert!(!default_text(SEARCH_CONTEXT).contains("before decompress"));
+}
+
+#[test]
+fn policy_says_system_prompts_and_reminders_never_fold() {
+    let policy = default_text(POLICY);
+    assert!(
+        policy.contains("System prompts and `<system-reminder>` content never fold"),
+        "the policy states the protected-content rule"
+    );
+    assert!(policy.contains("a range that includes them is refused"));
 }
 
 #[test]

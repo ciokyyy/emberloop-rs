@@ -4,12 +4,14 @@
 pub mod parser;
 
 use async_trait::async_trait;
-use harness::{EventStream, Harness, HarnessError, HarnessSession, HarnessWiring, PromptImage};
+use harness::{
+    EventStream, Harness, HarnessError, HarnessEvent, HarnessSession, HarnessWiring, PromptImage,
+};
 use parser::Output;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -18,6 +20,8 @@ use tokio::time::{timeout, Duration};
 
 /// A CLI that never reaches `system/init` is a broken launch, not a slow one.
 const INIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// A killed CLI stops writing to stderr within moments; its readers never delay a turn for long.
+const STDERR_DRAIN: Duration = Duration::from_millis(500);
 /// The thinking levels `--effort` accepts; `off` and anything else means no flag.
 const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 /// Every built-in the recorded `system/init` lists, plus the ones older CLIs had.
@@ -51,6 +55,58 @@ const DENIED_TOOLS: &[&str] = &[
     "Write",
 ];
 
+/// Inline settings passed with `--settings`; the CLI applies them above the user file.
+/// The away recap is a background model call, so it stays off.
+const CLI_INLINE_SETTINGS: &str = r#"{"awaySummaryEnabled":false}"#;
+/// Every variable the child env carries besides the paths, proxy and credentials.
+/// Each one stops a feature that adds text to the model context, makes an extra model
+/// call, or sends background traffic; the proxy owns the context, so none of them may run.
+const CLI_DISABLING_ENV: &[(&str, &str)] = &[
+    // Load every MCP tool up front: deferred tools cost a ToolSearch round trip (a model call).
+    ("ENABLE_TOOL_SEARCH", "false"),
+    // No memory files are read or written into the context.
+    ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+    // CLAUDE.md files (user, project, auto memory) are never injected: the proxy owns the policy text.
+    ("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1"),
+    // Drops the built-in commit and PR instructions and the git status snapshot.
+    ("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS", "1"),
+    // Not NONESSENTIAL_TRAFFIC: it would also stop the CLI's auto-update, which stays on.
+    // Feedback surveys, the /feedback command and Claude-drafted feedback.
+    ("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY", "1"),
+    ("DISABLE_FEEDBACK_COMMAND", "1"),
+    ("CLAUDE_CODE_SEND_FEEDBACK", "0"),
+    // Feature-flag fetching: code defaults for every flag.
+    ("DISABLE_GROWTHBOOK", "1"),
+    // No automatic plugin marketplace registration.
+    ("CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL", "1"),
+    // No run_in_background and no background runs that report back in a later turn.
+    ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1"),
+    // A slow MCP call is never moved to a background task that reports back later.
+    ("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS", "0"),
+    // No session recap model call when the user comes back to the terminal.
+    ("CLAUDE_CODE_ENABLE_AWAY_SUMMARY", "0"),
+    // Prompt suggestions are a model call per turn; the CLI form of the SDK promptSuggestions=false.
+    ("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false"),
+    // Skips the background small-model request that generates a session title.
+    ("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1"),
+    ("DISABLE_TELEMETRY", "1"),
+    ("DISABLE_ERROR_REPORTING", "1"),
+    // Skill, workflow, agent view and cron listings are not put in the context.
+    ("CLAUDE_CODE_DISABLE_BUNDLED_SKILLS", "1"),
+    ("CLAUDE_CODE_DISABLE_WORKFLOWS", "1"),
+    ("CLAUDE_CODE_DISABLE_AGENT_VIEW", "1"),
+    ("CLAUDE_CODE_DISABLE_CRON", "1"),
+    // Checkpoints are bookkeeping the stripped tool set cannot use.
+    ("CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING", "1"),
+    // The proxy owns context: the CLI's own compaction is off (automatic, idle and manual).
+    ("DISABLE_COMPACT", "1"),
+    ("DISABLE_AUTO_COMPACT", "1"),
+    // Stops fetching claude.ai connectors, whose tools would otherwise join the context.
+    ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
+];
+
+/// The hosts the CLI must reach without a proxy: the daemon's own loopback.
+const LOOPBACK: &str = "127.0.0.1,localhost";
 const DEFAULT_MODEL: &str = "sonnet";
 const MCP_SERVER: &str = "el";
 /// The Account home the sign-in writes; every Session copies its credential from it.
@@ -93,7 +149,6 @@ impl ClaudeHarness {
     fn launch(&self, session_id: &str, wiring: &HarnessWiring) -> Result<Launch, HarnessError> {
         let config_dir = self.homes.join(session_id);
         std::fs::create_dir_all(&config_dir)?;
-        seed_account(&self.homes.join(ACCOUNT_HOME), &config_dir);
         let cwd = match &wiring.workdir {
             Some(dir) => {
                 std::fs::create_dir_all(dir)?;
@@ -113,10 +168,11 @@ impl ClaudeHarness {
             "stream-json",
             "--verbose",
             "--include-partial-messages",
+            "--replay-user-messages",
             "--setting-sources",
             "user",
             "--permission-mode",
-            "bypassPermissions",
+            "dontAsk",
             "--permission-prompts",
             "none",
             "--allowedTools",
@@ -129,10 +185,8 @@ impl ClaudeHarness {
         .map(|arg| arg.to_string())
         .collect();
         args.push(DENIED_TOOLS.join(","));
-        if let Some(prompt) = &wiring.system_prompt {
-            args.push("--system-prompt".into());
-            args.push(prompt.clone());
-        }
+        args.push("--settings".into());
+        args.push(CLI_INLINE_SETTINGS.into());
         args.push("--model".into());
         args.push(self.model_for(wiring));
         if let Some(effort) = wiring
@@ -155,6 +209,18 @@ impl ClaudeHarness {
         // The owned config dir is the login; nothing of the User's home is read.
         env.push(("HOME".into(), config_dir.display().to_string()));
         env.push(("CLAUDE_CONFIG_DIR".into(), config_dir.display().to_string()));
+        // The proxy's `claude` route forwards the CLI's own Authorization header upstream.
+        env.push((
+            "ANTHROPIC_BASE_URL".into(),
+            format!("{}/claude", wiring.proxy_url.trim_end_matches('/')),
+        ));
+        // The proxy is loopback; an inherited proxy setting must never carry it.
+        for key in ["NO_PROXY", "no_proxy"] {
+            env.push((key.into(), LOOPBACK.into()));
+        }
+        for (key, value) in CLI_DISABLING_ENV {
+            env.push(((*key).into(), (*value).into()));
+        }
         for (key, value) in &wiring.env {
             env.push((key.clone(), value.clone()));
         }
@@ -163,6 +229,10 @@ impl ClaudeHarness {
             args,
             env,
             cwd,
+            sync: Syncer {
+                account_home: self.homes.join(ACCOUNT_HOME),
+                config_dir: config_dir.clone(),
+            },
             config_dir,
         })
     }
@@ -174,25 +244,99 @@ struct Launch {
     env: Vec<(String, String)>,
     cwd: PathBuf,
     config_dir: PathBuf,
+    sync: Syncer,
 }
 
-/// Our MCP server alone: `el` over stdio, or the same name over HTTP.
-/// Copies the Account credential into a Session home that has none yet, so a
-/// logged-in Account serves every Session without sharing their transcripts.
-fn seed_account(account_home: &Path, config_dir: &Path) {
-    for name in [".credentials.json", ".claude.json"] {
-        let target = config_dir.join(name);
-        if !target.exists() {
-            let _ = std::fs::copy(account_home.join(name), &target);
-        }
+/// The Account home and one Session home, whose credentials are kept in step.
+#[derive(Clone)]
+struct Syncer {
+    account_home: PathBuf,
+    config_dir: PathBuf,
+}
+
+impl Syncer {
+    /// The file work is blocking, so it runs off the async workers.
+    async fn run(&self) {
+        let syncer = self.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            sync_account(&syncer.account_home, &syncer.config_dir);
+        })
+        .await;
     }
+}
+
+const CREDENTIALS: &str = ".credentials.json";
+const CLAUDE_JSON: &str = ".claude.json";
+
+/// Keeps the Account's credential and this Session's in step. The CLI rotates OAuth refresh
+/// tokens, so the copy that expires later is the live one and is copied over the other.
+/// `.claude.json` is only seeded. Best effort: a failure leaves the files as they were.
+fn sync_account(account_home: &Path, config_dir: &Path) {
+    sync_credentials(
+        &account_home.join(CREDENTIALS),
+        &config_dir.join(CREDENTIALS),
+    );
+    let claude_json = config_dir.join(CLAUDE_JSON);
+    if !claude_json.exists() {
+        let _ = std::fs::copy(account_home.join(CLAUDE_JSON), &claude_json);
+    }
+}
+
+fn sync_credentials(account: &Path, session: &Path) {
+    let (account_at, session_at) = (expires_at(account), expires_at(session));
+    if account_at > session_at {
+        let _ = install(account, session);
+    } else if session_at > account_at {
+        let _ = install(session, account);
+    }
+}
+
+/// The `claudeAiOauth.expiresAt` of a credential file in ms; 0 when it holds no usable credential.
+fn expires_at(path: &Path) -> f64 {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value["claudeAiOauth"]["expiresAt"].as_f64())
+        .filter(|at| at.is_finite() && *at > 0.0)
+        .unwrap_or(0.0)
+}
+
+/// Copies `from` over `to` through a private temp file beside it, renamed into place, so a
+/// reader never sees a half-written credential.
+fn install(from: &Path, to: &Path) -> std::io::Result<()> {
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let name = to
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let tmp = to.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let written = copy_private(from, &tmp).and_then(|()| std::fs::rename(&tmp, to));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// Created 0600 from the start, so the token is never readable by others, not even briefly.
+fn copy_private(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(to)?;
+    std::io::copy(&mut std::fs::File::open(from)?, &mut out)?;
+    Ok(())
 }
 
 fn mcp_config(wiring: &HarnessWiring) -> Option<String> {
     let server = match (&wiring.mcp_url, &wiring.mcp_command) {
-        (Some(url), _) => json!({"type": "http", "url": url}),
+        (Some(url), _) => json!({"type": "http", "url": url, "alwaysLoad": true}),
         (None, Some(command)) if !command.is_empty() => {
-            json!({"command": command[0], "args": &command[1..]})
+            json!({"command": command[0], "args": &command[1..], "alwaysLoad": true})
         }
         _ => return None,
     };
@@ -220,6 +364,14 @@ struct Process {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     resume: Option<String>,
+    init: Option<oneshot::Receiver<Result<(), String>>>,
+    /// Set by this process's stdout reader at EOF, which comes before `try_wait` sees the exit.
+    gone: Arc<AtomicBool>,
+    /// Set by `cancel` on this process: the CLI may report the interrupted turn as an error and
+    /// exit, and the user asked for that. The next message starts a new process (resumed), so the
+    /// old one's late error or EOF is still silenced.
+    cancelled: Arc<AtomicBool>,
+    stderr: Option<tokio::task::JoinHandle<()>>,
 }
 
 pub struct ClaudeSession {
@@ -227,6 +379,12 @@ pub struct ClaudeSession {
     state: Mutex<Process>,
     /// The CLI's own id for this conversation, filled by `system/init`.
     session_id: Arc<StdMutex<Option<String>>>,
+    /// The last thing the CLI wrote to stderr: the only place it says why a start failed.
+    tail: Arc<StdMutex<String>>,
+    /// Messages written that the CLI has not taken yet. One sent mid-turn is folded into the turn
+    /// at a tool boundary (one `result`) or waits and runs as a second turn (two), so a `result`
+    /// is the end of the work only when nothing is waiting.
+    waiting: Arc<AtomicUsize>,
     resumed: AtomicBool,
     tx: mpsc::UnboundedSender<harness::HarnessEvent>,
     rx: StdMutex<Option<mpsc::UnboundedReceiver<harness::HarnessEvent>>>,
@@ -240,26 +398,40 @@ impl ClaudeSession {
             state: Mutex::new(Process {
                 child: None,
                 stdin: None,
-                resume,
+                init: None,
+                gone: Arc::new(AtomicBool::new(false)),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                stderr: None,
+                resume: resume.clone(),
             }),
-            session_id: Arc::new(StdMutex::new(None)),
+            session_id: Arc::new(StdMutex::new(resume)),
+            tail: Arc::new(StdMutex::new(String::new())),
+            waiting: Arc::new(AtomicUsize::new(0)),
             resumed: AtomicBool::new(false),
             tx,
             rx: StdMutex::new(Some(rx)),
         }
     }
 
-    /// Start the CLI if it is not alive and wait for `system/init`; refuse a Session
-    /// whose `el` MCP server did not connect.
+    // The CLI emits system/init only after its first user message.
     async fn ensure(&self) -> Result<(), HarnessError> {
         let mut state = self.state.lock().await;
+        let gone = state.gone.load(Ordering::SeqCst);
+        let interrupted = state.cancelled.load(Ordering::SeqCst);
         if let Some(child) = state.child.as_mut() {
-            if child.try_wait()?.is_none() {
+            if !gone && !interrupted && child.try_wait()?.is_none() {
                 return Ok(());
+            }
+            // A cancelled process may be on its way out and would swallow the next message, so
+            // the conversation resumes in a new one.
+            if interrupted {
+                let _ = child.kill().await;
             }
             state.child = None;
             state.stdin = None;
         }
+        // Every spawn and respawn starts from the fresher of the Account's and the Session's credential.
+        self.launch.sync.run().await;
         // A crash inside a turn resumes the conversation this process already had.
         let token = state.resume.clone().or_else(|| {
             self.session_id
@@ -279,8 +451,9 @@ impl ClaudeSession {
             .current_dir(&self.launch.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            // `env_clear` keeps `ANTHROPIC_BASE_URL` and any inherited token out.
+            .kill_on_drop(true)
+            .stderr(Stdio::piped())
+            // `env_clear` keeps any inherited token or base URL out; `launch.env` is the allow-list.
             .env_clear();
         for (key, value) in &self.launch.env {
             command.env(key, value);
@@ -296,21 +469,33 @@ impl ClaudeSession {
             .stdout
             .take()
             .ok_or_else(|| HarnessError::Process("claude: no stdout".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| HarnessError::Process("claude: no stderr".into()))?;
         let (init_tx, init_rx) = oneshot::channel();
+        let gone = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.waiting.store(0, Ordering::SeqCst);
         tokio::spawn(read_stream(
             stdout,
-            Arc::clone(&self.session_id),
-            self.tx.clone(),
-            init_tx,
+            Reader {
+                session_id: Arc::clone(&self.session_id),
+                tx: self.tx.clone(),
+                init: Some(init_tx),
+                gone: Arc::clone(&gone),
+                waiting: Arc::clone(&self.waiting),
+                cancelled: Arc::clone(&cancelled),
+                sync: self.launch.sync.clone(),
+            },
         ));
-        match timeout(INIT_TIMEOUT, init_rx).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(error))) => return Err(HarnessError::Protocol(error)),
-            Ok(Err(_)) => {
-                return Err(HarnessError::Process("claude exited before init".into()));
-            }
-            Err(_) => return Err(HarnessError::Process("claude did not init".into())),
+        if let Some(task) = state.stderr.take() {
+            task.abort();
         }
+        state.stderr = Some(tokio::spawn(read_tail(stderr, Arc::clone(&self.tail))));
+        state.init = Some(init_rx);
+        state.gone = gone;
+        state.cancelled = cancelled;
         self.resumed.store(token.is_some(), Ordering::SeqCst);
         state.child = Some(child);
         state.stdin = Some(stdin);
@@ -319,40 +504,143 @@ impl ClaudeSession {
 
     async fn write(&self, line: String) -> Result<(), HarnessError> {
         self.ensure().await?;
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        let written = self.write_line(line).await;
+        if written.is_err() {
+            let _ = self
+                .waiting
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+        }
+        written
+    }
+
+    async fn write_line(&self, line: String) -> Result<(), HarnessError> {
         let mut state = self.state.lock().await;
         let stdin = state
             .stdin
             .as_mut()
             .ok_or_else(|| HarnessError::Process("claude: stdin closed".into()))?;
-        stdin.write_all(line.as_bytes()).await?;
-        stdin.flush().await?;
-        Ok(())
+        let written = match stdin.write_all(line.as_bytes()).await {
+            Ok(()) => stdin.flush().await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = written {
+            if error.kind() != std::io::ErrorKind::BrokenPipe {
+                return Err(error.into());
+            }
+            // The CLI usually says why it is gone before the pipe breaks; that beats the pipe.
+            let Some(init) = state.init.take() else {
+                return Err(error.into());
+            };
+            return match timeout(STDERR_DRAIN, init).await {
+                Ok(Ok(Err(failure))) => Err(self.with_tail(HarnessError::Protocol(failure))),
+                Ok(Err(_)) => {
+                    Err(self.with_tail(HarnessError::Process("claude exited before init".into())))
+                }
+                // Still alive and silent: report the pipe itself.
+                Ok(Ok(Ok(()))) | Err(_) => Err(error.into()),
+            };
+        }
+        let Some(init) = state.init.take() else {
+            return Ok(());
+        };
+        let failure = match timeout(INIT_TIMEOUT, init).await {
+            Ok(Ok(Ok(()))) => return Ok(()),
+            Ok(Ok(Err(error))) => HarnessError::Protocol(error),
+            Ok(Err(_)) => HarnessError::Process("claude exited before init".into()),
+            Err(_) => HarnessError::Process("claude did not init".into()),
+        };
+        state.stdin = None;
+        if let Some(mut child) = state.child.take() {
+            let _ = child.kill().await;
+        }
+        // The CLI's stderr says why it never started, so drain it before giving up on it.
+        if let Some(task) = state.stderr.take() {
+            let _ = timeout(STDERR_DRAIN, task).await;
+        }
+        Err(self.with_tail(failure))
+    }
+
+    fn with_tail(&self, error: HarnessError) -> HarnessError {
+        let tail = self
+            .tail
+            .lock()
+            .map(|tail| tail.clone())
+            .unwrap_or_default();
+        if tail.is_empty() {
+            error
+        } else {
+            HarnessError::Process(format!("{error}: {tail}"))
+        }
     }
 }
 
-/// Every line the CLI prints; `system/init` answers the spawn, the rest becomes events.
-async fn read_stream(
-    stdout: tokio::process::ChildStdout,
+/// What the reader shares with its Session and Process, and the credential sync it runs at each turn end.
+struct Reader {
     session_id: Arc<StdMutex<Option<String>>>,
     tx: mpsc::UnboundedSender<harness::HarnessEvent>,
-    init: oneshot::Sender<Result<(), String>>,
-) {
-    let mut init = Some(init);
+    init: Option<oneshot::Sender<Result<(), String>>>,
+    gone: Arc<AtomicBool>,
+    waiting: Arc<AtomicUsize>,
+    cancelled: Arc<AtomicBool>,
+    sync: Syncer,
+}
+
+/// Every line the CLI prints; `system/init` answers the spawn, the rest becomes events.
+async fn read_stream(stdout: tokio::process::ChildStdout, mut reader: Reader) {
     let mut lines = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         for output in parser::parse_line(&line) {
-            match output {
-                Output::Init(found) => accept_init(found, &mut init, &session_id),
-                Output::Event(event) => {
-                    let _ = tx.send(event);
+            reader.handle(output).await;
+        }
+    }
+    reader.finish();
+}
+
+impl Reader {
+    async fn handle(&mut self, output: Output) {
+        match output {
+            Output::Init(found) => accept_init(found, &mut self.init, &self.session_id),
+            Output::Consumed => {
+                let _ = self
+                    .waiting
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+            }
+            Output::Event(HarnessEvent::TurnFinished { .. })
+                if self.waiting.load(Ordering::SeqCst) > 0 => {}
+            Output::Event(HarnessEvent::Error(_)) if self.cancelled.load(Ordering::SeqCst) => {}
+            Output::Event(event) => {
+                // Synced before the event goes out, so a consumer of the turn end sees the copies.
+                if matches!(event, HarnessEvent::TurnFinished { .. }) {
+                    self.sync.run().await;
                 }
+                let _ = self.tx.send(event);
             }
         }
     }
-    if let Some(tx) = init.take() {
-        let _ = tx.send(Err("claude exited before init".into()));
+
+    /// The stream ended: the process is gone, and a start still waiting for init fails.
+    fn finish(mut self) {
+        if let Some(tx) = self.init.take() {
+            let _ = tx.send(Err("claude exited before init".into()));
+        }
+        self.gone.store(true, Ordering::SeqCst);
+        if !self.cancelled.load(Ordering::SeqCst) {
+            let _ = self.tx.send(HarnessEvent::Error("claude exited".into()));
+        }
     }
-    let _ = tx.send(harness::HarnessEvent::Error("claude exited".into()));
+}
+
+/// Keep the last thing the CLI complained about: a failed start has no other witness.
+async fn read_tail(stderr: tokio::process::ChildStderr, tail: Arc<StdMutex<String>>) {
+    let mut lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if !line.trim().is_empty() {
+            if let Ok(mut slot) = tail.lock() {
+                *slot = line;
+            }
+        }
+    }
 }
 
 /// `system/init` answers the spawn and carries the token a crash resumes with.
@@ -408,7 +696,9 @@ impl HarnessSession for ClaudeSession {
 
     /// SIGINT ends the turn (documented) and leaves the process usable.
     async fn cancel(&self) -> Result<(), HarnessError> {
+        self.waiting.store(0, Ordering::SeqCst);
         let mut state = self.state.lock().await;
+        state.cancelled.store(true, Ordering::SeqCst);
         if let Some(pid) = state.child.as_mut().and_then(|child| child.id()) {
             // SAFETY: `pid` is our live child; SIGINT only ends its current turn.
             unsafe {
@@ -466,7 +756,6 @@ fn remove_transcript(dir: &Path, token: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness::HarnessEvent;
 
     fn wiring() -> HarnessWiring {
         HarnessWiring {
@@ -474,7 +763,6 @@ mod tests {
             mcp_url: None,
             mcp_command: Some(vec!["emberloop".into(), "mcp".into()]),
             env: Vec::new(),
-            system_prompt: None,
             model: Some("claude/opus".into()),
             thought_level: Some("high".into()),
             resume_token: None,
@@ -508,10 +796,11 @@ mod tests {
                 "stream-json",
                 "--verbose",
                 "--include-partial-messages",
+                "--replay-user-messages",
                 "--setting-sources",
                 "user",
                 "--permission-mode",
-                "bypassPermissions",
+                "dontAsk",
                 "--permission-prompts",
                 "none",
                 "--allowedTools",
@@ -520,6 +809,8 @@ mod tests {
                 "",
                 "--disallowedTools",
                 &DENIED_TOOLS.join(","),
+                "--settings",
+                r#"{"awaySummaryEnabled":false}"#,
                 "--model",
                 "opus",
                 "--effort",
@@ -532,21 +823,69 @@ mod tests {
         let config: serde_json::Value =
             serde_json::from_str(&launch.args[launch.args.len() - 1]).unwrap();
         assert_eq!(config["mcpServers"]["el"]["command"], "emberloop");
+        // Our tools are never deferred behind tool search.
+        assert_eq!(config["mcpServers"]["el"]["alwaysLoad"], true);
         let env: Vec<&str> = launch.env.iter().map(|(key, _)| key.as_str()).collect();
-        assert!(!env.contains(&"ANTHROPIC_BASE_URL"));
+        assert!(launch.env.contains(&(
+            "ANTHROPIC_BASE_URL".to_string(),
+            "http://127.0.0.1:9/proxy/tok/claude".to_string(),
+        )));
         assert!(!env.iter().any(|key| key.contains("TOKEN")));
         assert!(launch.env.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"));
     }
 
     #[test]
-    fn a_system_prompt_is_passed_through_untouched() {
+    fn the_cli_env_is_an_allow_list_that_bypasses_any_proxy_for_loopback() {
         let dir = tempfile::tempdir().unwrap();
-        let mut wiring = wiring();
-        wiring.system_prompt = Some("the one policy text".into());
-        let launch = harness(dir.path()).launch("s1", &wiring).unwrap();
-        let at = launch.args.iter().position(|arg| arg == "--system-prompt");
-        let at = at.unwrap();
-        assert_eq!(launch.args[at + 1], "the one policy text");
+        let launch = harness(dir.path()).launch("s1", &wiring()).unwrap();
+        let mut keys: Vec<&str> = launch.env.iter().map(|(key, _)| key.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_DISABLE_AGENT_VIEW",
+                "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+                "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+                "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS",
+                "CLAUDE_CODE_DISABLE_CLAUDE_MDS",
+                "CLAUDE_CODE_DISABLE_CRON",
+                "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+                "CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING",
+                "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS",
+                "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL",
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE",
+                "CLAUDE_CODE_DISABLE_WORKFLOWS",
+                "CLAUDE_CODE_ENABLE_AWAY_SUMMARY",
+                "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
+                "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS",
+                "CLAUDE_CODE_SEND_FEEDBACK",
+                "CLAUDE_CONFIG_DIR",
+                "DISABLE_AUTO_COMPACT",
+                "DISABLE_COMPACT",
+                "DISABLE_ERROR_REPORTING",
+                "DISABLE_FEEDBACK_COMMAND",
+                "DISABLE_GROWTHBOOK",
+                "DISABLE_TELEMETRY",
+                "ENABLE_CLAUDEAI_MCP_SERVERS",
+                "ENABLE_TOOL_SEARCH",
+                "HOME",
+                "NO_PROXY",
+                "PATH",
+                "no_proxy"
+            ]
+        );
+        for key in ["NO_PROXY", "no_proxy"] {
+            let value = launch.env.iter().find(|(name, _)| name == key);
+            assert_eq!(value.map(|(_, v)| v.as_str()), Some("127.0.0.1,localhost"));
+        }
+    }
+
+    #[test]
+    fn the_system_text_comes_from_the_proxy_never_the_command_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = harness(dir.path()).launch("s1", &wiring()).unwrap();
+        assert!(!launch.args.iter().any(|arg| arg.starts_with("--system")));
     }
 
     #[test]
@@ -556,6 +895,49 @@ mod tests {
         wiring.thought_level = Some("off".into());
         let launch = harness(dir.path()).launch("s1", &wiring).unwrap();
         assert!(!launch.args.iter().any(|arg| arg == "--effort"));
+    }
+
+    #[test]
+    fn the_cli_auto_compaction_is_disabled_for_every_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = harness(dir.path()).launch("s1", &wiring()).unwrap();
+        for key in ["DISABLE_AUTO_COMPACT", "DISABLE_COMPACT"] {
+            assert!(
+                launch.env.contains(&(key.to_string(), "1".to_string())),
+                "{key} is not set to 1"
+            );
+        }
+    }
+
+    #[test]
+    fn every_disabling_variable_reaches_the_child_env_with_its_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = harness(dir.path()).launch("s1", &wiring()).unwrap();
+        for (key, value) in CLI_DISABLING_ENV {
+            assert!(
+                launch.env.contains(&(key.to_string(), value.to_string())),
+                "{key} is not set to {value} in the child env"
+            );
+        }
+    }
+
+    #[test]
+    fn the_inline_settings_turn_the_away_summary_off_for_user_only_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = harness(dir.path()).launch("s1", &wiring()).unwrap();
+        let position = launch
+            .args
+            .iter()
+            .position(|arg| arg == "--settings")
+            .unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&launch.args[position + 1]).unwrap();
+        assert_eq!(settings, json!({"awaySummaryEnabled": false}));
+        let sources = launch
+            .args
+            .iter()
+            .position(|arg| arg == "--setting-sources")
+            .unwrap();
+        assert_eq!(launch.args[sources + 1], "user");
     }
 
     #[test]
@@ -581,7 +963,7 @@ mod tests {
             .flat_map(parser::parse_line)
             .filter_map(|output| match output {
                 Output::Event(event) => Some(event),
-                Output::Init(_) => None,
+                Output::Init(_) | Output::Consumed => None,
             })
             .collect();
         assert_eq!(
@@ -606,6 +988,12 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_replayed_user_message_is_the_cli_taking_it() {
+        let taken = r#"{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#;
+        assert_eq!(parser::parse_line(taken), vec![Output::Consumed]);
     }
 
     #[test]
@@ -655,5 +1043,144 @@ mod tests {
         assert_eq!(value["type"], "user");
         assert_eq!(value["message"]["content"][0]["text"], "hi");
         assert_eq!(value["message"]["content"][1]["type"], "image");
+    }
+
+    fn creds(token: &str, expires_at: u64) -> String {
+        json!({"claudeAiOauth": {"accessToken": token, "refreshToken": "r", "expiresAt": expires_at}})
+            .to_string()
+    }
+
+    /// An Account home and a Session home, both existing, under one tempdir.
+    fn homes() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let account = dir.path().join("default");
+        let session = dir.path().join("s1");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::create_dir_all(&session).unwrap();
+        (dir, account, session)
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_missing_session_credential_is_seeded_from_the_account() {
+        let (_dir, account, session) = homes();
+        std::fs::write(account.join(CREDENTIALS), creds("acc", 1000)).unwrap();
+        sync_account(&account, &session);
+        assert_eq!(read(&session.join(CREDENTIALS)), creds("acc", 1000));
+    }
+
+    #[test]
+    fn a_newer_account_credential_replaces_the_session_copy() {
+        let (_dir, account, session) = homes();
+        std::fs::write(account.join(CREDENTIALS), creds("acc", 2000)).unwrap();
+        std::fs::write(session.join(CREDENTIALS), creds("ses", 1000)).unwrap();
+        sync_account(&account, &session);
+        assert_eq!(read(&session.join(CREDENTIALS)), creds("acc", 2000));
+        assert_eq!(read(&account.join(CREDENTIALS)), creds("acc", 2000));
+    }
+
+    #[test]
+    fn a_newer_session_credential_is_pushed_back_to_the_account() {
+        let (_dir, account, session) = homes();
+        std::fs::write(account.join(CREDENTIALS), creds("acc", 1000)).unwrap();
+        std::fs::write(session.join(CREDENTIALS), creds("ses", 2000)).unwrap();
+        sync_account(&account, &session);
+        assert_eq!(read(&account.join(CREDENTIALS)), creds("ses", 2000));
+    }
+
+    #[test]
+    fn a_session_credential_creates_a_missing_account_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = dir.path().join("default");
+        let session = dir.path().join("s1");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join(CREDENTIALS), creds("ses", 2000)).unwrap();
+        sync_account(&account, &session);
+        assert_eq!(read(&account.join(CREDENTIALS)), creds("ses", 2000));
+    }
+
+    #[test]
+    fn equal_expiry_leaves_both_files_alone() {
+        let (_dir, account, session) = homes();
+        std::fs::write(account.join(CREDENTIALS), creds("acc", 1000)).unwrap();
+        std::fs::write(session.join(CREDENTIALS), creds("ses", 1000)).unwrap();
+        sync_account(&account, &session);
+        assert_eq!(read(&account.join(CREDENTIALS)), creds("acc", 1000));
+        assert_eq!(read(&session.join(CREDENTIALS)), creds("ses", 1000));
+    }
+
+    #[test]
+    fn an_unreadable_session_file_never_overwrites_the_account() {
+        let (_dir, account, session) = homes();
+        std::fs::write(account.join(CREDENTIALS), creds("acc", 1000)).unwrap();
+        std::fs::write(session.join(CREDENTIALS), "not json {").unwrap();
+        sync_account(&account, &session);
+        assert_eq!(read(&account.join(CREDENTIALS)), creds("acc", 1000));
+        assert_eq!(read(&session.join(CREDENTIALS)), creds("acc", 1000));
+    }
+
+    #[test]
+    fn an_unreadable_account_file_is_replaced_by_the_session_copy() {
+        let (_dir, account, session) = homes();
+        std::fs::write(account.join(CREDENTIALS), "{}").unwrap();
+        std::fs::write(session.join(CREDENTIALS), creds("ses", 1000)).unwrap();
+        sync_account(&account, &session);
+        assert_eq!(read(&account.join(CREDENTIALS)), creds("ses", 1000));
+    }
+
+    #[test]
+    fn a_credential_without_an_expiry_is_no_usable_credential() {
+        let (_dir, account, session) = homes();
+        std::fs::write(
+            account.join(CREDENTIALS),
+            r#"{"claudeAiOauth":{"accessToken":"a"}}"#,
+        )
+        .unwrap();
+        std::fs::write(session.join(CREDENTIALS), creds("ses", 1000)).unwrap();
+        sync_account(&account, &session);
+        assert_eq!(read(&account.join(CREDENTIALS)), creds("ses", 1000));
+    }
+
+    #[test]
+    fn no_credential_anywhere_is_not_an_error() {
+        let (_dir, account, session) = homes();
+        sync_account(&account, &session);
+        assert!(!account.join(CREDENTIALS).exists());
+        assert!(!session.join(CREDENTIALS).exists());
+    }
+
+    #[test]
+    fn a_synced_credential_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, account, session) = homes();
+        std::fs::write(account.join(CREDENTIALS), creds("acc", 1000)).unwrap();
+        std::fs::write(session.join(CREDENTIALS), creds("ses", 2000)).unwrap();
+        sync_account(&account, &session);
+        let mode = std::fs::metadata(account.join(CREDENTIALS))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let leftovers = std::fs::read_dir(&account)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "no temp file survives the rename");
+    }
+
+    #[test]
+    fn claude_json_is_only_seeded_when_the_session_has_none() {
+        let (_dir, account, session) = homes();
+        std::fs::write(account.join(CLAUDE_JSON), "theirs").unwrap();
+        sync_account(&account, &session);
+        assert_eq!(read(&session.join(CLAUDE_JSON)), "theirs");
+        std::fs::write(session.join(CLAUDE_JSON), "mine").unwrap();
+        std::fs::write(account.join(CLAUDE_JSON), "newer").unwrap();
+        sync_account(&account, &session);
+        assert_eq!(read(&session.join(CLAUDE_JSON)), "mine");
     }
 }

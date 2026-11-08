@@ -120,7 +120,7 @@ impl api::models::Source for ClaudeSource {
     }
 
     async fn fetch(&self) -> Result<Vec<api::models::ModelEntry>, api::models::CatalogueError> {
-        const ALL: &[&str] = &["low", "medium", "high"];
+        const ALL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
         Ok([
             ("opus", "Claude Opus"),
             ("sonnet", "Claude Sonnet"),
@@ -134,7 +134,7 @@ impl api::models::Source for ClaudeSource {
             kind: "chat".to_string(),
             efforts: ALL.iter().map(ToString::to_string).collect(),
             image_input: true,
-            context_window: 200_000,
+            context_window: 1_000_000,
             source: "claude".to_string(),
             stale: false,
             updated_at: 0,
@@ -469,6 +469,7 @@ impl Daemon {
             ))
             .with_config_root(config.config_root.clone()),
         );
+        runner.watch_updates();
         let resume = updated.and_then(|pending| {
             let session = pending.session.clone()?;
             Some((
@@ -582,7 +583,6 @@ impl Daemon {
             thought_level: meta.thought_level.clone(),
             resume_token: None,
             workdir: None,
-            system_prompt: None,
         }))
     }
 
@@ -850,7 +850,11 @@ pub async fn run_update(request: UpdateRequest) -> anyhow::Result<()> {
         .as_ref()
         .map(|found| found.data_root.clone())
         .unwrap_or_else(update::install_root);
-    let launcher = update::launcher_path();
+    // The running daemon reads its queue from its own data root.
+    let queue_root = inside
+        .as_ref()
+        .map(|found| found.data_root.clone())
+        .unwrap_or_else(|| request.data_root.clone());
     if request.next_version {
         let base = update::current_version(&root).unwrap_or_else(|| update::VERSION.to_string());
         println!("{}", update::next_version(&base, request.major));
@@ -862,7 +866,7 @@ pub async fn run_update(request: UpdateRequest) -> anyhow::Result<()> {
         return Ok(());
     }
     if let Some(file) = &request.file {
-        return install_local_update(&request, &root, &launcher, file, inside.as_ref());
+        return install_local_update(&request, &root, &queue_root, file, inside.as_ref());
     }
     let latest = update::fetch(&request.manifest_url).await?;
     if !update::is_newer(&latest.version, update::VERSION) {
@@ -885,77 +889,45 @@ pub async fn run_update(request: UpdateRequest) -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    if let Some(found) = &inside {
-        let queued = update::InstallRequest {
+    let session = request
+        .session
+        .or_else(|| inside.as_ref().map(|found| found.id.clone()));
+    update::write_request(
+        &queue_root,
+        &update::InstallRequest {
             to: latest.version.clone(),
             artifact: Some(artifact.clone()),
             file: None,
-            session: request.session.or(Some(found.id.clone())),
-        };
-        update::write_request(&found.data_root, &queued)?;
-        println!(
-            "{}",
-            update::installed_message(update::VERSION, &latest.version, true)
-        );
-        return Ok(());
-    }
-    update::install(artifact, &latest.version, &root).await?;
-    update::activate(&root, &latest.version)?;
-    update::link_launcher(&launcher, &root)?;
-    update::prune(&root, 3)?;
-    update::write_pending(
-        &request.data_root,
-        &update::PendingUpdate {
-            from: update::VERSION.to_string(),
-            to: latest.version.clone(),
-            session: request.session,
+            session,
         },
     )?;
     println!(
         "{}",
-        update::installed_message(update::VERSION, &latest.version, false)
+        update::installed_message(update::VERSION, &latest.version, inside.is_some())
     );
     Ok(())
 }
 
-/// install_local_update queues a local build for the idle daemon, or installs it now outside a
-/// Session. No manifest and no download: the version steps forward on its own.
+/// install_local_update queues a local build for the running daemon, which installs it and
+/// restarts into it once idle. No manifest and no download: the build names its own version
+/// (`EMBERLOOP_BUILD_VERSION`).
 fn install_local_update(
     request: &UpdateRequest,
     root: &std::path::Path,
-    launcher: &std::path::Path,
+    queue_root: &std::path::Path,
     file: &std::path::Path,
     inside: Option<&update::InSession>,
 ) -> anyhow::Result<()> {
-    // The build names its own version (`EMBERLOOP_BUILD_VERSION`), so the release matches the
-    // binary instead of the other way round.
     let base = update::current_version(root).unwrap_or_else(|| update::VERSION.to_string());
-    let version = update::binary_version(file)?;
-    if let Some(found) = inside {
-        update::write_request(
-            &found.data_root,
-            &update::InstallRequest {
-                to: version.clone(),
-                artifact: None,
-                file: Some(update::absolute(file)?),
-                session: request.session.clone().or(Some(found.id.clone())),
-            },
-        )?;
-        println!("{}", update::installed_message(&base, &version, true));
-        return Ok(());
-    }
-    update::install_local(file, &version, root)?;
-    update::activate(root, &version)?;
-    update::link_launcher(launcher, root)?;
-    update::write_pending(
-        &request.data_root,
-        &update::PendingUpdate {
-            from: update::VERSION.to_string(),
-            to: version.clone(),
-            session: request.session.clone(),
-        },
-    )?;
-    println!("{}", update::installed_message(&base, &version, false));
+    let session = request
+        .session
+        .clone()
+        .or_else(|| inside.map(|found| found.id.clone()));
+    let version = update::queue_local(queue_root, file, session)?;
+    println!(
+        "{}",
+        update::installed_message(&base, &version, inside.is_some())
+    );
     Ok(())
 }
 
@@ -972,5 +944,16 @@ mod exe_tests {
         );
         let live = PathBuf::from("/work/target/debug/emberloop-daemon");
         assert_eq!(strip_deleted(live.clone()), live);
+    }
+
+    #[tokio::test]
+    async fn claude_aliases_expose_the_cli_window_and_efforts() {
+        use api::models::Source;
+        let entries = ClaudeSource.fetch().await.unwrap();
+        assert_eq!(entries.len(), 3);
+        for entry in entries {
+            assert_eq!(entry.context_window, 1_000_000);
+            assert_eq!(entry.efforts, ["low", "medium", "high", "xhigh", "max"]);
+        }
     }
 }

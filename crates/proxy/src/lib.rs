@@ -9,6 +9,7 @@ mod encoding;
 mod marker;
 pub mod meter;
 pub mod nudge;
+mod protect;
 pub mod server;
 pub mod splice;
 pub mod token;

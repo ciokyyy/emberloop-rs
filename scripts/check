@@ -70,27 +70,56 @@ echo "==> clippy"
 run_stage clippy cargo clippy --workspace --all-targets -- -D warnings
 wait_stage
 
-echo "==> nextest"
-run_stage nextest bash -o pipefail -c 'cargo nextest run --workspace 2>&1 | tee target/nextest-tests.log'
+echo "==> openapi"
+run_stage openapi bash -c '
+set -e
+cargo run -p api --bin dump_openapi
+cd web
+cp -p src/lib/api/schema.d.ts ../target/schema.d.ts.before
+bun run generate:api
+# Keep the mtime of an unchanged client, so the web stage stays skippable and the bundle stays
+# newer than every web source.
+if cmp -s ../target/schema.d.ts.before src/lib/api/schema.d.ts; then
+    touch -r ../target/schema.d.ts.before src/lib/api/schema.d.ts
+fi
+'
 wait_stage
 
-echo "==> doc tests"
-run_stage doc cargo test --doc
+echo "==> generated files are committed"
+run_stage generated git diff --exit-code -- openapi.json web/src/lib/api/schema.d.ts
 wait_stage
 
 # The web stage is the slowest (install, type-check, tests, build) and its whole input is one
 # directory tree, so an unchanged tree reuses the green run before it. The stamp is only written
 # after the stage passes, and a missing build always runs it, because the daemon embeds web/build.
+# web_sources names every path web_bundle.rs calls a source, and the bundle must also stay newer
+# than all of them: that test compares modification times, and a checkout rewrites them.
+web_sources() {
+    printf '%s\n' web/src web/static web/package.json web/svelte.config.js web/vite.config.ts
+}
+
 web_inputs() {
     {
-        find web/src -type f
-        printf '%s\n' web/package.json web/bun.lock web/svelte.config.js web/vite.config.ts web/tsconfig.json
+        web_sources | while read -r path; do
+            if [ -d "$path" ]; then
+                find "$path" -type f
+            elif [ -e "$path" ]; then
+                echo "$path"
+            fi
+        done
+        printf '%s\n' web/bun.lock web/tsconfig.json
     } | sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1
+}
+
+web_stale() {
+    local changed
+    changed="$(find $(web_sources) -newer web/build/index.html -print -quit 2>/dev/null || true)"
+    [ -n "$changed" ]
 }
 
 web_stamp=target/web-inputs.sha
 web_hash="$(web_inputs)"
-if [ "$(cat "$web_stamp" 2>/dev/null)" = "$web_hash" ] && [ -f web/build/index.html ]; then
+if [ "$(cat "$web_stamp" 2>/dev/null)" = "$web_hash" ] && [ -f web/build/index.html ] && ! web_stale; then
     echo "==> web unchanged (${web_hash:0:12}); skipped"
 else
     echo "==> web"
@@ -99,12 +128,12 @@ else
     printf '%s\n' "$web_hash" > "$web_stamp"
 fi
 
-echo "==> openapi"
-run_stage openapi bash -c 'cargo run -p api --bin dump_openapi && cd web && bun run generate:api'
+echo "==> nextest"
+run_stage nextest bash -o pipefail -c 'cargo nextest run --workspace 2>&1 | tee target/nextest-tests.log'
 wait_stage
 
-echo "==> generated files are committed"
-run_stage generated git diff --exit-code -- openapi.json web/src/lib/api/schema.d.ts
+echo "==> doc tests"
+run_stage doc cargo test --doc
 wait_stage
 
 echo "==> the slowest tests"

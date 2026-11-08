@@ -8,11 +8,16 @@ use crate::state::AppState;
 /// live stream and a later replay carry the same numbered event.
 pub fn spawn_persister(state: AppState) -> tokio::task::JoinHandle<()> {
     let mut events = state.event_bus.subscribe();
+    state.event_bus.persister_started();
     tokio::spawn(async move {
         loop {
             match events.recv().await {
-                Ok(event) if event.seq == 0 => persist(&state, event).await,
-                Ok(_) | Err(RecvError::Lagged(_)) => {}
+                Ok(event) if event.seq == 0 => {
+                    persist(&state, event).await;
+                    state.event_bus.event_stored();
+                }
+                Ok(_) => {}
+                Err(RecvError::Lagged(_)) => state.event_bus.events_lost(),
                 Err(RecvError::Closed) => return,
             }
         }

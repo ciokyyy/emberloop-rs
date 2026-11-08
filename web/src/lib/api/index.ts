@@ -51,13 +51,12 @@ export const api = {
   createSession: (
     projectId: string,
     title: string | undefined,
-    ponytailLevel: string,
     model?: string,
     thoughtLevel?: string
   ) =>
     request<Session>('/api/sessions', {
       method: 'POST',
-      body: JSON.stringify({ projectId, title, ponytailLevel, model, thoughtLevel })
+      body: JSON.stringify({ projectId, title, model, thoughtLevel })
     }),
   updateSession: (id: string, patch: { title?: string; model?: string; thoughtLevel?: string }) =>
     request<Session>(`/api/sessions/${encodeURIComponent(id)}`, {

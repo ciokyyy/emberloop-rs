@@ -11,9 +11,9 @@ Model-facing text as files (`include_str!` defaults under `prompts/*.md`):
 - `PromptWatcher`: polls the override directory, keeps the last good text on a broken file, reports errors to the callback.
 - `skill.codebase-memory`: bounded search and caller-tracing guidance for the five graph tools, with fully qualified dispatch names and on-demand `tools.help` instead of duplicated schemas. The proxy appends it only when the graph server is usable; the tools crate fills in `project`. Static results require verification against current files.
 - `filter_skill`: strips a skill's frontmatter and keeps only the requested level's intensity row and example lines.
-- `ponytail_text`: that filter for the Session's `ponytail_level`; `off` yields empty text.
+- `ponytail_text`: that filter for the global `ponytail_default_level` setting; `off` yields empty text.
 - `caveman_text`: the emberloop-go voice register, always ultra: banner, the filtered `caveman.md` (a byte-for-byte copy of the `caveman` plugin's `SKILL.md`), then its one-line reminder.
-- `policy` owns the shared edit/check/spill-search workflow: hashline edits for existing files, sequential patches after batched reads, preserved check exit status, and `ctx_search` (spilled tool output) versus `search_context` (compressed history), and the search-before-`decompress` rule, which only `policy` states. `tool.edit` demonstrates valid replacement syntax and recovery; `tool.execute` routes mutations through `tools.edit` and distinguishes Python aliases from fully qualified MCP dispatch names.
+- `policy` owns the shared edit, required-check and spill-search workflow: hashline edits for existing files, sequential patches after batched reads, preserved check exit status, and `ctx_search` (spilled tool output) versus `search_context` (compressed history), the search-before-`decompress` rule and the protected-content rule for `compress` (system prompts and `<system-reminder>` content never fold), which only `policy` states. `tool.edit` demonstrates valid replacement syntax and recovery; `tool.execute` routes mutations through `tools.edit` and distinguishes Python aliases from fully qualified MCP dispatch names.
 
 ## Attribution
 

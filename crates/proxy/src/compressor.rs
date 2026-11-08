@@ -1,8 +1,10 @@
 use crate::marker;
+use crate::protect::is_protected;
 use crate::tokens;
 use crate::turnkeys::{self, is_transient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 /// Snippet budget in characters, and how many of them come before the match.
@@ -660,6 +662,29 @@ fn brief(turn: &Value) -> String {
     text.chars().take(80).collect()
 }
 
+/// The maximal runs of foldable turns in `1..end`, oldest first. A protected turn ends a run, and
+/// turn 0 is never a start, because ranges begin at 1. The nudge and the preflight backstop count
+/// and fold these runs, never a protected turn.
+pub fn foldable_runs(contents: &[Value], end: usize) -> Vec<Range<usize>> {
+    let end = end.min(contents.len());
+    let mut runs = Vec::new();
+    let mut start = None;
+    for (index, turn) in contents.iter().enumerate().take(end).skip(1) {
+        match (is_protected(turn), start) {
+            (false, None) => start = Some(index),
+            (true, Some(first)) => {
+                runs.push(first..index);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(first) = start {
+        runs.push(first..end);
+    }
+    runs
+}
+
 /// Index of the latest message the user typed, the one no fold may include.
 pub fn latest_user_turn(contents: &[Value]) -> Option<usize> {
     contents.iter().rposition(is_user_message)
@@ -696,6 +721,12 @@ fn validate_range(
     if call.summary.trim().is_empty() {
         return Err("summary must not be empty".into());
     }
+    if contents[call.start..call.end].iter().any(is_protected) {
+        return Err(format!(
+            "range {}..{} includes protected system content (a system prompt or <system-reminder>), which never folds",
+            call.start, call.end
+        ));
+    }
     let keep = policy.preserve_recent_messages.min(turns);
     if call.end > turns - keep {
         return Err(format!(
@@ -721,7 +752,44 @@ fn validate_range(
             call.start, call.end
         ));
     }
+    if let Some(id) = split_pair(call, contents) {
+        return Err(format!(
+            "range {}..{} splits tool call {id} from its result; move an edge so both stay on one side",
+            call.start, call.end
+        ));
+    }
     Ok(())
+}
+
+/// An id whose call and result are on opposite sides of the range's edge: folding it would leave
+/// the other half orphaned, which upstreams reject.
+fn split_pair<'a>(call: &CompressCall, contents: &'a [Value]) -> Option<&'a str> {
+    let ids = |turns: &'a [Value], key: &str| -> Vec<&'a str> {
+        turns
+            .iter()
+            .filter_map(|turn| turn.get("parts").and_then(Value::as_array))
+            .flatten()
+            .filter_map(|part| part.get(key)?.get("id")?.as_str())
+            .filter(|id| !id.is_empty())
+            .collect()
+    };
+    let (inside, before, after) = (
+        &contents[call.start..call.end],
+        &contents[..call.start],
+        &contents[call.end..],
+    );
+    let outside = |key: &str| [ids(before, key), ids(after, key)].concat();
+    let (calls, results) = (ids(inside, "functionCall"), ids(inside, "functionResponse"));
+    let (outer_calls, outer_results) = (outside("functionCall"), outside("functionResponse"));
+    calls
+        .iter()
+        .find(|id| !results.contains(id) && outer_results.contains(id))
+        .or_else(|| {
+            results
+                .iter()
+                .find(|id| !calls.contains(id) && outer_calls.contains(id))
+        })
+        .copied()
 }
 
 /// Names of every tool call and result in a turn, whatever the wire's shape.
@@ -758,11 +826,21 @@ fn find_span(contents: &[Value], originals: &[Value], near: usize) -> Option<Vec
     if let Some(span) = nearest_span(contiguous, near) {
         return Some(span);
     }
+    // A gapped span must not cover protected content: folding across it would move it.
     let gapped: Vec<Vec<usize>> = (0..contents.len())
         .filter(|&start| turnkeys::same_turn(&contents[start], &originals[0]))
         .filter_map(|start| span_from(contents, originals, start))
+        .filter(|span| !covers_protected(contents, span))
         .collect();
     nearest_span(gapped, near)
+}
+
+/// Whether a span's turns, or any turn between its first and last, is protected content.
+fn covers_protected(contents: &[Value], span: &[usize]) -> bool {
+    let (Some(&first), Some(&last)) = (span.first(), span.last()) else {
+        return false;
+    };
+    contents[first..=last].iter().any(is_protected)
 }
 
 fn nearest_span(spans: Vec<Vec<usize>>, near: usize) -> Option<Vec<usize>> {
@@ -1196,6 +1274,46 @@ mod tests {
     }
 
     #[test]
+    fn a_range_that_splits_a_call_from_its_result_is_rejected() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let contents = vec![
+            json!({"role": "user", "parts": [{"text": "first"}]}),
+            json!({"role": "model", "parts": [{"text": "second"}]}),
+            json!({"role": "model", "parts": [{"functionCall": {"id": "c1", "name": "acp_status", "args": {}}}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "c1", "name": "acp_status", "response": {"result": "x"}}}]}),
+            json!({"role": "model", "parts": [{"text": "fifth"}]}),
+        ];
+        for (start, end) in [(1, 3), (3, 4)] {
+            let mut turns = contents.clone();
+            let call = CompressCall {
+                start,
+                end,
+                summary: "folded".into(),
+                topic: None,
+            };
+            let error = compressor
+                .compress_batch(&mut turns, vec![call], &CompressPolicy::default())
+                .unwrap_err();
+            assert!(
+                error.contains("splits tool call c1"),
+                "{start}..{end}: {error}"
+            );
+            assert_eq!(turns, contents);
+        }
+        let mut whole = contents.clone();
+        let call = CompressCall {
+            start: 2,
+            end: 4,
+            summary: "folded".into(),
+            topic: None,
+        };
+        compressor
+            .compress_batch(&mut whole, vec![call], &CompressPolicy::default())
+            .unwrap();
+    }
+
+    #[test]
     fn preserve_recent_messages_rejects_a_range_that_reaches_the_tail() {
         let dir = tempdir().unwrap();
         let mut compressor = NativeCompressor::new(dir.path()).unwrap();
@@ -1229,6 +1347,62 @@ mod tests {
             .compress_batch(&mut contents, vec![call()], &policy)
             .unwrap_err();
         assert!(error.contains("protected tool read"), "{error}");
+    }
+
+    #[test]
+    fn a_range_covering_protected_content_is_refused_and_named() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let mut contents = vec![
+            json!({"role": "user", "parts": [{"text": "<system-reminder>CLAUDE.md</system-reminder>\n\nfix"}]}),
+            json!({"role": "model", "parts": [{"text": "second"}]}),
+            json!({"role": "user", "parts": [{"text": "third"}]}),
+            json!({"role": "user", "parts": [{"text": "fourth"}]}),
+        ];
+        let before = contents.clone();
+        let call = CompressCall {
+            start: 0,
+            end: 2,
+            summary: "x".into(),
+            topic: None,
+        };
+        let error = compressor
+            .compress_batch(&mut contents, vec![call], &CompressPolicy::default())
+            .unwrap_err();
+        assert!(error.contains("protected"), "{error}");
+        assert_eq!(contents, before);
+    }
+
+    #[test]
+    fn a_stored_fold_never_matches_across_protected_content() {
+        let (_dir, mut compressor, _) = one_block();
+        // The harness resends the folded turns with a reminder between them. Folding across it
+        // would move that reminder, so the stored fold must not apply.
+        let mut resent = vec![
+            json!({"role": "user", "parts": [{"text": "first"}]}),
+            json!({"role": "model", "parts": [{"text": "second"}]}),
+            json!({"role": "user", "parts": [{"text": "<system-reminder>r</system-reminder>"}]}),
+            json!({"role": "user", "parts": [{"text": "third"}]}),
+            json!({"role": "user", "parts": [{"text": "fourth"}]}),
+        ];
+        let before = resent.clone();
+        assert_eq!(compressor.apply_skipping(&mut resent, &[]), 0);
+        assert_eq!(resent, before);
+    }
+
+    #[test]
+    fn foldable_runs_split_at_protected_turns_and_start_at_turn_one() {
+        let contents = vec![
+            json!({"role": "user", "parts": [{"text": "first"}]}),
+            json!({"role": "user", "parts": [{"text": "<system-reminder>r</system-reminder>"}]}),
+            json!({"role": "model", "parts": [{"text": "second"}]}),
+            json!({"role": "user", "parts": [{"text": "third"}]}),
+            json!({"role": "user", "parts": [{"text": "<system-reminder>s</system-reminder>"}]}),
+            json!({"role": "model", "parts": [{"text": "fourth"}]}),
+            json!({"role": "user", "parts": [{"text": "latest"}]}),
+        ];
+        assert_eq!(foldable_runs(&contents, 6), vec![2..4, 5..6]);
+        assert!(foldable_runs(&contents, 1).is_empty());
     }
 
     #[test]

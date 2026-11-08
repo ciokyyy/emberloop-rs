@@ -349,8 +349,9 @@ pub trait SteerWaker: Send + Sync {
     async fn wake(&self, text: &str) -> Result<(), String>;
 }
 
-/// Route 2: a turn is over with no tool call, so wake the harness once with
-/// every pending entry as a single prompt. A failed wake puts the entries back.
+/// Route 2: no turn is running, so wake the harness once with every pending entry as a
+/// single prompt. While a turn runs the proxy injects the entries on its next request
+/// (route 1), so this returns 0. A failed wake puts the entries back.
 pub async fn deliver_idle(
     queue: &SteerQueue,
     waker: &dyn SteerWaker,
@@ -479,6 +480,22 @@ mod tests {
         let event = rx.try_recv().unwrap();
         assert_eq!(event.kind, EventKind::SteerDelivered);
         assert_eq!(event.data["route"], "sent at idle");
+    }
+
+    #[tokio::test]
+    async fn a_steer_during_a_turn_waits_for_the_proxy() {
+        let queue = SteerQueue::new();
+        queue.enqueue(SteerKind::Steer, "go left").await;
+        queue.set_turn_active(true);
+        let events = EventBus::new(8);
+        let waker = FakeWaker::new();
+
+        let held = deliver_idle(&queue, &waker, &events, "ses_1")
+            .await
+            .unwrap();
+        assert_eq!(held, 0, "the proxy carries a steer while a turn runs");
+        assert!(waker.calls().is_empty());
+        assert_eq!(queue.pending_len().await, 1);
     }
 
     #[tokio::test]

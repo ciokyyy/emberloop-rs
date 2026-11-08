@@ -20,8 +20,6 @@ pub struct SessionMeta {
     #[serde(rename = "projectId")]
     pub project_id: String,
     pub title: String,
-    #[serde(rename = "ponytailLevel", default = "default_ponytail")]
-    pub ponytail_level: String,
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(rename = "thoughtLevel", default)]
@@ -55,7 +53,6 @@ impl Default for SessionMeta {
             id: String::new(),
             project_id: String::new(),
             title: String::new(),
-            ponytail_level: default_ponytail(),
             model: default_model(),
             thought_level: None,
             created_at: 0,
@@ -69,10 +66,6 @@ impl Default for SessionMeta {
             resume_token: None,
         }
     }
-}
-
-fn default_ponytail() -> String {
-    "full".to_string()
 }
 
 fn default_model() -> String {
@@ -291,7 +284,6 @@ mod tests {
             id: "ses_1".into(),
             project_id: "proj_1".into(),
             title: "First Session".into(),
-            ponytail_level: "ultra".into(),
             created_at: 1000,
             updated_at: 1000,
             prompt_hashes: HashMap::new(),

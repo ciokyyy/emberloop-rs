@@ -6,7 +6,9 @@
   import { marqueeShift } from '$lib/marquee';
   import { cn } from '$lib/utils';
   import Button from './ui/button.svelte';
-  import * as Select from './ui/select';
+  import Select from './Select.svelte';
+  import { holdToLift } from '$lib/hold';
+  import * as AlertDialog from './ui/alert-dialog';
 
   let {
     projects,
@@ -47,7 +49,7 @@
     onselectproject: (id: string) => void;
     onnew: () => void;
     onnewproject: () => void;
-    onrename: (session: Session) => void;
+    onrename: (session: Session, title: string) => void;
     ondelete: (session: Session) => void;
     onsettings: () => void;
     onproviders: () => void;
@@ -69,7 +71,6 @@
     harness === 'claude' ? 'Claude' : harness === 'pi' ? 'pi-rs' : 'Antigravity';
   const harnessColor = (harness: string) =>
     harness === 'claude' ? '#d6a87b' : harness === 'pi' ? '#8b7cf6' : '#5b9ac6';
-  const projectName = $derived(projects.find((project) => project.id === projectId)?.name ?? 'Select a Project');
   const listed = $derived(
     (projectId ? sessions.filter((session) => session.projectId === projectId) : sessions)
       .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -96,25 +97,96 @@
     observer.observe(box);
     return { destroy: () => observer.disconnect() };
   }
+
+  // Double-tap edits a title in place. Enter and blur both commit; the first to run clears `editing`, so the second is a no-op.
+  let editing = $state<string | null>(null);
+  let draft = $state('');
+  let holding = $state<string | null>(null);
+  let dragging = $state<Session | null>(null);
+  let overTrash = $state(false);
+  let pending = $state<Session | null>(null);
+  let trashEl: HTMLElement | undefined = $state();
+  const HOLD_MS = 450;
+
+  function focusAll(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+  function startRename(session: Session) {
+    editing = session.id;
+    draft = session.title;
+  }
+  function commitRename(session: Session) {
+    if (editing !== session.id) return;
+    editing = null;
+    const title = draft.trim();
+    if (title && title !== session.title) onrename(session, title);
+  }
+  function cancelRename() {
+    editing = null;
+  }
+
+  const inside = (el: HTMLElement | undefined, event: PointerEvent) => {
+    if (!el) return false;
+    const box = el.getBoundingClientRect();
+    return event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
+  };
+  // Hold 450 ms to lift a row; drag it onto the trash zone and release to ask for delete.
+  function holdStart(event: PointerEvent, session: Session) {
+    if (event.button !== 0 || editing === session.id) return;
+    holding = session.id;
+    holdToLift(event, HOLD_MS, {
+      lift: () => {
+        holding = null;
+        dragging = session;
+      },
+      move: (move) => {
+        overTrash = inside(trashEl, move);
+      },
+      drop: (up, lifted) => {
+        holding = null;
+        if (lifted && inside(trashEl, up)) pending = session;
+        dragging = null;
+        overTrash = false;
+      }
+    });
+  }
+  // Keyboard path to the same confirm dialog as the trash drag.
+  function onRowKey(event: KeyboardEvent, session: Session) {
+    if (event.key !== 'Delete') return;
+    event.preventDefault();
+    pending = session;
+  }
+  function confirmDelete() {
+    if (pending) ondelete(pending);
+    pending = null;
+  }
 </script>
 
 <div class="flex h-full flex-col border-r border-border bg-sidebar">
-  <div class="flex flex-col gap-2 px-2 pt-3 pb-2">
-    <Select.Root type="single" value={projectId ?? ''} onValueChange={pick}>
-      <Select.Trigger class="w-full min-w-0 bg-surface-2 font-medium" aria-label="Project">
-        {projectName}
-      </Select.Trigger>
-      <Select.Content>
-        <Select.Item value={ADD}>+ Add project</Select.Item>
-        {#each projects as project (project.id)}
-          <Select.Item value={project.id}>{project.name}</Select.Item>
-        {/each}
-      </Select.Content>
-    </Select.Root>
-    <Button variant="primary" class="w-full" onclick={onnew}>New session</Button>
+  <div class="flex items-center gap-1 px-2 pt-3 pb-2">
+    <Select label="Project" placeholder="Select a Project" class="min-w-0 flex-1" value={projectId ?? ''} onchange={pick}
+      options={[{ value: ADD, label: '+ Add project' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]} />
+    <button class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-2 hover:bg-surface-2 hover:text-fg-1"
+      aria-label="New session" title="New session" onclick={onnew}>
+      <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
+    </button>
   </div>
 
   <nav class="min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label="Sessions">
+    {#if dragging}
+      <div
+        bind:this={trashEl}
+        class={cn(
+          'mb-2 flex items-center justify-center gap-2 rounded-lg border border-dashed border-border py-3 text-[13px] text-fg-2',
+          overTrash && 'border-status-failed text-status-failed'
+        )}
+        aria-hidden="true"
+      >
+        <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+        Drop to delete
+      </div>
+    {/if}
     {#if draftModel}
       <div class="row sel flex items-center gap-1 px-1">
         <button class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left" aria-current="true" onclick={ondraft}>
@@ -131,39 +203,53 @@
       {@const status = statusOf(session.id)}
       {@const harness = harnessOf(session.model)}
       <div
-        class={cn('row group flex items-center gap-1 px-1', selectedId === session.id && 'sel')}
+        class={cn(
+          'row group flex items-center gap-1 px-1',
+          selectedId === session.id && 'sel',
+          holding === session.id && 'holding',
+          dragging?.id === session.id && 'lifted'
+        )}
         use:flipReady
         animate:flip={flipAnimation()}
         in:slide={rowEnter}
         out:fade={motionParams()}
       >
-        <button
-          class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
-          aria-current={selectedId === session.id ? 'true' : undefined}
-          onclick={() => onselect(session.id)}
-        >
-          <span
-            class={cn('h-5 w-[3px] shrink-0 rounded-full', status === 'working' && 'pulse')}
-            style:background={harnessColor(harness)}
-            title={`${harnessName(harness)} · ${statusWord[status]}`}
-          ></span>
-          <span class="min-w-0 flex-1 overflow-hidden whitespace-nowrap">
-            <span class="inline-block text-[13px]" use:marquee>{session.title}</span>
-          </span>
-          <span class="text-[11px] text-fg-2">{timeAgo(session.updatedAt)}</span>
-        </button>
-        <button
-          class="hidden rounded px-1 text-[12px] text-fg-3 hover:text-fg-1 group-hover:block focus:block max-md:block"
-          title="Rename session"
-          aria-label={`Rename ${session.title}`}
-          onclick={() => onrename(session)}
-        >✎</button>
-        <button
-          class="hidden rounded px-1 text-[12px] text-fg-3 hover:text-status-failed group-hover:block focus:block max-md:block"
-          title="Delete session"
-          aria-label={`Delete ${session.title}`}
-          onclick={() => ondelete(session)}
-        >×</button>
+        {#if editing === session.id}
+          <span class="h-5 w-[3px] shrink-0 rounded-full" style:background={harnessColor(harness)}></span>
+          <input
+            class="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-[13px] outline-none"
+            aria-label="Session title"
+            bind:value={draft}
+            use:focusAll
+            onkeydown={(event) => {
+              if (event.key === 'Enter') commitRename(session);
+              else if (event.key === 'Escape') cancelRename();
+            }}
+            onblur={() => commitRename(session)}
+          />
+        {:else}
+          <button
+            class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+            aria-current={selectedId === session.id ? 'true' : undefined}
+            onpointerdown={(event) => holdStart(event, session)}
+            onclick={(event) => {
+              onselect(session.id);
+              // A double-tap (or double-click) edits the title in place.
+              if (event.detail === 2) startRename(session);
+            }}
+            onkeydown={(event) => onRowKey(event, session)}
+          >
+            <span
+              class={cn('h-5 w-[3px] shrink-0 rounded-full', status === 'working' && 'pulse')}
+              style:background={harnessColor(harness)}
+              title={`${harnessName(harness)} · ${statusWord[status]}`}
+            ></span>
+            <span class="min-w-0 flex-1 overflow-hidden whitespace-nowrap">
+              <span class="inline-block text-[13px]" use:marquee>{session.title}</span>
+            </span>
+            <span class="text-[11px] text-fg-2">{timeAgo(session.updatedAt)}</span>
+          </button>
+        {/if}
       </div>
     {/each}
     {#if projects.length === 0}
@@ -171,18 +257,48 @@
     {/if}
   </nav>
 
-  <div class="border-t border-border p-2">
-    <button
-      class={cn('row w-full px-3 py-2 text-left text-[14px]', usageActive && 'sel')}
-      onclick={onusage}
-    >Usage</button>
-    <button
-      class={cn('row w-full px-3 py-2 text-left text-[14px]', providersActive && 'sel')}
-      onclick={onproviders}
-    >Providers</button>
-    <button
-      class={cn('row w-full px-3 py-2 text-left text-[14px]', settingsActive && 'sel')}
-      onclick={onsettings}
-    >Settings</button>
+  <div class="grid grid-cols-3 gap-1 border-t border-border p-2">
+    <button class={cn('row flex flex-col items-center gap-1 px-1 py-2 text-[12px]', usageActive && 'sel')} aria-label="Usage" onclick={onusage}>
+      <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></svg>
+      Usage
+    </button>
+    <button class={cn('row flex flex-col items-center gap-1 px-1 py-2 text-[12px]', providersActive && 'sel')} aria-label="Providers" onclick={onproviders}>
+      <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z" /><path d="m2 22 3-3" /><path d="M7.5 13.5 10 11" /><path d="M10.5 16.5 13 14" /><path d="m18 3-4 4h6l-4 4" /></svg>
+      Providers
+    </button>
+    <button class={cn('row flex flex-col items-center gap-1 px-1 py-2 text-[12px]', settingsActive && 'sel')} aria-label="Settings" onclick={onsettings}>
+      <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><line x1="21" x2="14" y1="4" y2="4" /><line x1="10" x2="3" y1="4" y2="4" /><line x1="21" x2="12" y1="12" y2="12" /><line x1="8" x2="3" y1="12" y2="12" /><line x1="21" x2="16" y1="20" y2="20" /><line x1="12" x2="3" y1="20" y2="20" /><line x1="14" x2="14" y1="2" y2="6" /><line x1="8" x2="8" y1="10" y2="14" /><line x1="16" x2="16" y1="18" y2="22" /></svg>
+      Settings
+    </button>
   </div>
 </div>
+
+<AlertDialog.Root open={pending !== null} onOpenChange={(open) => { if (!open) pending = null; }}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Delete session?</AlertDialog.Title>
+      <AlertDialog.Description>“{pending?.title}” will be deleted. This cannot be undone.</AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action onclick={confirmDelete}>Delete</AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<style>
+  /* Hold fill: grows across the row while the pointer is held down. */
+  .holding {
+    background: linear-gradient(to right, rgb(255 255 255 / 0.1), rgb(255 255 255 / 0.1)) no-repeat;
+    background-size: 0% 100%;
+    animation: hold 450ms linear forwards;
+  }
+  .lifted {
+    opacity: 0.6;
+  }
+  @keyframes hold {
+    to {
+      background-size: 100% 100%;
+    }
+  }
+</style>

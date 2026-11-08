@@ -2,7 +2,7 @@ Run the Python script in `code` (stdlib only, `python3 -I`) that calls el tools 
 
 Searching code: use find for concepts and symbols, grep for exact strings and regex, and execute to batch the exploration (loops over grep/read, filtering output).
 
-Behind execute: read, grep, edit, write, bash, background, find, websearch. Everything else answers through `tools.call("<name>", **kwargs)`, e.g. `tools.call("git", args=["status"])`.
+Behind execute: read, grep, edit, write, bash, background, find, websearch. Everything else answers through `tools.call("<name>", **kwargs)`, e.g. `tools.call("ctx_search", queries=["needle"])`.
 
 import tools
 print(tools.grep(pattern="TODO"))

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Brand from './Brand.svelte';
   import { onDestroy, onMount } from 'svelte';
   import { api } from '$lib/api';
   import { fade } from 'svelte/transition';
@@ -225,6 +226,24 @@
     )
   );
 
+  // One flow per provider. The provider's card shows it, so no extra card appears.
+  const flowOf = (id: string) => (id === 'agy' ? login : id === 'openai-codex' ? codex : id === 'claude' ? claude : null);
+  function start(id: string) {
+    if (id === 'agy') return signIn();
+    if (id === 'claude') return startClaude();
+    if (id === 'openai-codex') return startCodex();
+  }
+  function cancelFlow(id: string) {
+    if (id === 'agy') return cancel();
+    if (id === 'claude') return cancelClaude();
+    return cancelCodex();
+  }
+  function dismiss(id: string) {
+    if (id === 'agy') login = null;
+    else if (id === 'claude') claude = null;
+    else codex = null;
+  }
+
   async function saveKey(id: string) {
     loading = true;
     error = '';
@@ -264,258 +283,190 @@
 </script>
 
 <section class="h-full overflow-y-auto p-6" in:rise|global>
-  <h2 class="text-[1.75rem] font-semibold leading-[1.2] tracking-[-0.02em]">Providers</h2>
-  <p class="mt-1 text-[13px] text-fg-3">
-    The daemon spawns the Antigravity server for the Account's own home. No token passes through
-    Emberloop.
-  </p>
+  <div class="mx-auto flex max-w-[760px] flex-col gap-6">
+    <div>
+      <h2 class="text-[1.75rem] font-semibold leading-[1.2] tracking-[-0.02em]">Providers</h2>
+      <p class="mt-1 text-[13px] text-fg-3">
+        Credentials stay in the daemon. Emberloop never sees a token.
+      </p>
+    </div>
 
-  {#if error}
-    <p
-      class="mt-4 rounded border border-status-failed/40 bg-status-failed/10 px-3 py-2 text-[13px]"
-      transition:slideDown
-    >
-      {error}
-    </p>
-  {/if}
+    {#if error}
+      <p class="rounded border border-status-failed/40 bg-status-failed/10 px-3 py-2 text-[13px]" transition:slideDown>
+        {error}
+      </p>
+    {/if}
 
-  {#each connected as provider (provider.id)}
-    <div class="mt-6 rounded border border-border" in:rise>
-      <div class="flex items-center justify-between border-b border-border px-4 py-3">
-        <div>
-          <div class="font-medium">{provider.name}</div>
-          <div class="text-[12px] text-fg-3">
-            {provider.signedIn ? 'Signed in' : 'Signed out'}
-          </div>
-        </div>
-        {#if provider.id === 'openai-codex' && !provider.signedIn}
-          <button
-            class="btn"
-            disabled={loading || codex?.state === 'running'}
-            onclick={() => void startCodex()}
-          >
-            Connect
-          </button>
-        {/if}
-      </div>
-      <ul class="divide-y divide-border">
-        {#each provider.accounts as account (account.id)}
-          <li
-            class="flex items-center justify-between px-4 py-3"
-            use:flipReady
-            animate:flip={flipAnimation()}
-            in:slide={rowEnter}
-            out:fade={motionParams()}
-          >
-            <div>
-              <div>{account.label}</div>
+    {#each connected as provider (provider.id)}
+      {@const flow = flowOf(provider.id)}
+      <div class="rounded-2xl border border-border bg-surface-1" in:rise>
+        <div class="flex flex-wrap items-center justify-between gap-3 p-4">
+          <div class="flex min-w-0 items-center gap-3">
+            <Brand id={provider.id} size={32} />
+            <div class="min-w-0">
+              <div class="font-medium">{provider.name}</div>
               <div class="text-[12px] text-fg-3">
-                {account.signedIn ? `Tier ${account.tier || 'unknown'}` : 'Not signed in'}
+                {provider.auth === 'key' ? 'API key' : 'Browser sign-in'} · {provider.signedIn ? 'Signed in' : 'Signed out'}
               </div>
             </div>
-            {#if account.signedIn}
-              <button class="btn" onclick={() => void signOut(account.id)}>
-                {provider.auth === 'key' ? 'Remove key' : 'Sign out'}
-              </button>
-            {/if}
-          </li>
-        {/each}
-        {#if provider.accounts.length === 0}
-          <li class="px-4 py-3 text-[13px] text-fg-3">No Account yet.</li>
-        {/if}
-      </ul>
-    </div>
-  {/each}
-
-  {#if codex}
-    <div class="mt-6 rounded border border-border p-4">
-      <div class="flex items-center justify-between">
-        <div class="font-medium">
-          {#if codex.state === 'running'}Connect ChatGPT
-          {:else if codex.state === 'succeeded'}ChatGPT connected
-          {:else if codex.state === 'canceled'}Login canceled
-          {:else}Login failed{/if}
-        </div>
-        {#if codex.state === 'running'}
-          <button class="btn" onclick={() => void cancelCodex()}>Cancel</button>
-        {/if}
-      </div>
-
-      {#if codex.state === 'running'}
-        <p class="mt-3 text-[13px] text-fg-3">
-          Open
-          <a class="underline" href={codex.verificationUri} target="_blank" rel="noreferrer">
-            {codex.verificationUri}
-          </a>
-          and enter this code.
-        </p>
-        <code class="mt-2 block w-fit rounded bg-surface-3 px-3 py-2 font-mono text-lg tracking-wider">
-          {codex.userCode}
-        </code>
-        {#if codex.expiresAt}
-          <p class="mt-2 text-[12px] text-fg-3">
-            Expires {new Date(codex.expiresAt).toLocaleTimeString()}.
-          </p>
-        {/if}
-      {:else if codex.state === 'succeeded'}
-        <p class="mt-2 text-[13px] text-fg-3">The ChatGPT OAuth credential is saved for pi Sessions.</p>
-      {:else if codex.error}
-        <p class="mt-2 text-[13px] text-status-failed">{codex.error}</p>
-      {/if}
-    </div>
-  {/if}
-
-
-  {#if claude}
-    <div class="mt-6 rounded border border-border p-4">
-      <div class="flex items-center justify-between">
-        <div class="font-medium">
-          {#if claude.state === 'running'}Connect Claude
-          {:else if claude.state === 'succeeded'}Claude connected
-          {:else if claude.state === 'canceled'}Login canceled
-          {:else}Login failed{/if}
-        </div>
-        {#if claude.state === 'running'}
-          <button class="btn" onclick={() => void cancelClaude()}>Cancel</button>
-        {/if}
-      </div>
-
-      {#if claude.state === 'running'}
-        {#if claude.url}
-          <p class="mt-3 text-[13px] text-fg-3">
-            Open
-            <a class="underline" href={claude.url} target="_blank" rel="noreferrer">
-              the Claude sign-in page
-            </a>
-            and approve access. Then paste the code the page shows.
-          </p>
-          <div class="mt-2 flex gap-2">
-            <input class="input min-w-0 flex-1" placeholder="Paste code" bind:value={code} />
-            <button class="btn" disabled={loading || !code.trim()} onclick={() => void completeClaude()}>
-              Complete
-            </button>
           </div>
-        {:else}
-          <p class="mt-3 text-[13px] text-fg-3">Waiting for the CLI to print the sign-in link…</p>
-        {/if}
-      {:else if claude.state === 'succeeded'}
-        <p class="mt-2 text-[13px] text-fg-3">
-          Tier {claude.tier || 'unknown'}. Claude Sessions copy this credential into their own home.
-        </p>
-      {:else if claude.error}
-        <p class="mt-2 text-[13px] text-status-failed">{claude.error}</p>
-      {:else if claude.output}
-        <pre class="mt-2 overflow-x-auto text-[12px] text-fg-3">{claude.output}</pre>
-      {/if}
-    </div>
-  {:else}
-    <div class="mt-6 rounded border border-border p-4">
-      <div class="font-medium">Sign in to Claude</div>
-      <p class="mt-1 text-[12px] text-fg-3">
-        Runs `claude auth login` in the daemon's own Claude home. The credential stays there.
-      </p>
-      <button class="btn mt-2" disabled={loading} onclick={() => void startClaude()}>Sign in</button>
-    </div>
-  {/if}
-
-  {#if login}
-    <div class="mt-6 rounded border border-border p-4">
-      <div class="flex items-center justify-between">
-        <div class="font-medium">
-          {#if login.state === 'running'}Waiting for sign-in
-          {:else if login.state === 'succeeded'}Signed in
-          {:else if login.state === 'canceled'}Login canceled
-          {:else}Login failed{/if}
-        </div>
-        {#if login.state === 'running'}
-          <button class="btn" onclick={() => void cancel()}>Cancel</button>
-        {/if}
-      </div>
-
-      {#if login.state === 'running'}
-        {#if login.url}
-          <div class="mt-3 flex flex-wrap items-center gap-2">
-            <a class="btn" href={login.url} target="_blank" rel="noreferrer">Open sign-in page</a>
-            <button class="btn" onclick={() => void copy()}>{copied ? 'Copied' : 'Copy link'}</button>
-          </div>
-          <p class="mt-3 text-[13px] text-fg-3">
-            After signing in, the browser lands on a <code>127.0.0.1</code> address that does not
-            load on a remote machine. Paste that address here.
-          </p>
-          <div class="mt-2 flex gap-2">
-            <input
-              class="input min-w-0 flex-1"
-              placeholder="http://127.0.0.1:…"
-              bind:value={address}
-            />
-            <button class="btn" disabled={loading || !address} onclick={() => void complete()}>
-              Complete
-            </button>
-          </div>
-        {:else}
-          <p class="mt-3 text-[13px] text-fg-3">Waiting for the server to print the sign-in link…</p>
-        {/if}
-      {:else if login.state === 'succeeded'}
-        <p class="mt-2 text-[13px] text-fg-3">
-          Tier {login.tier || 'unknown'}. The Account is kept and ready for Sessions.
-        </p>
-      {:else if login.error}
-        <p class="mt-2 text-[13px] text-status-failed">{login.error}</p>
-      {/if}
-    </div>
-  {:else}
-    <div class="mt-6 rounded border border-border p-4">
-      <div class="font-medium">Sign in to Antigravity</div>
-      <div class="mt-2 flex gap-2">
-        <input class="input min-w-0 flex-1" placeholder="Account label (optional)" bind:value={label} />
-        <button class="btn" disabled={loading} onclick={() => void signIn()}>Sign in</button>
-      </div>
-    </div>
-  {/if}
-
-  <div class="mt-6 rounded border border-border p-4">
-    <div class="font-medium">Add provider</div>
-    <p class="mt-1 text-[12px] text-fg-3">
-      Paste an API key. pi Sessions reach the provider through the proxy; the key stays in the
-      daemon's keys file.
-    </p>
-    <input
-      class="input mt-2 w-full"
-      placeholder="Search providers"
-      aria-label="Search providers"
-      bind:value={search}
-    />
-    <ul class="mt-2 max-h-72 divide-y divide-border overflow-y-auto">
-      {#each addable as provider (provider.id)}
-        <li class="py-2" in:slide={rowEnter}>
-          <button
-            class="row w-full px-2 py-1.5 text-left text-[14px]"
-            onclick={() => ((picked = picked === provider.id ? null : provider.id), (pickedKey = ''))}
-          >
-            {provider.name}
-          </button>
-          {#if picked === provider.id}
-            <div class="mt-2 flex gap-2 px-2" transition:slideDown>
-              <input
-                class="input min-w-0 flex-1"
-                type="password"
-                placeholder="{provider.name} API key"
-                bind:value={pickedKey}
-              />
-              <button
-                class="btn"
-                disabled={loading || !pickedKey.trim()}
-                onclick={() => void saveKey(provider.id)}
-              >
-                Save key
+          {#if provider.auth === 'login' && flow?.state !== 'running'}
+            <div class="flex items-center gap-2">
+              {#if provider.id === 'agy'}
+                <input class="input w-40" placeholder="Label (optional)" aria-label="Account label" bind:value={label} />
+              {/if}
+              <button class="btn" disabled={loading} onclick={() => void start(provider.id)}>
+                {provider.signedIn ? 'Add account' : 'Connect'}
               </button>
             </div>
           {/if}
-        </li>
-      {/each}
-      {#if addable.length === 0}
-        <li class="py-2 text-[13px] text-fg-3">No provider matches.</li>
-      {/if}
-    </ul>
+        </div>
+
+        {#if flow}
+          <div class="border-t border-border p-4" transition:slideDown>
+            <div class="flex items-center justify-between gap-3">
+              <div class="text-[14px] font-medium">
+                {#if flow.state === 'running'}Waiting for sign-in
+                {:else if flow.state === 'succeeded'}Signed in
+                {:else if flow.state === 'canceled'}Login canceled
+                {:else}Login failed{/if}
+              </div>
+              {#if flow.state === 'running'}
+                <button class="btn" onclick={() => void cancelFlow(provider.id)}>Cancel</button>
+              {:else}
+                <button class="btn" onclick={() => dismiss(provider.id)}>Dismiss</button>
+              {/if}
+            </div>
+
+            {#if flow.state === 'running'}
+              {#if provider.id === 'openai-codex'}
+                <p class="mt-3 text-[13px] text-fg-3">
+                  Open
+                  <a class="underline" href={codex?.verificationUri} target="_blank" rel="noreferrer">
+                    {codex?.verificationUri}
+                  </a>
+                  and enter this code.
+                </p>
+                <code class="mt-2 block w-fit rounded bg-surface-3 px-3 py-2 font-mono text-lg tracking-wider">
+                  {codex?.userCode}
+                </code>
+                {#if codex?.expiresAt}
+                  <p class="mt-2 text-[12px] text-fg-3">Expires {new Date(codex.expiresAt).toLocaleTimeString()}.</p>
+                {/if}
+              {:else if provider.id === 'claude'}
+                {#if claude?.url}
+                  <p class="mt-3 text-[13px] text-fg-3">
+                    Open
+                    <a class="underline" href={claude.url} target="_blank" rel="noreferrer">the Claude sign-in page</a>
+                    and approve access. Then paste the code it shows.
+                  </p>
+                  <div class="mt-2 flex gap-2">
+                    <input class="input min-w-0 flex-1" placeholder="Paste code" bind:value={code} />
+                    <button class="btn" disabled={loading || !code.trim()} onclick={() => void completeClaude()}>
+                      Complete
+                    </button>
+                  </div>
+                {:else}
+                  <p class="mt-3 text-[13px] text-fg-3">Waiting for the CLI to print the sign-in link…</p>
+                {/if}
+              {:else if login?.url}
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <a class="btn" href={login.url} target="_blank" rel="noreferrer">Open sign-in page</a>
+                  <button class="btn" onclick={() => void copy()}>{copied ? 'Copied' : 'Copy link'}</button>
+                </div>
+                <p class="mt-3 text-[13px] text-fg-3">
+                  After signing in, the browser lands on a <code>127.0.0.1</code> address that does not
+                  load on a remote machine. Paste that address here.
+                </p>
+                <div class="mt-2 flex gap-2">
+                  <input class="input min-w-0 flex-1" placeholder="http://127.0.0.1:…" bind:value={address} />
+                  <button class="btn" disabled={loading || !address} onclick={() => void complete()}>
+                    Complete
+                  </button>
+                </div>
+              {:else}
+                <p class="mt-3 text-[13px] text-fg-3">Waiting for the server to print the sign-in link…</p>
+              {/if}
+            {:else if flow.state === 'succeeded'}
+              <p class="mt-2 text-[13px] text-fg-3">Tier {flow.tier || 'unknown'}. The Account is ready for Sessions.</p>
+            {:else if flow.error}
+              <p class="mt-2 text-[13px] text-status-failed">{flow.error}</p>
+            {/if}
+          </div>
+        {/if}
+
+        {#if provider.accounts.length}
+          <ul class="divide-y divide-border border-t border-border">
+            {#each provider.accounts as account (account.id)}
+              <li
+                class="flex items-center justify-between gap-3 px-4 py-2.5"
+                use:flipReady
+                animate:flip={flipAnimation()}
+                in:slide={rowEnter}
+                out:fade={motionParams()}
+              >
+                <div>
+                  <div class="text-[14px]">{account.label}</div>
+                  <div class="text-[12px] text-fg-3">
+                    {account.signedIn ? `Tier ${account.tier || 'unknown'}` : 'Not signed in'}
+                  </div>
+                </div>
+                {#if account.signedIn}
+                  <button class="btn" onclick={() => void signOut(account.id)}>
+                    {provider.auth === 'key' ? 'Remove key' : 'Sign out'}
+                  </button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/each}
+
+    <div class="rounded-2xl border border-border bg-surface-1 p-4">
+      <div class="font-medium">Add provider</div>
+      <p class="mt-1 text-[12px] text-fg-3">
+        Paste an API key. pi Sessions reach the provider through the proxy; the key stays in the
+        daemon's keys file.
+      </p>
+      <input
+        class="input mt-3 w-full"
+        placeholder="Search providers"
+        aria-label="Search providers"
+        bind:value={search}
+      />
+      <ul class="mt-2 max-h-72 divide-y divide-border overflow-y-auto">
+        {#each addable as provider (provider.id)}
+          <li class="py-2" in:slide={rowEnter}>
+            <button
+              class="row w-full px-2 py-1.5 text-left text-[14px]"
+              onclick={() => ((picked = picked === provider.id ? null : provider.id), (pickedKey = ''))}
+            >
+              <span class="flex items-center gap-2"><Brand id={provider.id} size={20} />{provider.name}</span>
+            </button>
+            {#if picked === provider.id}
+              <div class="mt-2 flex gap-2 px-2" transition:slideDown>
+                <input
+                  class="input min-w-0 flex-1"
+                  type="password"
+                  placeholder="{provider.name} API key"
+                  bind:value={pickedKey}
+                />
+                <button
+                  class="btn"
+                  disabled={loading || !pickedKey.trim()}
+                  onclick={() => void saveKey(provider.id)}
+                >
+                  Save key
+                </button>
+              </div>
+            {/if}
+          </li>
+        {/each}
+        {#if addable.length === 0}
+          <li class="py-2 text-[13px] text-fg-3">No provider matches.</li>
+        {/if}
+      </ul>
+    </div>
   </div>
 </section>

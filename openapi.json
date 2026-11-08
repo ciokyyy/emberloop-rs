@@ -1285,12 +1285,6 @@
               "null"
             ]
           },
-          "ponytailLevel": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "projectId": {
             "type": "string"
           },
@@ -1553,7 +1547,6 @@
           "id",
           "projectId",
           "title",
-          "ponytailLevel",
           "model",
           "createdAt",
           "updatedAt"
@@ -1568,9 +1561,6 @@
             "type": "string"
           },
           "model": {
-            "type": "string"
-          },
-          "ponytailLevel": {
             "type": "string"
           },
           "projectId": {

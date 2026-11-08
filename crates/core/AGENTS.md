@@ -4,7 +4,7 @@
 
 Defines shared workspace foundational types:
 - `Context`: scoped services registry and cancellation token tree
-- `EventBus`: typed event publish/subscribe
+- `EventBus`: typed event publish/subscribe. It counts unnumbered (seq 0) events a persister has not stored yet; `settled(limit)` waits for that backlog so the runner numbers its own events after the proxy's thinking and usage (`persister_started`, `event_stored`, `events_lost` are the persister's side). Without a persister it never waits.
 - `id`: unique identifier generation
 - `providers`: the endpoint registry (`ProviderEndpoint`: id, name, pi’s default `baseUrl`). `KEY_PROVIDERS` / `key_provider` feed the key UI; `OAUTH_PROVIDERS` adds Codex at `https://chatgpt.com/backend-api`. `proxy_provider` resolves both kinds for signed proxy routing. The pi harness uses the same descriptors; OAuth endpoints never appear as API-key providers and the registry contains no credentials
 

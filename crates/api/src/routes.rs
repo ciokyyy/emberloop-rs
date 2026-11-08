@@ -120,8 +120,6 @@ pub struct SessionDto {
     #[serde(rename = "projectId")]
     pub project_id: String,
     pub title: String,
-    #[serde(rename = "ponytailLevel")]
-    pub ponytail_level: String,
     pub model: String,
     #[serde(rename = "thoughtLevel", skip_serializing_if = "Option::is_none")]
     pub thought_level: Option<String>,
@@ -136,8 +134,6 @@ pub struct CreateSessionRequest {
     #[serde(rename = "projectId")]
     pub project_id: String,
     pub title: Option<String>,
-    #[serde(rename = "ponytailLevel")]
-    pub ponytail_level: Option<String>,
     pub model: Option<String>,
     #[serde(rename = "thoughtLevel")]
     pub thought_level: Option<String>,
@@ -318,19 +314,13 @@ pub async fn create_session(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let default_level = {
-        let settings = state.settings.read().await;
-        settings.ponytail_default_level.clone()
-    };
+    let default_model = state.settings.read().await.default_model.clone();
 
     let meta = SessionMeta {
         id: generate_id("ses"),
         project_id: payload.project_id,
         title: payload.title.unwrap_or_else(|| "New Session".into()),
-        ponytail_level: payload.ponytail_level.unwrap_or(default_level),
-        model: payload
-            .model
-            .unwrap_or_else(|| "gemini-3.8-flash".to_string()),
+        model: payload.model.unwrap_or(default_model),
         thought_level: payload.thought_level.filter(|l| !l.trim().is_empty()),
         created_at: now,
         updated_at: now,
@@ -418,7 +408,6 @@ fn session_dto(s: SessionMeta) -> SessionDto {
         id: s.id,
         project_id: s.project_id,
         title: s.title,
-        ponytail_level: s.ponytail_level,
         model: s.model,
         thought_level: s.thought_level,
         created_at: s.created_at,
@@ -638,6 +627,18 @@ pub async fn update_settings(
         return Err((
             StatusCode::BAD_REQUEST,
             "Title model must be provider/model".into(),
+        ));
+    }
+    if !state
+        .models
+        .entries()
+        .await
+        .iter()
+        .any(|entry| entry.id == payload.default_model)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Unknown model: {}", payload.default_model),
         ));
     }
     let mut settings = state.settings.write().await;
@@ -1194,6 +1195,47 @@ mod prompt_routes_tests {
     }
 
     #[tokio::test]
+    async fn a_steer_during_a_turn_waits_for_the_proxy_and_never_wakes_the_harness() {
+        let dir = tempdir().unwrap();
+        let data_root = DataRoot::new(dir.path());
+        let projects = ProjectsStore::load(data_root.projects_file())
+            .await
+            .unwrap();
+        let sessions = SessionsStore::load(data_root.clone()).await.unwrap();
+        sessions
+            .insert(SessionMeta {
+                id: "ses_1".into(),
+                project_id: "proj_1".into(),
+                title: "Steer".into(),
+                created_at: 1,
+                updated_at: 1,
+                ..SessionMeta::default()
+            })
+            .await
+            .unwrap();
+        let driver = Arc::new(RecordingDriver {
+            woken: std::sync::Mutex::new(Vec::new()),
+        });
+        let state = AppState::new(data_root, projects, sessions, Arc::new(EventBus::default()))
+            .with_driver(driver.clone());
+        state.steers.queue("ses_1").set_turn_active(true);
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/ses_1/steer")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"text":"go left"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(driver.woken.lock().unwrap().is_empty());
+        assert_eq!(state.steers.queue("ses_1").pending_len().await, 1);
+    }
+
+    #[tokio::test]
     async fn a_steer_on_an_idle_session_is_woken_once_and_marked_delivered() {
         let dir = tempdir().unwrap();
         let data_root = DataRoot::new(dir.path());
@@ -1214,7 +1256,6 @@ mod prompt_routes_tests {
                 id: "ses_1".into(),
                 project_id: "proj_1".into(),
                 title: "Steer".into(),
-                ponytail_level: "full".into(),
                 created_at: 1,
                 updated_at: 1,
                 ..SessionMeta::default()

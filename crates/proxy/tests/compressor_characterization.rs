@@ -451,13 +451,13 @@ fn a_batch_returns_one_report_line_per_range_in_history_order() {
     let report = compressor
         .compress_batch(
             &mut contents,
-            vec![fold(10, 12), fold(1, 3)],
+            vec![fold(10, 12), fold(1, 4)],
             &CompressPolicy::default(),
         )
         .unwrap();
     let lines: Vec<&str> = report.lines().collect();
     assert_eq!(lines.len(), 2, "{report}");
-    assert!(lines[0].contains("turns 1–2 into block b1"), "{report}");
+    assert!(lines[0].contains("turns 1–3 into block b1"), "{report}");
     assert!(lines[1].contains("turns 10–11 into block b2"), "{report}");
 }
 
@@ -739,11 +739,11 @@ fn overlapping_ranges_in_a_batch_keep_the_earlier_and_warn_about_the_later() {
     let report = compressor
         .compress_batch(
             &mut contents,
-            vec![fold(1, 4), fold(3, 5)],
+            vec![fold(1, 4), fold(2, 5)],
             &CompressPolicy::default(),
         )
         .unwrap();
-    // Turns 1..4 fold into b1; the later range 3..5 overlaps it and is not folded at all.
+    // Turns 1..4 fold into b1; the later range 2..5 overlaps it and is not folded at all.
     assert_eq!(contents.len(), 10);
     assert!(
         text(&contents[1]).contains("block b1"),
@@ -755,7 +755,7 @@ fn overlapping_ranges_in_a_batch_keep_the_earlier_and_warn_about_the_later() {
     assert!(lines[0].contains("turns 1–3 into block b1"), "{report}");
     assert!(
         lines[1].starts_with("Warning:")
-            && lines[1].contains("turns 3–4")
+            && lines[1].contains("turns 2–4")
             && lines[1].contains("turns 1–3")
             && lines[1].contains("not folded"),
         "{report}"
@@ -770,7 +770,7 @@ fn the_earlier_range_in_history_wins_whatever_the_order_given() {
     let report = compressor
         .compress_batch(
             &mut contents,
-            vec![fold(3, 5), fold(1, 4)],
+            vec![fold(2, 5), fold(1, 4)],
             &CompressPolicy::default(),
         )
         .unwrap();
@@ -853,7 +853,7 @@ fn a_spill_failure_on_the_first_fold_changes_nothing() {
     let error = compressor
         .compress_batch(
             &mut contents,
-            vec![fold(1, 3), fold(6, 8)],
+            vec![fold(1, 4), fold(6, 8)],
             &CompressPolicy::default(),
         )
         .expect_err("spill fails");
@@ -873,7 +873,7 @@ fn a_failed_spill_midway_through_a_batch_changes_nothing() {
     let error = compressor
         .compress_batch(
             &mut contents,
-            vec![fold(1, 3), fold(6, 8)],
+            vec![fold(1, 4), fold(6, 8)],
             &CompressPolicy::default(),
         )
         .expect_err("spill fails");
@@ -899,7 +899,7 @@ fn a_failed_spill_midway_through_a_batch_changes_nothing() {
     let report = compressor
         .compress_batch(
             &mut retry,
-            vec![fold(1, 3), fold(6, 8)],
+            vec![fold(1, 4), fold(6, 8)],
             &CompressPolicy::default(),
         )
         .expect("retry succeeds");

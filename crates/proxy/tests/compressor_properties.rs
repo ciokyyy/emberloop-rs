@@ -127,9 +127,32 @@ fn folds(len: usize) -> impl Strategy<Value = Vec<(usize, usize)>> {
 
 fn history_with_folds(distinct: bool) -> impl Strategy<Value = (Vec<Value>, Vec<(usize, usize)>)> {
     history(distinct).prop_flat_map(|turns| {
-        let folds = folds(turns.len());
+        let folds = folds(turns.len()).prop_map({
+            let turns = turns.clone();
+            move |folds| keep_pairs(&turns, folds)
+        });
         (Just(turns), folds)
     })
+}
+
+/// A call and its result are adjacent turns, and a fold may not cut between them: an edge that
+/// lands on a result moves to take the pair.
+fn keep_pairs(turns: &[Value], folds: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    let is_result = |index: usize| {
+        turns[index]["parts"].as_array().is_some_and(|parts| {
+            parts
+                .iter()
+                .any(|part| part.get("functionResponse").is_some())
+        })
+    };
+    folds
+        .into_iter()
+        .map(|(start, end)| {
+            let start = if is_result(start) { start - 1 } else { start };
+            let end = if is_result(end) { end + 1 } else { end };
+            (start, end)
+        })
+        .collect()
 }
 
 fn calls(folds: &[(usize, usize)]) -> Vec<CompressCall> {

@@ -17,6 +17,7 @@ use utoipa::ToSchema;
 pub struct Settings {
     pub title_generation: bool,
     pub title_model: String,
+    pub default_model: String,
     pub proxy_compression: bool,
     pub ponytail_default_level: String,
     pub todo_reminders: bool,
@@ -48,6 +49,7 @@ impl Default for Settings {
         Self {
             title_generation: true,
             title_model: "openrouter/openrouter/free".into(),
+            default_model: "gemini-3.8-flash".into(),
             proxy_compression: true,
             ponytail_default_level: "full".to_string(),
             todo_reminders: true,

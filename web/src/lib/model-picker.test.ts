@@ -99,3 +99,13 @@ it('keeps the selected model when its option is selected again', async () => {
   expect(view.getByRole('combobox')).toHaveProperty('value', 'Gemini 3.8 Flash');
   expect(onchange).not.toHaveBeenCalledWith('');
 });
+
+it('virtualizes long model lists and gives each option a provider logo', async () => {
+  const many: Model[] = Array.from({ length: 300 }, (_, i) => ({ ...models[0], id: `m-${i}`, label: `Model ${i}` }));
+  const view = render(ModelPicker, { models: many, value: 'm-0' });
+  await fireEvent.click(view.getByRole('button', { name: 'Show model options' }));
+  const rendered = view.getAllByRole('option');
+  expect(rendered.length).toBeGreaterThan(0);
+  expect(rendered.length).toBeLessThan(60);
+  expect(rendered[0].querySelector('svg')).toBeTruthy();
+});

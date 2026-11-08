@@ -12,7 +12,6 @@ fn meta(id: &str, last_used_at: u64) -> SessionMeta {
         id: id.into(),
         project_id: "proj_1".into(),
         title: "Old Session".into(),
-        ponytail_level: "full".into(),
         created_at: last_used_at,
         updated_at: last_used_at,
         last_used_at: Some(last_used_at),

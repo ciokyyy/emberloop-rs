@@ -14,6 +14,7 @@ Cargo workspace containing all library and binary crates for emberloop-rs.
 - `crates/harness-acp/AGENTS.md` — Shared ACP session driver
 - `crates/harness-agy/AGENTS.md` — agy ACP harness implementation
 - `crates/harness-pi/AGENTS.md` — pi-rust ACP harness implementation
+- `crates/harness-claude/AGENTS.md` — Claude Code stream-json harness: resume, init, stderr tail, fake CLI, live test
 - `crates/api/AGENTS.md` — REST API, model/effort and image validation, model catalogue, SSE streaming, OpenAPI schema
 - `crates/tools/AGENTS.md` — MCP tool server: read, grep, hashline edit, bash, background, jail and spill store
 - `crates/daemon/AGENTS.md` — daemon composition root, CLI, embedded SPA, MCP and harness wiring, acceptance tests

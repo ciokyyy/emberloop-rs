@@ -26,6 +26,10 @@ struct FakeUpstream {
     hang: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     /// The next call answers 500 instead of its usual response.
     fail_next: Arc<AtomicBool>,
+    /// The next this-many calls answer 502, as a gateway in front of the provider does.
+    bad_gateways: Arc<AtomicUsize>,
+    /// Every call from this 1-based number on answers 400 (0 = never), as a request with an orphaned tool result does.
+    reject_from: Arc<AtomicUsize>,
     /// Calls never answer while set, so a client that gives up cancels the request.
     stall: Arc<AtomicBool>,
     /// Signalled when a stalled call arrives, so a test knows the request is in flight.
@@ -44,6 +48,8 @@ impl FakeUpstream {
             sse: Arc::new(Mutex::new(VecDeque::new())),
             hang: Arc::new(Mutex::new(None)),
             fail_next: Arc::new(AtomicBool::new(false)),
+            bad_gateways: Arc::new(AtomicUsize::new(0)),
+            reject_from: Arc::new(AtomicUsize::new(0)),
             stall: Arc::new(AtomicBool::new(false)),
             arrived: Arc::new(tokio::sync::Notify::new()),
             script: Arc::new(Mutex::new(VecDeque::new())),
@@ -92,8 +98,25 @@ async fn fake_upstream(
         std::future::pending::<()>().await;
     }
     fake.calls.fetch_add(1, Ordering::SeqCst);
+    let reject_from = fake.reject_from.load(Ordering::SeqCst);
+    if reject_from > 0 && fake.calls.load(Ordering::SeqCst) >= reject_from {
+        return (
+            StatusCode::BAD_REQUEST,
+            "No tool call found for function call output",
+        )
+            .into_response();
+    }
     let body_size = body.to_string().len();
     fake.bodies.lock().unwrap().push(body);
+    if fake
+        .bad_gateways
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            left.checked_sub(1)
+        })
+        .is_ok()
+    {
+        return (StatusCode::BAD_GATEWAY, "bad gateway").into_response();
+    }
     if fake.fail_next.swap(false, Ordering::SeqCst) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "upstream failed").into_response();
     }
@@ -247,7 +270,6 @@ async fn fixture_config(
             id: "ses_1".into(),
             project_id: "proj_1".into(),
             title: "Proxy".into(),
-            ponytail_level: "full".into(),
             created_at: 1,
             updated_at: 1,
             prompt_hashes: HashMap::new(),
@@ -1121,6 +1143,284 @@ async fn a_key_provider_route_forwards_to_its_origin_with_the_clients_key() {
     assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
 }
 
+const CLAUDE_AUTH: &str = "Bearer sk-ant-oat-claude-test-secret";
+
+#[derive(Clone, Debug)]
+struct ClaudeCall {
+    path: String,
+    query: Option<String>,
+    auth: Option<String>,
+    beta: Option<String>,
+    body: Value,
+}
+
+type ClaudeSeen = Arc<Mutex<Vec<ClaudeCall>>>;
+
+/// Answers both Anthropic paths the Claude CLI calls; a `claude-fail` model answers 500.
+async fn claude_upstream(
+    AxumState(seen): AxumState<ClaudeSeen>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let text = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    seen.lock().unwrap().push(ClaudeCall {
+        path: uri.path().to_string(),
+        query: uri.query().map(str::to_string),
+        auth: text("authorization"),
+        beta: text("anthropic-beta"),
+        body: body.clone(),
+    });
+    if body["model"] == "claude-fail" {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "upstream failed").into_response();
+    }
+    if uri.path() == "/v1/messages/count_tokens" {
+        return Json(json!({"input_tokens": 7})).into_response();
+    }
+    Json(json!({
+        "id": "msg_claude",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "claude ok"}],
+        "usage": {"input_tokens": 30, "output_tokens": 4}
+    }))
+    .into_response()
+}
+
+async fn claude_fixture() -> (Fixture, ClaudeSeen) {
+    let seen: ClaudeSeen = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = AxumRouter::new()
+        .route("/v1/messages", post(claude_upstream))
+        .route("/v1/messages/count_tokens", post(claude_upstream))
+        .layer(axum::extract::DefaultBodyLimit::max(128 * 1024 * 1024))
+        .with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_claude_upstream(format!("http://{addr}"))
+    })
+    .await;
+    (fixture, seen)
+}
+
+fn claude_call(token: &str, path: &str, body: &Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/proxy/{token}/{path}"))
+        .header(header::AUTHORIZATION, CLAUDE_AUTH)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("anthropic-version", "2023-06-01")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn claude_route_forwards_generation_with_the_clients_auth_and_injects_the_policy() {
+    let (fixture, seen) = claude_fixture().await;
+    let req = json!({
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let response = router(fixture.state.clone())
+        .oneshot(claude_call(
+            &fixture.token,
+            "claude/v1/messages?beta=true",
+            &req,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("claude ok"));
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].path, "/v1/messages");
+    assert_eq!(seen[0].query.as_deref(), Some("beta=true"));
+    assert_eq!(seen[0].auth.as_deref(), Some(CLAUDE_AUTH));
+    assert_eq!(seen[0].beta.as_deref(), Some("oauth-2025-04-20"));
+    let system = serde_json::to_string(&seen[0].body["system"]).unwrap();
+    assert!(system.contains("Emberloop proxy policy"), "{system}");
+}
+
+#[tokio::test]
+async fn claude_route_forwards_other_paths_plain_with_the_clients_auth() {
+    let (fixture, seen) = claude_fixture().await;
+    let req = json!({
+        "model": "claude-sonnet-4-6",
+        "messages": [{"role": "user", "content": "count me"}]
+    });
+    let response = router(fixture.state.clone())
+        .oneshot(claude_call(
+            &fixture.token,
+            "claude/v1/messages/count_tokens",
+            &req,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("input_tokens"));
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].path, "/v1/messages/count_tokens");
+    assert_eq!(seen[0].auth.as_deref(), Some(CLAUDE_AUTH));
+    assert_eq!(seen[0].beta.as_deref(), Some("oauth-2025-04-20"));
+    assert_eq!(seen[0].body, req, "a non-generation body is not rewritten");
+}
+
+#[tokio::test]
+async fn claude_route_refuses_an_unknown_session_token() {
+    let (fixture, seen) = claude_fixture().await;
+    let req = json!({"model": "claude-sonnet-4-6", "messages": []});
+    let response = router(fixture.state.clone())
+        .oneshot(claude_call("00ff", "claude/v1/messages", &req))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn claude_route_publishes_usage_and_never_publishes_the_token() {
+    let (fixture, _seen) = claude_fixture().await;
+    let mut events = fixture.events.subscribe();
+    let ok = json!({"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "hi"}]});
+    let response = router(fixture.state.clone())
+        .oneshot(claude_call(&fixture.token, "claude/v1/messages", &ok))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let failing = json!({"model": "claude-fail", "messages": [{"role": "user", "content": "hi"}]});
+    let response = router(fixture.state.clone())
+        .oneshot(claude_call(&fixture.token, "claude/v1/messages", &failing))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    let mut usage = None;
+    let mut published = String::new();
+    while let Ok(event) = events.try_recv() {
+        published.push_str(&event.data.to_string());
+        if event.kind == EventKind::Usage {
+            usage = Some(event.data);
+        }
+    }
+    let usage = usage.expect("a usage event for the claude route");
+    assert_eq!(usage["inputTokens"], 30);
+    assert_eq!(usage["outputTokens"], 4);
+    assert!(
+        !published.contains("sk-ant-oat-claude-test-secret"),
+        "published events must not carry the client's credential"
+    );
+}
+
+#[tokio::test]
+async fn claude_route_runs_the_pi_anthropic_pipeline_and_publishes_the_same_events() {
+    let seen: ClaudeSeen = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = AxumRouter::new()
+        .route("/v1/messages", post(claude_upstream))
+        .route("/inference/go/anthropic/v1/messages", post(claude_upstream))
+        .with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config
+            .with_claude_upstream(format!("http://{addr}"))
+            .with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+    let req = json!({
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 64,
+        "messages": [
+            {"role": "user", "content": "turn 0"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_p1", "name": "read", "input": {"path": "x"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_p1", "content": "x body"}]},
+            {"role": "user", "content": "turn 1"}
+        ]
+    });
+
+    let mut runs = Vec::new();
+    for path in ["claude/v1/messages", "v1/v1/messages"] {
+        let mut events = fixture.events.subscribe();
+        fixture
+            .steers
+            .queue("ses_1")
+            .enqueue(
+                emberloop_core::steer::SteerKind::Steer,
+                "steer: parity note",
+            )
+            .await;
+        let response = router(fixture.state.clone())
+            .oneshot(claude_call(&fixture.token, path, &req))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let mut kinds: Vec<String> = Vec::new();
+        let mut usage = None;
+        while let Ok(event) = events.try_recv() {
+            kinds.push(format!("{:?}", event.kind));
+            if event.kind == EventKind::Usage {
+                usage = Some(event.data);
+            }
+        }
+        kinds.sort();
+        kinds.dedup();
+        runs.push((kinds, usage.expect("a usage event")));
+    }
+
+    assert_eq!(runs[0].0, runs[1].0, "same event kinds on both routes");
+    assert!(
+        runs[0].0.contains(&"SteerDelivered".to_string()),
+        "{:?}",
+        runs[0].0
+    );
+    assert!(runs[0].0.contains(&"Usage".to_string()), "{:?}", runs[0].0);
+    let breakdown = runs[0].1["breakdown"].as_object().expect("a breakdown");
+    let other = runs[1].1["breakdown"].as_object().expect("a breakdown");
+    assert_eq!(
+        breakdown.keys().collect::<Vec<_>>(),
+        other.keys().collect::<Vec<_>>()
+    );
+    assert!(breakdown["toolDefinitions"].as_u64().unwrap_or(0) > 0);
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    for call in seen.iter() {
+        let system = serde_json::to_string(&call.body["system"]).unwrap();
+        assert!(system.contains("Emberloop proxy policy"), "{system}");
+        let tools = serde_json::to_string(&call.body["tools"]).unwrap();
+        assert!(tools.contains("\"compress\""), "{tools}");
+        let messages = serde_json::to_string(&call.body["messages"]).unwrap();
+        assert!(messages.contains("steer: parity note"), "{messages}");
+    }
+}
+
 #[tokio::test]
 async fn a_large_tool_result_goes_upstream_as_a_ctx_handle_with_stable_bytes() {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1206,7 +1506,7 @@ async fn pi_anthropic_and_responses_wires_inject_prompts_tools_steers_and_compre
                     "type": "tool_use",
                     "id": "toolu_comp_1",
                     "name": "compress",
-                    "input": {"start": 0, "end": 2, "summary": "folded intro", "topic": "intro"}
+                    "input": {"start": 0, "end": 3, "summary": "folded intro", "topic": "intro"}
                 }],
                 "usage": {"input_tokens": 20, "output_tokens": 5}
             }))
@@ -1257,7 +1557,9 @@ async fn pi_anthropic_and_responses_wires_inject_prompts_tools_steers_and_compre
         "messages": [
             {"role": "user", "content": "turn 0"},
             {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "read", "input": {"path": "x"}}]},
-            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "x body"}]}
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "x body"}]},
+            {"role": "assistant", "content": "read it"},
+            {"role": "user", "content": "turn 1"}
         ]
     });
     let resp = router(fixture.state.clone())
@@ -1286,7 +1588,7 @@ async fn pi_anthropic_and_responses_wires_inject_prompts_tools_steers_and_compre
         assert!(msg_str.contains("steer: anthropic note"));
         let second = &captured[1].1;
         let second_msgs = serde_json::to_string(&second["messages"]).unwrap();
-        assert!(second_msgs.contains("Compressed turns 0–1 into block b1"));
+        assert!(second_msgs.contains("Compressed turns 0–2 into block b1"));
     }
 
     let mut saw_compression = false;
@@ -1613,6 +1915,291 @@ async fn anthropic_streaming_proxy_tool_is_swallowed_and_followed_up() {
     );
 }
 
+/// Answers every Anthropic `messages` call from a script, recording each request body.
+#[derive(Clone)]
+struct AnthropicUpstream {
+    seen: Arc<Mutex<Vec<Value>>>,
+    /// Content type and body of each answer, in call order.
+    answers: Arc<Mutex<VecDeque<(&'static str, String)>>>,
+}
+
+async fn anthropic_upstream(
+    AxumState(upstream): AxumState<AnthropicUpstream>,
+    Json(body): Json<Value>,
+) -> Response {
+    upstream.seen.lock().unwrap().push(body);
+    let (content_type, answer) = upstream
+        .answers
+        .lock()
+        .unwrap()
+        .pop_front()
+        .expect("the upstream was called more often than scripted");
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(answer))
+        .unwrap()
+}
+
+async fn anthropic_fixture(answers: Vec<(&'static str, String)>) -> (Fixture, AnthropicUpstream) {
+    let upstream = AnthropicUpstream {
+        seen: Arc::new(Mutex::new(Vec::new())),
+        answers: Arc::new(Mutex::new(answers.into())),
+    };
+    let app = AxumRouter::new()
+        .route(
+            "/inference/go/anthropic/v1/messages",
+            post(anthropic_upstream),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(128 * 1024 * 1024))
+        .with_state(upstream.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+    (fixture, upstream)
+}
+
+/// One Anthropic SSE response: each event as its own `data:` line.
+fn anthropic_stream(events: Vec<Value>) -> String {
+    events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect()
+}
+
+async fn post_anthropic(fixture: &Fixture, body: Value) -> String {
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/proxy/{}/v1/v1/messages", fixture.token))
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn anthropic_request() -> Value {
+    json!({
+        "model": "claude-sonnet",
+        "stream": true,
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "more"},
+            {"role": "assistant", "content": "still"},
+            {"role": "user", "content": "latest"}
+        ]
+    })
+}
+
+/// The last two messages of an Anthropic follow-up: the model's turn and the user turn answering it.
+fn last_two_messages(body: &Value) -> (Value, Value) {
+    let messages = body["messages"].as_array().expect("messages");
+    let [.., assistant, user] = messages.as_slice() else {
+        panic!("the follow-up has fewer than two messages: {body}");
+    };
+    (assistant.clone(), user.clone())
+}
+
+/// The follow-up's model turn carries the blocks the model sent, in order, and the user turn answers
+/// its `compress` call with one tool_result.
+fn thinking_compress_blocks_are_kept(
+    assistant: &Value,
+    user: &Value,
+    compress_id: &str,
+    thinking: &Value,
+) {
+    assert_eq!(assistant["role"], "assistant", "{assistant}");
+    let blocks = assistant["content"].as_array().expect("assistant blocks");
+    assert_eq!(
+        blocks[0],
+        json!({"type": "redacted_thinking", "data": "REDACTED-BLOB"}),
+        "{assistant}"
+    );
+    assert_eq!(&blocks[1], thinking, "{assistant}");
+    assert_eq!(
+        blocks[2],
+        json!({"type": "text", "text": "Folding now."}),
+        "{assistant}"
+    );
+    assert_eq!(
+        blocks[3],
+        json!({
+            "type": "tool_use",
+            "id": compress_id,
+            "name": "compress",
+            "input": {"start": 0, "end": 1, "summary": "folded intro"}
+        }),
+        "{assistant}"
+    );
+    assert_eq!(blocks.len(), 4, "{assistant}");
+    assert_eq!(user["role"], "user", "{user}");
+    let results = user["content"].as_array().expect("user blocks");
+    assert_eq!(results.len(), 1, "{user}");
+    assert_eq!(results[0]["type"], "tool_result", "{user}");
+    assert_eq!(results[0]["tool_use_id"], compress_id, "{user}");
+    assert!(
+        results[0]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("compress")),
+        "{user}"
+    );
+}
+
+/// A streamed proxy-only round keeps the model's thinking (with its signature), redacted
+/// thinking and text blocks, and its tool_use with the streamed input, ahead of the tool_result
+/// the proxy answers with: Anthropic needs the turn's own blocks in the tool-use loop.
+#[tokio::test]
+async fn anthropic_streamed_proxy_round_follow_up_keeps_the_thinking_blocks() {
+    let round_one = anthropic_stream(vec![
+        json!({"type": "message_start", "message": {"id": "msg_1", "role": "assistant"}}),
+        json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "redacted_thinking", "data": "REDACTED-BLOB"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "content_block_start", "index": 1,
+            "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+        json!({"type": "content_block_delta", "index": 1,
+            "delta": {"type": "thinking_delta", "thinking": "Fold the early turns. "}}),
+        json!({"type": "content_block_delta", "index": 1,
+            "delta": {"type": "thinking_delta", "thinking": "Then answer."}}),
+        json!({"type": "content_block_delta", "index": 1,
+            "delta": {"type": "signature_delta", "signature": "SIG-THINK"}}),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({"type": "content_block_start", "index": 2,
+            "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 2,
+            "delta": {"type": "text_delta", "text": "Folding now."}}),
+        json!({"type": "content_block_stop", "index": 2}),
+        json!({"type": "content_block_start", "index": 3,
+            "content_block": {"type": "tool_use", "id": "toolu_c1", "name": "compress", "input": {}}}),
+        json!({"type": "content_block_delta", "index": 3,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"start\":0,\"end\":1,"}}),
+        json!({"type": "content_block_delta", "index": 3,
+            "delta": {"type": "input_json_delta", "partial_json": "\"summary\":\"folded intro\"}"}}),
+        json!({"type": "content_block_stop", "index": 3}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
+        json!({"type": "message_stop"}),
+    ]);
+    let round_two = anthropic_stream(vec![
+        json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": "done after compress"}}),
+        json!({"type": "message_stop"}),
+    ]);
+    let (fixture, upstream) = anthropic_fixture(vec![
+        ("text/event-stream", round_one),
+        ("text/event-stream", round_two),
+    ])
+    .await;
+
+    let text = post_anthropic(&fixture, anthropic_request()).await;
+    assert!(text.contains("done after compress"), "{text}");
+    assert!(!text.contains("toolu_c1"), "proxy call leaked: {text}");
+
+    let captured = upstream.seen.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    let (assistant, user) = last_two_messages(&captured[1]);
+    thinking_compress_blocks_are_kept(
+        &assistant,
+        &user,
+        "toolu_c1",
+        &json!({
+            "type": "thinking",
+            "thinking": "Fold the early turns. Then answer.",
+            "signature": "SIG-THINK"
+        }),
+    );
+}
+
+/// The same proxy-only round answered as one JSON body takes the same follow-up shape.
+#[tokio::test]
+async fn anthropic_buffered_proxy_round_follow_up_keeps_the_thinking_blocks() {
+    let round_one = json!({
+        "id": "msg_2",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {"type": "redacted_thinking", "data": "REDACTED-BLOB"},
+            {"type": "thinking", "thinking": "Fold the early turns. Then answer.", "signature": "SIG-THINK"},
+            {"type": "text", "text": "Folding now."},
+            {"type": "tool_use", "id": "toolu_c1", "name": "compress",
+                "input": {"start": 0, "end": 1, "summary": "folded intro"}}
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 10, "output_tokens": 5}
+    });
+    let round_two = json!({
+        "id": "msg_3",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "done after compress"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 12, "output_tokens": 4}
+    });
+    let (fixture, upstream) = anthropic_fixture(vec![
+        ("application/json", round_one.to_string()),
+        ("application/json", round_two.to_string()),
+    ])
+    .await;
+    let mut request = anthropic_request();
+    request["stream"] = json!(false);
+
+    let text = post_anthropic(&fixture, request).await;
+    assert!(text.contains("done after compress"), "{text}");
+
+    let captured = upstream.seen.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    let (assistant, user) = last_two_messages(&captured[1]);
+    thinking_compress_blocks_are_kept(
+        &assistant,
+        &user,
+        "toolu_c1",
+        &json!({
+            "type": "thinking",
+            "thinking": "Fold the early turns. Then answer.",
+            "signature": "SIG-THINK"
+        }),
+    );
+}
+
+/// A round that mixes a proxy call with a harness call is not followed up: the harness call
+/// reaches the client and the upstream is called once.
+#[tokio::test]
+async fn anthropic_mixed_round_still_hands_the_harness_call_to_the_client() {
+    let round_one = anthropic_stream(vec![
+        json!({"type": "message_start", "message": {"id": "msg_1", "role": "assistant"}}),
+        json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "tool_use", "id": "toolu_c1", "name": "compress", "input": {}}}),
+        json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"start\":0,\"end\":1,\"summary\":\"x\"}"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "content_block_start", "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_r1", "name": "read", "input": {}}}),
+        json!({"type": "content_block_delta", "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"path\":\"a.rs\"}"}}),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
+        json!({"type": "message_stop"}),
+    ]);
+    let (fixture, upstream) = anthropic_fixture(vec![("text/event-stream", round_one)]).await;
+
+    let text = post_anthropic(&fixture, anthropic_request()).await;
+    assert!(text.contains("toolu_r1"), "harness call missing: {text}");
+    assert!(text.contains("a.rs"), "harness input missing: {text}");
+    assert_eq!(upstream.seen.lock().unwrap().len(), 1);
+}
+
 /// A fold chosen while a steer sat inside the history must still apply to the history the harness
 /// resends, which does not carry the steer turn: the steer is put back first, so the fold's stored
 /// turns match again.
@@ -1930,7 +2517,7 @@ async fn nudge_turn_numbers_match_the_final_contents_after_a_stored_steer() {
     // compress takes start inclusive and end exclusive; the kept tail is the last 3 turns.
     let final_turns = sent["contents"].as_array().unwrap().len() - 1;
     let end = final_turns - 3;
-    assert!(text.contains(&format!("turns 1–{}", end - 1)), "{text}");
+    assert!(text.contains(&format!("start 1, end {end}")), "{text}");
 }
 
 #[tokio::test]
@@ -2317,7 +2904,7 @@ fn the_compressible_range_ends_before_the_latest_user_message() {
     // The range is turns 1..4: the latest user message at 4 is never part of it, so the
     // 160000-character results after it are not counted as compressible mass.
     assert_eq!(view.tokens, turns_tokens(&turns[1..4]));
-    assert!(view.ranges.contains("turns 1–3"), "{}", view.ranges);
+    assert!(view.ranges.contains("start 1, end 4"), "{}", view.ranges);
 }
 
 #[test]
@@ -2332,7 +2919,7 @@ fn the_compressible_range_is_not_cut_when_the_only_user_message_is_the_first_tur
     ];
     let view = compressible_view(&turns, 1);
     assert_eq!(view.tokens, turns_tokens(&turns[1..3]));
-    assert!(view.ranges.contains("turns 1–2"), "{}", view.ranges);
+    assert!(view.ranges.contains("start 1, end 3"), "{}", view.ranges);
 }
 
 #[tokio::test]
@@ -3224,4 +3811,285 @@ async fn a_compress_during_an_emergency_restores_the_full_results() {
         Some(full.as_str()),
         "decompress restores the result as the harness sent it"
     );
+}
+
+#[tokio::test]
+async fn a_bad_gateway_is_retried_before_the_harness_sees_it() {
+    let fake = text_only_fake();
+    fake.bad_gateways.store(2, Ordering::SeqCst);
+    let fixture = fixture_config(fake, |config| config.with_retry_backoff(Duration::ZERO)).await;
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&response).contains("done"));
+}
+
+#[tokio::test]
+async fn a_gateway_that_keeps_failing_gives_up_with_its_status() {
+    let fake = text_only_fake();
+    fake.bad_gateways.store(10, Ordering::SeqCst);
+    let fixture = fixture_config(fake, |config| config.with_retry_backoff(Duration::ZERO)).await;
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn a_follow_up_the_upstream_rejects_ends_the_turn_with_an_error_event() {
+    let fake = FakeUpstream::sse(vec![sse_event(json!([{
+        "functionCall": {
+            "id": "call_0",
+            "name": "compress",
+            "args": {"start": 0, "end": 1, "summary": "fold"}
+        }
+    }]))]);
+    fake.reject_from.store(2, Ordering::SeqCst);
+    let fixture = fixture_config(fake, |config| config.with_retry_backoff(Duration::ZERO)).await;
+    let mut events = fixture.events.subscribe();
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&response).contains("No tool call found"));
+    let mut message = None;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == EventKind::Error {
+            message = event.data["message"].as_str().map(str::to_string);
+        }
+    }
+    assert!(message.is_some_and(|text| text.contains("400") && text.contains("No tool call found")));
+}
+
+/// The two Anthropic routes that run the same generation pipeline: the Claude CLI route and the
+/// pi harness's Anthropic route.
+#[derive(Clone, Copy, Debug)]
+enum AnthropicRoute {
+    Claude,
+    Pi,
+}
+
+/// A user message whose text part carries a system reminder, as Claude Code sends CLAUDE.md.
+fn reminder_message(reminder: &str, text: &str) -> Value {
+    json!({"role": "user", "content": [
+        {"type": "text", "text": format!("<system-reminder>{reminder}</system-reminder>")},
+        {"type": "text", "text": text}
+    ]})
+}
+
+fn text_message(role: &str, text: &str) -> Value {
+    json!({"role": role, "content": text})
+}
+
+fn tool_use_message(id: &str) -> Value {
+    json!({"role": "assistant", "content": [
+        {"type": "tool_use", "id": id, "name": "read", "input": {"path": "x"}}
+    ]})
+}
+
+fn tool_result_message(id: &str, result: &str) -> Value {
+    json!({"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": id, "content": result}
+    ]})
+}
+
+fn messages_request(messages: Vec<Value>) -> Value {
+    json!({"model": "claude-sonnet-4-6", "max_tokens": 64, "stream": false, "messages": messages})
+}
+
+/// Sends an Anthropic request through `route` and returns the body the upstream received.
+async fn upstream_body_via(route: AnthropicRoute, request: Value) -> Value {
+    match route {
+        AnthropicRoute::Claude => {
+            let (fixture, seen) = claude_fixture().await;
+            let response = router(fixture.state.clone())
+                .oneshot(claude_call(&fixture.token, "claude/v1/messages", &request))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 1, "one upstream call");
+            seen[0].body.clone()
+        }
+        AnthropicRoute::Pi => {
+            let answer = json!({
+                "id": "msg_pi", "type": "message", "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            });
+            let (fixture, upstream) =
+                anthropic_fixture(vec![("application/json", answer.to_string())]).await;
+            post_anthropic(&fixture, request).await;
+            let seen = upstream.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1, "one upstream call");
+            seen[0].clone()
+        }
+    }
+}
+
+/// Every text the upstream saw in its Anthropic messages, as a string or as text blocks.
+fn message_texts(body: &Value) -> Vec<String> {
+    body["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|message| match &message["content"] {
+            Value::String(text) => vec![text.clone()],
+            Value::Array(blocks) => blocks
+                .iter()
+                .filter_map(|block| block["text"].as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+async fn the_nudge_counts_only_foldable_turns_and_names_no_protected_range(route: AnthropicRoute) {
+    // The protected reminder at turn 4 is 100000 tokens; the foldable model text at turn 7 is
+    // 10000. A nudge that counted the reminder would name turns 1–7 and a 110K breakdown. The
+    // foldable mass is model text because a tool result over 4000 tokens becomes a ctx handle.
+    let request = messages_request(vec![
+        reminder_message("CLAUDE.md rules", "run the audit"),
+        tool_use_message("t1"),
+        tool_result_message("t1", "small"),
+        text_message("assistant", "ok"),
+        reminder_message(&"r".repeat(400_000), "continue"),
+        tool_use_message("t2"),
+        tool_result_message("t2", "small"),
+        text_message("assistant", &"f".repeat(40_000)),
+        text_message("user", "latest"),
+    ]);
+    let upstream = upstream_body_via(route, request).await;
+    let nudge = message_texts(&upstream)
+        .into_iter()
+        .find(|text| text.starts_with("This is an efficiency nudge"))
+        .unwrap_or_else(|| panic!("the nudge fires on {route:?}"));
+    assert!(nudge.contains("start 1, end 4"), "{nudge}");
+    assert!(nudge.contains("start 5, end 8"), "{nudge}");
+    assert!(!nudge.contains("start 1, end 8"), "{nudge}");
+    assert!(
+        nudge.contains("Context breakdown: 10.0K tool"),
+        "only the foldable tokens are counted: {nudge}"
+    );
+}
+
+#[tokio::test]
+async fn the_nudge_counts_only_foldable_turns_on_the_claude_route() {
+    the_nudge_counts_only_foldable_turns_and_names_no_protected_range(AnthropicRoute::Claude).await;
+}
+
+#[tokio::test]
+async fn the_nudge_counts_only_foldable_turns_on_the_pi_anthropic_route() {
+    the_nudge_counts_only_foldable_turns_and_names_no_protected_range(AnthropicRoute::Pi).await;
+}
+
+async fn preflight_folds_a_run_after_a_protected_turn_and_keeps_protected_bytes(
+    route: AnthropicRoute,
+) {
+    let huge = "h".repeat(2_400_000);
+    let start = reminder_message("CLAUDE.md rules", "start the task");
+    let mid = reminder_message("skills list", "continue");
+    let request = messages_request(vec![
+        start.clone(),
+        text_message("assistant", "a small step"),
+        text_message("user", "a small question"),
+        text_message("assistant", "a small answer"),
+        mid.clone(),
+        text_message("assistant", &huge),
+        text_message("user", "more"),
+        text_message("assistant", &huge),
+        text_message("user", "latest"),
+    ]);
+    let upstream = upstream_body_via(route, request).await;
+    let messages = upstream["messages"].as_array().unwrap();
+    assert!(
+        messages.contains(&start),
+        "the first protected turn is byte-identical"
+    );
+    assert!(
+        messages.contains(&mid),
+        "the protected turn after the first run is byte-identical"
+    );
+    let summaries: Vec<usize> = message_texts(&upstream)
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| text.contains("Preflight fold"))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        summaries.len(),
+        2,
+        "the first run and the run after the protected turn fold"
+    );
+    let mid_index = messages.iter().position(|message| *message == mid).unwrap();
+    assert!(
+        summaries.iter().any(|&index| index > mid_index),
+        "a fold lands after the protected turn"
+    );
+    assert!(
+        message_texts(&upstream)
+            .iter()
+            .all(|text| text.len() < 1_000_000),
+        "the huge turns are folded away"
+    );
+}
+
+#[tokio::test]
+async fn preflight_folds_a_run_after_a_protected_turn_on_the_claude_route() {
+    preflight_folds_a_run_after_a_protected_turn_and_keeps_protected_bytes(AnthropicRoute::Claude)
+        .await;
+}
+
+#[tokio::test]
+async fn preflight_folds_a_run_after_a_protected_turn_on_the_pi_anthropic_route() {
+    preflight_folds_a_run_after_a_protected_turn_and_keeps_protected_bytes(AnthropicRoute::Pi)
+        .await;
+}
+
+async fn an_all_protected_conversation_folds_nothing_and_stops(route: AnthropicRoute) {
+    // Every user turn is protected and every model turn is a run of one, which no fold takes.
+    // The request is over the 1M window, so preflight runs and must find nothing to fold.
+    let huge = "h".repeat(1_600_000);
+    let messages = vec![
+        reminder_message("CLAUDE.md rules", &huge),
+        text_message("assistant", "ok"),
+        reminder_message("skills list", &huge),
+        text_message("assistant", "ok"),
+        reminder_message("latest", &huge),
+    ];
+    let upstream = upstream_body_via(route, messages_request(messages.clone())).await;
+    assert_eq!(
+        upstream["messages"],
+        json!(messages),
+        "nothing is folded or rewritten"
+    );
+    assert!(
+        !message_texts(&upstream)
+            .iter()
+            .any(|text| text.contains("Preflight fold")),
+        "no preflight fold"
+    );
+}
+
+#[tokio::test]
+async fn an_all_protected_conversation_folds_nothing_on_the_claude_route() {
+    an_all_protected_conversation_folds_nothing_and_stops(AnthropicRoute::Claude).await;
+}
+
+#[tokio::test]
+async fn an_all_protected_conversation_folds_nothing_on_the_pi_anthropic_route() {
+    an_all_protected_conversation_folds_nothing_and_stops(AnthropicRoute::Pi).await;
 }

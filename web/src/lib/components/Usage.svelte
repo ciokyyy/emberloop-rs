@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Brand from './Brand.svelte';
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
   import { rise } from '$lib/motion';
@@ -41,11 +42,11 @@
 </script>
 
 <section class="h-full overflow-y-auto px-4 py-6" in:rise|global>
-  <div class="mx-auto flex max-w-[760px] flex-col gap-5">
-    <div class="flex items-start justify-between gap-3">
+  <div class="mx-auto flex max-w-[760px] flex-col gap-6">
+    <div class="flex items-end justify-between gap-3">
       <div>
         <h2 class="text-[1.75rem] font-semibold leading-[1.2] tracking-[-0.02em]">Usage</h2>
-        <p class="text-[13px] text-fg-3">
+        <p class="mt-1 text-[13px] text-fg-3">
           Subscription windows and key balances. Cached for 60 seconds. Refresh does not change saved credentials.
         </p>
       </div>
@@ -61,43 +62,48 @@
     {/if}
 
     {#each providers as provider (provider.id)}
-      <div class="rounded-2xl border border-border bg-surface-1 p-4">
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <div class="font-medium">{provider.name}</div>
-            <div class="text-[12px] text-fg-3">
-              {subscription(provider.id) ? 'Subscription' : 'API key'} ·
-              {provider.signedIn ? 'connected' : 'not connected'}
+      {@const usage = values[provider.id]}
+      <div class="rounded-2xl border border-border bg-surface-1">
+        <div class="flex items-center justify-between gap-3 p-4">
+          <div class="flex min-w-0 items-center gap-3">
+            <Brand id={provider.id} size={32} />
+            <div class="min-w-0">
+              <div class="font-medium">{provider.name}</div>
+              <div class="text-[12px] text-fg-3">{subscription(provider.id) ? 'Subscription' : 'API key'}</div>
             </div>
           </div>
           <span class="chip">{provider.signedIn ? 'Ready' : 'Off'}</span>
         </div>
 
-        {#if !provider.signedIn}
-          <p class="mt-3 text-[13px] text-fg-3">Connect this provider from Providers to read usage.</p>
-        {:else if values[provider.id]?.error}
-          <p class="mt-3 text-[13px] text-fg-3" role="status">{values[provider.id].error}</p>
-        {:else if values[provider.id]}
-          {#if values[provider.id].balance}
-            {@const balance = values[provider.id].balance!}
-            <p class="mt-3 font-medium">{balance.currency} {balance.remaining.toFixed(2)} remaining</p>
+        <div class="border-t border-border px-4 py-3">
+          {#if !provider.signedIn}
+            <p class="text-[13px] text-fg-3">Not connected. Connect it on Providers to read usage.</p>
+          {:else if usage?.error}
+            <p class="text-[13px] text-fg-3" role="status">{usage.error}</p>
+          {:else if usage}
+            {#if usage.balance}
+              <p class="text-[20px] font-semibold tabular-nums">{usage.balance.currency} {usage.balance.remaining.toFixed(2)} remaining</p>
+            {/if}
+            {#if usage.windows.length}
+              <ul class="flex flex-col gap-4">
+                {#each usage.windows as window}
+                  <li>
+                    <div class="flex items-baseline justify-between gap-2 text-[13px]">
+                      <span>{window.label}</span>
+                      <span class="tabular-nums text-fg-3">{Math.round(window.usedPercent)}% used</span>
+                    </div>
+                    <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-3" role="progressbar" aria-label={window.label} aria-valuenow={window.usedPercent} aria-valuemin="0" aria-valuemax="100">
+                      <div class="h-full rounded-full bg-green-500" style:width={`${window.usedPercent}%`}></div>
+                    </div>
+                    {#if window.resetsAt}<div class="mt-1.5 text-[11px] text-fg-3">Resets {resetLabel(window.resetsAt)}</div>{/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          {:else}
+            <p class="text-[13px] text-fg-3">Reading usage…</p>
           {/if}
-          <div class="mt-4 grid gap-3 sm:grid-cols-2">
-            {#each values[provider.id].windows as window}
-              <div class="rounded-xl border border-border bg-background p-3">
-                <div class="flex items-center justify-between gap-2 text-[12px] text-fg-3">
-                  <span>{window.label}</span><span>{Math.round(window.usedPercent)}% used</span>
-                </div>
-                <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-3" role="progressbar" aria-label={window.label} aria-valuenow={window.usedPercent} aria-valuemin="0" aria-valuemax="100">
-                  <div class="h-full rounded-full bg-green-500" style:width={`${window.usedPercent}%`}></div>
-                </div>
-                {#if window.resetsAt}<div class="mt-2 text-[11px] text-fg-3">Resets {resetLabel(window.resetsAt)}</div>{/if}
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <p class="mt-3 text-[13px] text-fg-3">Reading usage…</p>
-        {/if}
+        </div>
       </div>
     {/each}
 

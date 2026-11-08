@@ -55,9 +55,15 @@ struct FakeSession {
     events: Vec<HarnessEvent>,
 }
 
+/// The prompt the fake Session refuses to start on.
+const FAILS: &str = "boom";
+
 #[async_trait]
 impl HarnessSession for FakeSession {
     async fn send(&self, prompt: &str, _images: Vec<PromptImage>) -> Result<(), HarnessError> {
+        if prompt == FAILS {
+            return Err(HarnessError::Process("claude did not init".into()));
+        }
         self.sent.lock().unwrap().push(prompt.to_string());
         Ok(())
     }
@@ -72,7 +78,7 @@ impl HarnessSession for FakeSession {
     }
 
     fn resume_token(&self) -> Option<String> {
-        Some("tok-1".into())
+        (!self.sent.lock().unwrap().is_empty()).then(|| "tok-1".into())
     }
 
     fn resumed(&self) -> bool {
@@ -108,6 +114,14 @@ async fn runner_with(events_stream: Vec<HarnessEvent>) -> HarnessFixture {
 }
 
 async fn runner_resuming(events_stream: Vec<HarnessEvent>, resumes: bool) -> HarnessFixture {
+    runner_with_models(events_stream, resumes, Vec::new()).await
+}
+
+async fn runner_with_models(
+    events_stream: Vec<HarnessEvent>,
+    resumes: bool,
+    sources: Vec<Arc<dyn api::models::Source>>,
+) -> HarnessFixture {
     let dir = tempdir().unwrap();
     let data_root = DataRoot::new(dir.path().join("data"));
     data_root.ensure_layout().await.unwrap();
@@ -128,7 +142,6 @@ async fn runner_resuming(events_stream: Vec<HarnessEvent>, resumes: bool) -> Har
             id: "ses_1".into(),
             project_id: "proj_1".into(),
             title: "Runner".into(),
-            ponytail_level: "full".into(),
             created_at: 1,
             updated_at: 1,
             ..SessionMeta::default()
@@ -141,8 +154,9 @@ async fn runner_resuming(events_stream: Vec<HarnessEvent>, resumes: bool) -> Har
     let prompts = Arc::new(PromptStore::new(dir.path().join("prompts")));
     let models = Arc::new(api::models::ModelCatalogue::new(
         data_root.model_catalogue_file(),
-        Vec::new(),
+        sources,
     ));
+    models.refresh().await.unwrap();
     let proxy = ProxyState::new(
         ProxyConfig::new(b"test-secret"),
         sessions.clone(),
@@ -445,4 +459,97 @@ async fn a_notice_file_becomes_a_steer_at_the_next_turn_end() {
         .metadata()
         .map(|meta| meta.len() > 0)
         .unwrap_or(false));
+}
+
+#[tokio::test]
+async fn a_token_reported_after_the_first_send_is_saved() {
+    let fixture = runner_with(Vec::new()).await;
+    fixture
+        .runner
+        .prompt("ses_1", "hi", Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .sessions
+            .get("ses_1")
+            .await
+            .unwrap()
+            .resume_token
+            .as_deref(),
+        Some("tok-1")
+    );
+}
+
+#[tokio::test]
+async fn a_prompt_the_harness_never_takes_ends_its_turn_on_screen() {
+    let fixture = runner_with(Vec::new()).await;
+    let error = fixture
+        .runner
+        .prompt("ses_1", FAILS, Vec::<PromptImageDto>::new())
+        .await
+        .expect_err("the harness refused the turn");
+    assert_eq!(error, "Process error: claude did not init");
+
+    let dir = fixture.data_root.session_events_dir("ses_1");
+    let events = EventLog::open(&dir)
+        .await
+        .unwrap()
+        .replay(None)
+        .await
+        .unwrap();
+    let kinds: Vec<EventKind> = events.iter().map(|event| event.kind.clone()).collect();
+    assert_eq!(kinds, [EventKind::Error, EventKind::Status]);
+    assert_eq!(
+        events[0].data["message"],
+        "Process error: claude did not init"
+    );
+    assert_eq!(events[1].data["state"], "idle");
+}
+
+async fn stored_kinds(fixture: &HarnessFixture) -> Vec<EventKind> {
+    let dir = fixture.data_root.session_events_dir("ses_1");
+    let events = EventLog::open(&dir).await.unwrap().replay(None).await;
+    events
+        .unwrap_or_default()
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_runner_numbers_its_events_after_the_proxys_backlog() {
+    let fixture = runner_with(vec![HarnessEvent::AssistantChunk("answer".into())]).await;
+    // The proxy's thinking is published unnumbered and the persister has not reached it yet.
+    fixture.events.persister_started();
+    fixture
+        .events
+        .publish(emberloop_core::events::SessionEvent::new(
+            "ses_1",
+            0,
+            EventKind::ThinkingChunk,
+            serde_json::json!({ "text": "thought" }),
+        ));
+    prompt_once(&fixture).await;
+    // Yielding, not sleeping: the gate holds for 250 ms, far longer than these turns take.
+    for _ in 0..200 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !stored_kinds(&fixture)
+            .await
+            .contains(&EventKind::AssistantChunk),
+        "the answer must not overtake the thinking that came before it"
+    );
+    fixture.events.event_stored();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !stored_kinds(&fixture)
+            .await
+            .contains(&EventKind::AssistantChunk)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the answer is stored once the backlog is");
 }

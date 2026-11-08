@@ -1,6 +1,10 @@
+use std::collections::{BTreeMap, HashMap};
+
 use prompts::PinnedPrompts;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
+use crate::protect::is_system_item;
 use crate::server::{ProxyCall, PROXY_TOOLS};
 use crate::turnkeys;
 
@@ -118,7 +122,34 @@ fn append_text_content(msg: &mut Value, text: &str) {
     }
 }
 
+/// Anthropic accepts at most this many `cache_control` breakpoints in one request.
+const MAX_BREAKPOINTS: usize = 4;
+
+/// Counts the `cache_control` marks anywhere in a request.
+fn breakpoints(value: &Value) -> usize {
+    match value {
+        Value::Object(map) => {
+            usize::from(map.contains_key("cache_control"))
+                + map.values().map(breakpoints).sum::<usize>()
+        }
+        Value::Array(items) => items.iter().map(breakpoints).sum(),
+        _ => 0,
+    }
+}
+
+/// The breakpoint a block appended after `last` takes over: a copy of `last`'s, only while the
+/// request has room for one more. A proxy block never moves an existing breakpoint.
+fn carried_breakpoint(request: &Value, last: Option<&Value>) -> Option<Value> {
+    let cache = last?.get("cache_control")?;
+    (breakpoints(request) < MAX_BREAKPOINTS).then(|| cache.clone())
+}
+
 fn inject_anthropic_prompt(request: &mut Value, text: &str) {
+    let last_system = request
+        .get("system")
+        .and_then(Value::as_array)
+        .and_then(|blocks| blocks.last());
+    let carry = carried_breakpoint(request, last_system);
     match request.get_mut("system") {
         Some(Value::String(existing)) => {
             if !existing.is_empty() {
@@ -127,7 +158,11 @@ fn inject_anthropic_prompt(request: &mut Value, text: &str) {
             existing.push_str(text);
         }
         Some(Value::Array(blocks)) => {
-            blocks.push(json!({ "type": "text", "text": text }));
+            let mut block = json!({ "type": "text", "text": text });
+            if let Some(cache) = carry {
+                block["cache_control"] = cache;
+            }
+            blocks.push(block);
         }
         _ => {
             request["system"] = json!(text);
@@ -308,7 +343,7 @@ fn inject_chat_tools(request: &mut Value, specs: &[ToolSpec]) {
 }
 
 fn inject_anthropic_tools(request: &mut Value, specs: &[ToolSpec]) {
-    let items: Vec<Value> = specs
+    let mut items: Vec<Value> = specs
         .iter()
         .map(|s| {
             json!({
@@ -322,6 +357,14 @@ fn inject_anthropic_tools(request: &mut Value, specs: &[ToolSpec]) {
             })
         })
         .collect();
+    let last_tool = request
+        .get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| tools.last());
+    let carry = carried_breakpoint(request, last_tool);
+    if let (Some(cache), Some(last)) = (carry, items.last_mut()) {
+        last["cache_control"] = cache;
+    }
     ensure_tool_array(request, items, |v| v.get("name")?.as_str());
 }
 
@@ -369,48 +412,58 @@ where
     }
 }
 
+/// The wire's own key for its conversation items.
+fn items_key(wire: WireKind) -> &'static str {
+    match wire {
+        WireKind::Google => "contents",
+        WireKind::OpenAiChat | WireKind::Anthropic => "messages",
+        WireKind::OpenAiResponses => "input",
+    }
+}
+
+/// The conversation turns, without system and developer items: those are protected and never
+/// fold, so they are not turns at all. `write_core_contents` writes them back.
 pub fn extract_core_contents(wire: WireKind, request: &Value) -> Option<Vec<Value>> {
     match wire {
-        WireKind::Google => request.get("contents").and_then(Value::as_array).cloned(),
+        WireKind::Google => request
+            .get("contents")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| !is_system_item(item))
+                    .cloned()
+                    .collect()
+            }),
         WireKind::OpenAiChat => chat_to_core(request.get("messages")?.as_array()?),
         WireKind::Anthropic => anthropic_to_core(request.get("messages")?.as_array()?),
         WireKind::OpenAiResponses => responses_to_core(request.get("input")?.as_array()?),
     }
 }
 
+/// Writes the turns back in the wire's shape. The request's system and developer items come first,
+/// in their original order and byte for byte, so no write can drop or fold them.
 pub fn write_core_contents(wire: WireKind, request: &mut Value, contents: Vec<Value>) {
     let contents = contents.into_iter().map(unmarked).collect::<Vec<_>>();
-    match wire {
-        WireKind::Google => {
-            request["contents"] = Value::Array(contents);
-        }
-        WireKind::OpenAiChat => {
-            let sys_prefix: Vec<Value> = request
-                .get("messages")
-                .and_then(Value::as_array)
-                .map(|msgs| {
-                    msgs.iter()
-                        .filter(|m| {
-                            matches!(
-                                m.get("role").and_then(Value::as_str),
-                                Some("system" | "developer")
-                            )
-                        })
-                        .cloned()
-                        .collect()
-                })
-                .unwrap_or_default();
-            let mut out = sys_prefix;
-            out.extend(core_to_chat(&contents));
-            request["messages"] = Value::Array(out);
-        }
-        WireKind::Anthropic => {
-            request["messages"] = Value::Array(core_to_anthropic(&contents));
-        }
-        WireKind::OpenAiResponses => {
-            request["input"] = Value::Array(core_to_responses(&contents));
-        }
-    }
+    let key = items_key(wire);
+    let mut out: Vec<Value> = request
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| is_system_item(item))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    out.extend(match wire {
+        WireKind::Google => contents,
+        WireKind::OpenAiChat => core_to_chat(&contents),
+        WireKind::Anthropic => core_to_anthropic(&contents),
+        WireKind::OpenAiResponses => core_to_responses(&contents),
+    });
+    request[key] = Value::Array(out);
 }
 
 /// Drops the proxy's own turn marks; upstream must not see them.
@@ -422,10 +475,10 @@ fn unmarked(mut turn: Value) -> Value {
 fn chat_to_core(messages: &[Value]) -> Option<Vec<Value>> {
     let mut turns = Vec::new();
     for msg in messages {
-        let role = msg.get("role").and_then(Value::as_str).unwrap_or("user");
-        if matches!(role, "system" | "developer") {
+        if is_system_item(msg) {
             continue;
         }
+        let role = msg.get("role").and_then(Value::as_str).unwrap_or("user");
         let core_role = if role == "assistant" { "model" } else { "user" };
         let parts = chat_msg_parts(msg, role);
         turns.push(json!({
@@ -548,10 +601,15 @@ fn core_user_to_chat(parts: &[Value]) -> Vec<Value> {
 
 fn anthropic_to_core(messages: &[Value]) -> Option<Vec<Value>> {
     let mut turns = Vec::new();
+    // A tool result names no tool on the wire; it takes the name of the call it answers.
+    let mut call_names = HashMap::new();
     for msg in messages {
+        if is_system_item(msg) {
+            continue;
+        }
         let role = msg.get("role").and_then(Value::as_str).unwrap_or("user");
         let core_role = if role == "assistant" { "model" } else { "user" };
-        let parts = anthropic_msg_parts(msg);
+        let parts = anthropic_msg_parts(msg, &mut call_names);
         turns.push(json!({
             "role": core_role,
             "parts": parts,
@@ -561,7 +619,7 @@ fn anthropic_to_core(messages: &[Value]) -> Option<Vec<Value>> {
     Some(turns)
 }
 
-fn anthropic_msg_parts(msg: &Value) -> Vec<Value> {
+fn anthropic_msg_parts(msg: &Value, call_names: &mut HashMap<String, String>) -> Vec<Value> {
     let mut parts = Vec::new();
     match msg.get("content") {
         Some(Value::String(text)) => {
@@ -578,6 +636,7 @@ fn anthropic_msg_parts(msg: &Value) -> Vec<Value> {
                     Some("tool_use") => {
                         let id = block.get("id").and_then(Value::as_str).unwrap_or("toolu_1");
                         let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+                        call_names.insert(id.to_string(), name.to_string());
                         let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
                         parts.push(json!({
                             "functionCall": { "id": id, "name": name, "args": input }
@@ -588,22 +647,148 @@ fn anthropic_msg_parts(msg: &Value) -> Vec<Value> {
                             .get("tool_use_id")
                             .and_then(Value::as_str)
                             .unwrap_or("");
+                        let name = call_names.get(id).map_or("tool", String::as_str);
                         let text = content_as_string(block.get("content"));
                         parts.push(json!({
                             "functionResponse": {
                                 "id": id,
-                                "name": "tool",
+                                "name": name,
                                 "response": { "result": text }
                             }
                         }));
                     }
-                    _ => {}
+                    _ => parts.push(opaque_part(block)),
                 }
             }
         }
         _ => {}
     }
     parts
+}
+
+/// The content blocks of one Anthropic response in stream order, as the model sent them. A stream
+/// is folded event by event: deltas append to their block (thinking, signature, text), and a
+/// tool_use's streamed JSON is parsed when its block stops.
+#[derive(Debug, Default)]
+pub struct AnthropicBlocks {
+    blocks: BTreeMap<u64, Value>,
+    partial_json: BTreeMap<u64, String>,
+}
+
+impl AnthropicBlocks {
+    pub fn observe(&mut self, event: &Value) {
+        let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
+        match event.get("type").and_then(Value::as_str) {
+            Some("message_start") => *self = Self::default(),
+            Some("content_block_start") => {
+                if let Some(block) = event.get("content_block") {
+                    self.blocks.insert(index, block.clone());
+                }
+            }
+            Some("content_block_delta") => self.apply_delta(index, event.get("delta")),
+            Some("content_block_stop") => self.close(index),
+            _ => {}
+        }
+    }
+
+    fn apply_delta(&mut self, index: u64, delta: Option<&Value>) {
+        let Some(delta) = delta else {
+            return;
+        };
+        let (field, fragment) = match delta.get("type").and_then(Value::as_str) {
+            Some("input_json_delta") => {
+                if let Some(text) = delta.get("partial_json").and_then(Value::as_str) {
+                    self.partial_json.entry(index).or_default().push_str(text);
+                }
+                return;
+            }
+            Some("text_delta") => ("text", delta.get("text")),
+            Some("thinking_delta") => ("thinking", delta.get("thinking")),
+            Some("signature_delta") => ("signature", delta.get("signature")),
+            _ => return,
+        };
+        let (Some(fragment), Some(map)) = (
+            fragment.and_then(Value::as_str),
+            self.blocks.get_mut(&index).and_then(Value::as_object_mut),
+        ) else {
+            return;
+        };
+        let slot = map
+            .entry(field)
+            .or_insert_with(|| Value::String(String::new()));
+        if let Value::String(text) = slot {
+            text.push_str(fragment);
+        }
+    }
+
+    fn close(&mut self, index: u64) {
+        let Some(json) = self.partial_json.remove(&index) else {
+            return;
+        };
+        let input = serde_json::from_str(&json).unwrap_or_else(|_| json!({}));
+        if let Some(map) = self.blocks.get_mut(&index).and_then(Value::as_object_mut) {
+            map.insert("input".to_string(), input);
+        }
+    }
+
+    pub fn content(&self) -> Vec<Value> {
+        self.blocks.values().cloned().collect()
+    }
+}
+
+/// The model turn an Anthropic proxy round adds. The response's blocks are kept as the turn's raw
+/// message, so upstream receives them as the model sent them (thinking signatures included); a
+/// harness call is left out, and a proxy call the blocks miss is added as its tool_use.
+pub fn anthropic_model_turn(blocks: &[Value], calls: &[&ProxyCall]) -> Value {
+    let mut content: Vec<Value> = blocks
+        .iter()
+        .filter(|block| !is_harness_call(block))
+        .cloned()
+        .collect();
+    for call in calls {
+        let present = content
+            .iter()
+            .any(|block| block.get("id").and_then(Value::as_str) == Some(call.id.as_str()));
+        if !present {
+            content.push(json!({
+                "type": "tool_use",
+                "id": call.id,
+                "name": call.name,
+                "input": call.args
+            }));
+        }
+    }
+    let message = json!({ "role": "assistant", "content": content });
+    json!({
+        "role": "model",
+        "parts": anthropic_msg_parts(&message, &mut HashMap::new()),
+        (turnkeys::RAW): message
+    })
+}
+
+fn is_harness_call(block: &Value) -> bool {
+    block.get("type").and_then(Value::as_str) == Some("tool_use")
+        && block
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| !PROXY_TOOLS.contains(&name))
+}
+
+/// Identity of a block the proxy does not model (thinking, images, unknown types): a digest of
+/// the block without its breakpoint, so two turns differing only in such content are different
+/// turns, while the breakpoint moving between resends is not.
+fn opaque_part(block: &Value) -> Value {
+    let mut block = block.clone();
+    if let Some(map) = block.as_object_mut() {
+        map.remove("cache_control");
+    }
+    let digest = Sha256::digest(block.to_string().as_bytes());
+    json!({
+        "opaque": {
+            "type": block.get("type").and_then(Value::as_str).unwrap_or(""),
+            "digest": hex::encode(digest)
+        }
+    })
 }
 
 fn core_to_anthropic(contents: &[Value]) -> Vec<Value> {
@@ -647,6 +832,9 @@ fn core_to_anthropic(contents: &[Value]) -> Vec<Value> {
 fn responses_to_core(items: &[Value]) -> Option<Vec<Value>> {
     let mut turns = Vec::new();
     for item in items {
+        if is_system_item(item) {
+            continue;
+        }
         let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
         if item_type == "function_call" {
             let id = item
@@ -870,6 +1058,40 @@ pub(crate) fn response_text(fr: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// Rewrites a raw tool result's text where its own wire keeps it: `output` on a Responses
+/// `function_call_output`, a `tool_result` block on an Anthropic message, `content` on a chat
+/// message. Adding `content` to a Responses item makes the backend reject the whole request.
+pub(crate) fn set_raw_result_text(raw: &mut Value, id: &str, text: &str) {
+    let Some(map) = raw.as_object_mut() else {
+        return;
+    };
+    match map.get("type").and_then(Value::as_str) {
+        Some("function_call_output") => {
+            // An image-carrying output is a parts array; the core text carries the placeholder.
+            if let Some(slot) = map.get_mut("output").filter(|output| output.is_string()) {
+                *slot = json!(text);
+            }
+        }
+        _ => {
+            if map.get("tool_call_id").and_then(Value::as_str) == Some(id) {
+                map.insert("content".into(), json!(text));
+                return;
+            }
+            let Some(blocks) = map.get_mut("content").and_then(Value::as_array_mut) else {
+                return;
+            };
+            for block in blocks {
+                if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                    continue;
+                }
+                if block.get("tool_use_id").and_then(Value::as_str) == Some(id) {
+                    block["content"] = json!(text);
+                }
+            }
+        }
+    }
+}
+
 /// Rewrites a tool result's visible text, keeping the response object's other keys.
 pub(crate) fn set_response_text(part: &mut Value, text: &str) {
     let Some(response) = part
@@ -903,5 +1125,199 @@ mod tests {
                 .trim_start_matches("\n\n"),
             pins.text(prompts::SKILL_CODEBASE_MEMORY).unwrap()
         );
+    }
+
+    fn breakpoint() -> Value {
+        json!({ "type": "ephemeral" })
+    }
+
+    #[test]
+    fn anthropic_prompt_block_follows_every_existing_system_block_untouched() {
+        let mut request = json!({"system": [
+            {"type": "text", "text": "x-anthropic-billing-header: cc_version=1"},
+            {"type": "text", "text": "You are Claude Code.", "cache_control": breakpoint()}
+        ]});
+        let before = request["system"].as_array().unwrap().clone();
+        inject_anthropic_prompt(&mut request, "OURS");
+        let after = request["system"].as_array().unwrap();
+        assert_eq!(after.len(), 3);
+        assert_eq!(&after[..2], &before[..]);
+        assert_eq!(after[2]["text"], json!("OURS"));
+    }
+
+    #[test]
+    fn anthropic_prompt_block_carries_the_last_breakpoint_when_the_last_block_has_one() {
+        let mut request = json!({"system": [
+            {"type": "text", "text": "identity"},
+            {"type": "text", "text": "claude code", "cache_control": breakpoint()}
+        ]});
+        inject_anthropic_prompt(&mut request, "OURS");
+        assert_eq!(
+            request["system"][2],
+            json!({"type": "text", "text": "OURS", "cache_control": breakpoint()})
+        );
+    }
+
+    #[test]
+    fn anthropic_prompt_block_has_no_breakpoint_when_the_last_block_has_none() {
+        let mut request = json!({"system": [
+            {"type": "text", "text": "identity", "cache_control": breakpoint()},
+            {"type": "text", "text": "claude code"}
+        ]});
+        inject_anthropic_prompt(&mut request, "OURS");
+        assert_eq!(
+            request["system"][2],
+            json!({"type": "text", "text": "OURS"})
+        );
+    }
+
+    #[test]
+    fn anthropic_prompt_block_never_makes_a_fifth_breakpoint() {
+        // Four breakpoints already: the last system block has one, but a fifth is refused upstream.
+        let mut request = json!({
+            "system": [{"type": "text", "text": "a", "cache_control": breakpoint()}],
+            "tools": [{"name": "Bash", "input_schema": {}, "cache_control": breakpoint()}],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "b", "cache_control": breakpoint()}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "c", "cache_control": breakpoint()}]}
+            ]
+        });
+        inject_anthropic_prompt(&mut request, "OURS");
+        assert_eq!(
+            request["system"][1],
+            json!({"type": "text", "text": "OURS"})
+        );
+    }
+
+    #[test]
+    fn anthropic_prompt_as_a_string_is_appended_to_it() {
+        let mut request = json!({"system": "identity"});
+        inject_anthropic_prompt(&mut request, "OURS");
+        assert_eq!(request["system"], json!("identity\n\nOURS"));
+    }
+
+    #[test]
+    fn anthropic_tools_keep_claudes_tools_in_order_and_never_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let pins =
+            PinnedPrompts::pin(&PromptStore::new(dir.path()), &PromptVars::default()).unwrap();
+        let specs = tool_specs(&pins);
+        let claude = json!([
+            {"name": "Bash", "input_schema": {"type": "object"}},
+            {"name": "mcp__el__read", "input_schema": {"type": "object"}}
+        ]);
+        let mut request = json!({ "tools": claude.clone() });
+        inject_anthropic_tools(&mut request, &specs);
+        inject_anthropic_tools(&mut request, &specs);
+        let tools = request["tools"].as_array().unwrap();
+        assert_eq!(&tools[..2], claude.as_array().unwrap().as_slice());
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert_eq!(names.len(), 2 + specs.len());
+        assert_eq!(
+            names.iter().filter(|n| **n == "compress").count(),
+            1,
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn anthropic_proxy_tools_carry_the_last_breakpoint_of_claudes_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let pins =
+            PinnedPrompts::pin(&PromptStore::new(dir.path()), &PromptVars::default()).unwrap();
+        let specs = tool_specs(&pins);
+        let mut request = json!({"tools": [
+            {"name": "Bash", "input_schema": {}},
+            {"name": "Read", "input_schema": {}, "cache_control": breakpoint()}
+        ]});
+        inject_anthropic_tools(&mut request, &specs);
+        let tools = request["tools"].as_array().unwrap();
+        assert!(tools[1].get("cache_control").is_some());
+        let last = tools.last().unwrap();
+        assert_eq!(last["cache_control"], breakpoint());
+        assert_eq!(
+            tools
+                .iter()
+                .filter(|t| t.get("cache_control").is_some())
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn anthropic_turns_with_only_thinking_keep_their_identity() {
+        let a = anthropic_to_core(&[json!({"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "plan A", "signature": "sig-a"}
+        ]})])
+        .unwrap();
+        let b = anthropic_to_core(&[json!({"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "plan B", "signature": "sig-b"}
+        ]})])
+        .unwrap();
+        assert!(!turnkeys::same_turn(&a[0], &b[0]));
+    }
+
+    #[test]
+    fn anthropic_turns_with_only_images_keep_their_identity() {
+        let image = |data: &str| {
+            json!({"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}
+            ]})
+        };
+        let a = anthropic_to_core(&[image("AAAA")]).unwrap();
+        let b = anthropic_to_core(&[image("BBBB")]).unwrap();
+        assert!(!turnkeys::same_turn(&a[0], &b[0]));
+    }
+
+    #[test]
+    fn anthropic_turn_identity_ignores_where_the_breakpoint_sits() {
+        let plain = json!({"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+        ]});
+        let marked = json!({"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+             "cache_control": breakpoint()}
+        ]});
+        let a = anthropic_to_core(&[plain]).unwrap();
+        let b = anthropic_to_core(&[marked]).unwrap();
+        assert!(turnkeys::same_turn(&a[0], &b[0]));
+    }
+
+    #[test]
+    fn anthropic_tool_results_take_the_name_of_their_tool_use() {
+        let core = anthropic_to_core(&[
+            json!({"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "read", "input": {"path": "a"}}
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "file"}
+            ]}),
+        ])
+        .unwrap();
+        assert_eq!(
+            core[1]["parts"][0]["functionResponse"]["name"],
+            json!("read")
+        );
+    }
+
+    #[test]
+    fn anthropic_call_in_finds_a_proxy_call_after_thinking() {
+        let payload = json!({"type": "message", "content": [
+            {"type": "thinking", "thinking": "plan", "signature": "sig"},
+            {"type": "text", "text": "compacting"},
+            {"type": "tool_use", "id": "toolu_9", "name": "compress", "input": {"ranges": []}}
+        ]});
+        let call = anthropic_call_in(&payload).unwrap();
+        assert_eq!(call.name, "compress");
+        assert_eq!(call.id, "toolu_9");
+    }
+
+    #[test]
+    fn anthropic_call_in_ignores_harness_tools_and_prefixed_names() {
+        let payload = json!({"content": [
+            {"type": "tool_use", "id": "t1", "name": "mcp__el__compress", "input": {}},
+            {"type": "tool_use", "id": "t2", "name": "Bash", "input": {}}
+        ]});
+        assert!(anthropic_call_in(&payload).is_none());
     }
 }

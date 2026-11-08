@@ -17,7 +17,8 @@ describe('Session dialog', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Show model options' }));
     await fireEvent.pointerUp(screen.getByRole('option', { name: /two/ }));
     await waitFor(() => expect(screen.queryByRole('option', { name: 'high' })).toBeNull());
-    await fireEvent.change(screen.getByLabelText('Reasoning effort'), { target: { value: 'max' } });
+    await fireEvent.click(screen.getByRole('combobox', { name: 'Reasoning effort' }));
+    await fireEvent.pointerUp(screen.getByRole('option', { name: 'max' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
     expect(onapply).toHaveBeenCalledWith({ model: 'two', thoughtLevel: 'max' });
   });

@@ -10,7 +10,7 @@ use emberloop_core::events::{EventBus, EventKind, SessionEvent};
 use emberloop_core::steer::{deliver_idle, SteerKind, SteerQueue, SteerQueues, SteerWaker};
 use futures::StreamExt;
 use harness::{Harness, HarnessEvent, HarnessSession, HarnessWiring, PromptImage};
-use prompts::{PromptStore, PromptVars};
+use prompts::PromptStore;
 use proxy::ProxyState;
 use store::{DataRoot, EventLog, ProjectsStore, SessionMeta, SessionsStore};
 use tokio::sync::{Mutex, RwLock};
@@ -90,6 +90,15 @@ impl SessionRunner {
         self
     }
 
+    /// Starts the idle watcher for updates queued from a terminal.
+    pub fn watch_updates(&self) -> tokio::task::JoinHandle<()> {
+        watch_updates(
+            self.data_root.clone(),
+            Arc::clone(&self.handles),
+            Arc::clone(&self.events),
+        )
+    }
+
     fn wiring(
         &self,
         session_id: &str,
@@ -126,12 +135,6 @@ impl SessionRunner {
             thought_level: meta.thought_level.clone(),
             resume_token: meta.resume_token.clone(),
             workdir: Some(self.data_root.session_dir(session_id).join("agent-work")),
-            // The proxy owns its wire; a harness with its own wire gets the same policy text.
-            system_prompt: self
-                .proxy
-                .prompts()
-                .render(prompts::POLICY, &PromptVars::default())
-                .ok(),
         }
     }
 
@@ -146,6 +149,12 @@ impl SessionRunner {
         if !session.resumed() {
             self.reset_proxy_history(session_id).await;
         }
+        self.save_token(meta, session).await;
+    }
+
+    /// The CLI reports its conversation id only once the first message is out,
+    /// so the token is settled again after a turn starts.
+    async fn save_token(&self, meta: &SessionMeta, session: &dyn HarnessSession) {
         let token = session.resume_token();
         if token != meta.resume_token {
             let mut meta = meta.clone();
@@ -225,6 +234,23 @@ impl SessionRunner {
     async fn handle(&self, session_id: &str) -> Option<Arc<Handle>> {
         self.handles.lock().await.get(session_id).cloned()
     }
+
+    /// A prompt that never reached the harness still has to end its turn on screen: without the
+    /// error and the idle status the Session stays "working" forever.
+    async fn fail_turn(&self, session_id: &str, message: String) -> String {
+        let events_dir = self.data_root.session_events_dir(session_id);
+        let events = [
+            (EventKind::Error, serde_json::json!({ "message": message })),
+            (EventKind::Status, serde_json::json!({ "state": "idle" })),
+        ];
+        for (kind, data) in events {
+            let event = SessionEvent::new(session_id, 0, kind, data);
+            if let Ok(stored) = append(&self.logs, &events_dir, &event).await {
+                self.events.publish(stored);
+            }
+        }
+        message
+    }
 }
 
 #[async_trait::async_trait]
@@ -243,20 +269,16 @@ impl SessionDriver for SessionRunner {
             if let Some(home) = &self.account_home {
                 if !home.join("antigravity-acp/acp_token.json").exists() {
                     let message = "no Antigravity account is signed in; open Providers to sign in";
-                    let event = SessionEvent::new(
-                        session_id,
-                        0,
-                        EventKind::Error,
-                        serde_json::json!({ "message": message }),
-                    );
-                    self.events.publish(event);
-                    return Err(message.to_string());
+                    return Err(self.fail_turn(session_id, message.into()).await);
                 }
             }
         }
         self.drain_notices(session_id).await;
         self.reminders.lock().await.remove(session_id);
-        let handle = self.ensure(session_id).await?;
+        let handle = match self.ensure(session_id).await {
+            Ok(handle) => handle,
+            Err(error) => return Err(self.fail_turn(session_id, error.to_string()).await),
+        };
         let images: Vec<PromptImage> = images
             .into_iter()
             .map(|image| PromptImage {
@@ -268,11 +290,15 @@ impl SessionDriver for SessionRunner {
             titles.start(session_id, text).await;
         }
         handle.queue.set_turn_active(true);
-        let sent = handle.session.send(text, images).await;
-        if sent.is_err() {
+        if let Err(error) = handle.session.send(text, images).await {
             handle.queue.set_turn_active(false);
+            return Err(self.fail_turn(session_id, error.to_string()).await);
         }
-        sent.map_err(|error| error.to_string())
+        // The CLI reports its conversation id only once the first message is out.
+        if let Some(meta) = self.sessions.get(session_id).await {
+            self.save_token(&meta, handle.session.as_ref()).await;
+        }
+        Ok(())
     }
 
     async fn cancel(&self, session_id: &str) -> Result<(), String> {
@@ -354,6 +380,9 @@ impl SessionDriver for SessionRunner {
     }
 }
 
+/// The longest an event waits for the persister's backlog before it is numbered anyway.
+const PERSIST_BACKLOG_LIMIT: std::time::Duration = std::time::Duration::from_millis(250);
+
 #[allow(clippy::too_many_arguments)]
 async fn pump(
     handle: Arc<Handle>,
@@ -381,7 +410,7 @@ async fn pump(
         }
         if turn_over {
             drain_notices(&data_root, &steers, &session_id).await;
-            apply_pending_update(&data_root, &handles, &events, &session_id).await;
+            apply_pending_update(&data_root, &handles, &events, Some(&session_id)).await;
             turn_end_todos(
                 &handle,
                 &session_id,
@@ -424,6 +453,9 @@ async fn publish_mapped(
             .get("name")
             .and_then(|name| name.as_str())
             .is_some_and(|name| crate::tooldisplay::short_tool_name(name) == "todo");
+    // The proxy's thinking is numbered by the persister, a hop behind; this event
+    // happened after them, so it takes its number after theirs.
+    events.settled(PERSIST_BACKLOG_LIMIT).await;
     let stored = match append(logs, events_dir, &mapped).await {
         Ok(stored) => stored,
         Err(error) => {
@@ -680,30 +712,49 @@ async fn apply_pending_update(
     data_root: &DataRoot,
     handles: &Mutex<HashMap<String, Arc<Handle>>>,
     events: &EventBus,
-    session_id: &str,
+    session_id: Option<&str>,
 ) {
-    if crate::update::read_request(data_root.root()).is_none() {
-        return;
-    }
-    if handles
+    let active = handles
         .lock()
         .await
         .values()
-        .any(|handle| handle.queue.is_turn_active())
-    {
+        .any(|handle| handle.queue.is_turn_active());
+    if crate::update::due(data_root.root(), active).is_none() {
         return;
     }
     let root = crate::update::install_root();
     match crate::update::apply_request(&root, data_root.root()).await {
         Ok(Some(_)) => restart_into(&root),
         Ok(None) => {}
-        Err(error) => events.publish(SessionEvent::new(
-            session_id,
-            0,
-            EventKind::Error,
-            serde_json::json!({ "message": format!("update failed: {error}") }),
-        )),
+        Err(error) => {
+            let message = format!("update failed: {error}");
+            match session_id {
+                Some(id) => events.publish(SessionEvent::new(
+                    id,
+                    0,
+                    EventKind::Error,
+                    serde_json::json!({ "message": message }),
+                )),
+                None => tracing::error!(%message),
+            }
+        }
     }
+}
+
+/// An `emberloop update` run from a terminal only queues; this picks it up while the daemon is
+/// idle. The first pass also covers a request queued while the daemon was down.
+#[allow(clippy::disallowed_methods)]
+fn watch_updates(
+    data_root: DataRoot,
+    handles: Arc<Mutex<HashMap<String, Arc<Handle>>>>,
+    events: Arc<EventBus>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            apply_pending_update(&data_root, &handles, &events, None).await;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    })
 }
 
 fn restart_into(root: &std::path::Path) {

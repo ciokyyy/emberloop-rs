@@ -460,7 +460,6 @@ export interface components {
         };
         CreateSessionRequest: {
             model?: string | null;
-            ponytailLevel?: string | null;
             projectId: string;
             thoughtLevel?: string | null;
             title?: string | null;
@@ -532,7 +531,6 @@ export interface components {
             createdAt: number;
             id: string;
             model: string;
-            ponytailLevel: string;
             projectId: string;
             thoughtLevel?: string | null;
             title: string;

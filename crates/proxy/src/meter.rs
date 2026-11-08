@@ -13,6 +13,17 @@ pub struct Usage {
     pub cache_creation_tokens: u64,
 }
 
+impl Usage {
+    /// Whether two readings of one request fill the context the same way. An Anthropic stream
+    /// reports the prompt at `message_start` and only the output again at `message_delta`, so
+    /// a later reading that differs in output alone is not a new event.
+    pub fn same_context(&self, other: &Usage) -> bool {
+        self.input_tokens == other.input_tokens
+            && self.cached_tokens == other.cached_tokens
+            && self.cache_creation_tokens == other.cache_creation_tokens
+    }
+}
+
 /// Extract usage from a Cloud Code SSE stream or a plain JSON response.
 /// Later payloads win, so a final totals chunk beats earlier partials.
 pub fn extract_usage(bytes: &[u8]) -> Option<Usage> {
@@ -342,5 +353,29 @@ mod tests {
     fn a_response_without_usage_yields_none() {
         assert_eq!(extract_usage(b"data: {\"response\":{}}\n\n"), None);
         assert_eq!(extract_usage(b"data: [DONE]\n\n"), None);
+    }
+}
+
+#[cfg(test)]
+mod same_context_tests {
+    use super::Usage;
+
+    #[test]
+    fn a_reading_that_differs_in_output_alone_is_the_same_context() {
+        let start = Usage {
+            input_tokens: 100,
+            output_tokens: 1,
+            cached_tokens: 90,
+            cache_creation_tokens: 10,
+        };
+        let end = Usage {
+            output_tokens: 55,
+            ..start
+        };
+        assert!(start.same_context(&end));
+        assert!(!start.same_context(&Usage {
+            input_tokens: 101,
+            ..end
+        }));
     }
 }

@@ -26,6 +26,9 @@ impl Init {
 pub enum Output {
     Event(HarnessEvent),
     Init(Init),
+    /// The CLI took a message we wrote (`--replay-user-messages` echoes it): into the running
+    /// turn at a tool boundary, or as the next turn.
+    Consumed,
 }
 
 /// Unknown types, unknown subtypes and malformed lines yield nothing, never an error.
@@ -37,6 +40,7 @@ pub fn parse_line(line: &str) -> Vec<Output> {
         Some("system") => system(&value),
         Some("stream_event") => stream(&value["event"]),
         Some("assistant") => assistant(&value),
+        Some("user") if value["isReplay"] == true => vec![Output::Consumed],
         Some("user") => user(&value),
         Some("result") => result(&value),
         _ => Vec::new(),

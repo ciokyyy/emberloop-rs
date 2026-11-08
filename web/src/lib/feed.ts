@@ -90,14 +90,15 @@ function toolInputText(value: unknown): string {
   return '';
 }
 
-/** A tool result arrives as plain text (pi) or as `{ text, content[] }` (agy). */
+/** A tool result arrives as plain text (pi), `{ text, content[] }` (agy) or Claude's `[{ type, text }]` blocks. */
 function outputText(value: unknown): string {
   if (typeof value === 'string') return value;
   if (!value || typeof value !== 'object') return '';
   const record = value as Record<string, unknown>;
   if (typeof record.text === 'string') return record.text;
-  if (Array.isArray(record.content)) {
-    return record.content
+  const content = Array.isArray(value) ? value : record.content;
+  if (Array.isArray(content)) {
+    return content
       .map((part) => (part && typeof part === 'object' ? text((part as Record<string, unknown>).text) : ''))
       .filter(Boolean)
       .join('\n');

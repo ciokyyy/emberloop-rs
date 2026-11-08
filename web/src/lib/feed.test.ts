@@ -61,6 +61,13 @@ describe('feed reducer', () => {
     expect(state.items).toHaveLength(1);
     expect(state.items[0]).toMatchObject({ kind: 'tool', tool: 'bash', summary: 'cargo test', finished: true });
   });
+  it('reads a Claude tool result given as text blocks', () => {
+    const state = run(
+      ev('tool_started', { id: 'c1', name: 'mcp__el__bash', input: { command: 'ls' } }),
+      ev('tool_finished', { id: 'c1', output: [{ type: 'text', text: 'a.txt' }, { type: 'text', text: 'b.txt' }] }, 2)
+    );
+    expect(state.items[0]).toMatchObject({ kind: 'tool', tool: 'bash', body: 'a.txt\nb.txt', finished: true });
+  });
 
   it('moves a queued steer to its delivery route', () => {
     const state = run(

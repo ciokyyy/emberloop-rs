@@ -81,7 +81,7 @@ impl CtxStore {
     /// message the chat wires send upstream (`core_to_chat` prefers `_raw`).
     fn apply_turn(&mut self, turn: &mut Value, args: &HashMap<String, Value>) -> usize {
         let mut replaced = 0;
-        let mut raw_text = None;
+        let mut raw_text: Option<(String, String)> = None;
         if let Some(parts) = turn.get_mut("parts").and_then(Value::as_array_mut) {
             for part in parts.iter_mut() {
                 let Some(result) = large_result(part) else {
@@ -100,12 +100,12 @@ impl CtxStore {
                     continue;
                 };
                 set_response_text(part, &text);
-                raw_text = Some(text);
+                raw_text = Some((result.id.clone(), text));
                 replaced += 1;
             }
         }
-        if let (Some(raw), Some(text)) = (turn.get_mut(turnkeys::RAW), raw_text) {
-            set_raw_content(raw, &text);
+        if let (Some(raw), Some((id, text))) = (turn.get_mut(turnkeys::RAW), raw_text) {
+            crate::wire::set_raw_result_text(raw, &id, &text);
         }
         replaced
     }
@@ -278,13 +278,6 @@ pub fn is_placeholder(text: &str) -> bool {
     text.starts_with(PREVIEW)
 }
 
-/// A tool result's raw chat message: its `content` is the text upstream reads.
-fn set_raw_content(raw: &mut Value, text: &str) {
-    if let Some(map) = raw.as_object_mut() {
-        map.insert("content".to_string(), Value::String(text.to_string()));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +300,24 @@ mod tests {
 
     fn big() -> String {
         "line of test output\n".repeat(900)
+    }
+
+    /// A Responses request carries the tool result as `function_call_output`, whose text is
+    /// `output`. Writing `content` there instead is rejected by the backend for the whole request.
+    #[test]
+    fn a_responses_tool_result_keeps_its_text_in_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store = store(dir.path());
+        let mut turns = contents(&big());
+        turns[1][turnkeys::RAW] = json!({
+            "type": "function_call_output", "call_id": "call-1", "output": big()
+        });
+
+        assert_eq!(store.apply(&mut turns), 1);
+
+        let raw = &turns[1][turnkeys::RAW];
+        assert!(raw.get("content").is_none(), "{raw}");
+        assert_eq!(raw["output"], json!(result_text(&turns)));
     }
 
     #[test]

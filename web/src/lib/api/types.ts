@@ -10,7 +10,6 @@ export interface Session {
   id: string;
   projectId: string;
   title: string;
-  ponytailLevel: string;
   model: string;
   thoughtLevel?: string;
   createdAt: number;
@@ -33,6 +32,7 @@ export interface Model {
 export interface Settings {
   title_generation: boolean;
   title_model: string;
+  default_model: string;
   proxy_compression: boolean;
   ponytail_default_level: string;
   todo_reminders: boolean;

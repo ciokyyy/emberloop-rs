@@ -7,7 +7,7 @@
 The second harness and the tools phase 1 left out.
 
 1. **pi-rust harness** (below).
-2. `claude` harness over raw stream-json (decision: no ACP adapter), subscription traffic on the real `claude` binary only.
+2. `claude` harness over raw stream-json (decision: no ACP adapter), the real `claude` binary with its traffic on the proxy's `claude` route.
 3. `scout` and `worker` subagents and their Settings forms.
 4. `execute` (a `python3 -I` subprocess with a socket bridge, saved scripts, `tools.parallel`, store/load, 500-call cap), `readurl`, `websearch`, `find` (lexical, no index), `edit` stale-tag rebase.
 5. MCP client and OAuth for external servers (spike `rmcp` first).
@@ -57,21 +57,18 @@ Harness #4: `crates/harness-claude` implements the `Harness` trait by running th
 
 - **Spawn:** `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages` in the Session's stable `workdir`, with a per-Session `CLAUDE_CONFIG_DIR` the daemon owns, `--setting-sources` limited to that user dir, `--strict-mcp-config --mcp-config <json>` naming only our MCP server, `--permission-mode bypassPermissions` with `--allowedTools mcp__el`, `--permission-prompts none`, `--model`, `--effort` from `thought_level`, `--resume <session_id>` from `resume_token`. Pinned Go-repo lesson: a load without the stripping flags re-asks permission, so one builder serves new and resume.
 - **Native tools off:** every built-in (Bash, Read, Edit, Write, Grep, Glob, WebFetch, WebSearch, Task/Agent, TodoWrite, plan and question tools, MCP resource tools) is removed with `--tools` and a deny list; the model gets only our MCP tools, including `todo` (ticket 19). The deny list is a fixture tested against the `tools` array in `system/init`, so a CLI that adds a tool fails the test, not a Session.
-- **System prompt:** the one policy text from `crates/prompts`, passed with `--system-prompt` (or `--append-system-prompt` if the spike shows removing the default prompt breaks tool use). Never composed in the harness.
+- **System prompt:** the proxy injects the one policy text from `crates/prompts` on the `claude` route, as for every harness. The harness passes no system prompt to the CLI and never composes one.
 - **Event mapping** (parser is a pure function over lines, tested from recorded fixtures): `stream_event` text delta to `AssistantChunk`, thinking delta to `ThoughtChunk`, an `assistant` `tool_use` block to `ToolStarted`, a `user` `tool_result` block to `ToolFinished`, `result` to `TurnFinished` with usage and `stop_reason`, `system/api_retry` to a status note, anything unknown to a debug log and never a Session error. `system/init` gives the model, tools, `mcp_servers` and `capabilities`; the harness refuses to start a Session if our MCP server is not `connected` in it.
-- **Steer and wake:** a mid-turn user message is written to stdin as a user message; `claude` queues it into the running turn. `wake(text)` after `TurnFinished` is the same write. This is the whole harness side of steering. Route 1 splice injection does not exist for this harness (see the open conflict).
+- **Steer and wake:** steering is the proxy's routes for every harness: a steer during a turn is injected on the next request, and an idle Session is woken through `wake(text)`, which writes one user message to stdin. The harness has no steer path of its own.
 - **Cancel:** SIGINT to end the turn (documented); the spike also tries the `interrupt` control request and keeps whichever leaves the process reusable.
 - **Resume and forget:** `session_id` from `system/init` is the `resume_token`; `resumed()` is true when `--resume` loaded it. `forget` deletes the transcript file in the owned config dir.
 - **Process life:** one `claude` process per live Session; an unexpected exit emits `Error` and the next `send` respawns with `--resume`. Idle exit after the configured timeout is allowed. Stdin closing ends the process cleanly; the harness waits at most a short, configurable time for it.
 - **Models:** the fixed aliases `opus`, `sonnet`, `haiku` as the Go repo, as a catalogue `Source` entry marked `harness: claude`.
-- **Subscription rule:** the daemon never reads or holds the Claude subscription token; `claude` uses its own login in the owned config dir (the Providers panel gets a "Log in with claude" action that runs `claude auth login` in that dir). `ANTHROPIC_BASE_URL` is never set for this path.
+- **Credentials:** the daemon never reads or holds the Claude subscription token; `claude` uses its own login in the owned config dir (the Providers panel gets a "Log in with claude" action that runs `claude auth login` in that dir). `ANTHROPIC_BASE_URL` is `<proxy_url>/claude`; the proxy forwards the CLI's Authorization header in transit and never stores, logs or generates a token.
 
-### Open conflict (decide before the proxy-features step)
+### Decided: Claude on the proxy wire
 
-The root rule says one proxy owns the model wire, and also that Claude subscription traffic stays on the real `claude` binary. Both hold, so a subscription Session **bypasses the proxy**: no billion context, no Ponytail, no Route 1 steering, no compression, and the context meter reads usage from `result` instead of the proxy. Two ways out, both outside this ticket's first step:
-
-1. Ship subscription Sessions without proxy features and say so in the UI.
-2. Add an API-key mode that sets `ANTHROPIC_BASE_URL` to the proxy's Anthropic wire (P2-1 step 3 builds that codec); only this mode gets proxy features.
+Claude traffic goes through the proxy like pi and agy. Billion context, Ponytail, steering, compression and the usage meter apply to Claude Sessions, and the harness reports no usage of its own. There is no subscription bypass and no API-key mode.
 
 ### Order (each step test-first, lands only with `scripts/check` green)
 
@@ -81,11 +78,10 @@ The root rule says one proxy owns the model wire, and also that Claude subscript
 4. Spawn builder with flag tests (the flag list is data; a test pins it).
 5. Hook-up: workspace member, daemon registration, catalogue entry, Providers login action.
 6. One `#[ignore]` live test with the User's login, never in the check.
-7. Proxy features for the API-key mode, only after the conflict above is decided.
 
 ### Tests first
 
-Failing before implementation: the parser maps each fixture to the exact `HarnessEvent` list; an unknown event type is skipped without an error; a mid-turn message reaches stdin before `TurnFinished` and the fake echoes it into the same turn; `wake` after the turn writes one message; cancel leaves the process reusable for the next `send`; a crash emits `Error` once and the next `send` respawns with `--resume`; `resumed()` reflects the init result; the builder output contains none of the subscription token variables and no `ANTHROPIC_BASE_URL`; the deny list covers every tool in the recorded `system/init`; the Session refuses to start when our MCP server is not `connected`; the whole set runs in the loop-check budget with no real sleep and no real `claude`.
+Failing before implementation: the parser maps each fixture to the exact `HarnessEvent` list; an unknown event type is skipped without an error; a mid-turn message reaches stdin before `TurnFinished` and the fake echoes it into the same turn; `wake` after the turn writes one message; cancel leaves the process reusable for the next `send`; a crash emits `Error` once and the next `send` respawns with `--resume`; `resumed()` reflects the init result; the builder env is exactly the allow-list (`ANTHROPIC_BASE_URL` = the proxy's `claude` route, `NO_PROXY` loopback) with no inherited proxy or token variable; the deny list covers every tool in the recorded `system/init`; the Session refuses to start when our MCP server is not `connected`; the whole set runs in the loop-check budget with no real sleep and no real `claude`.
 
 ### Risks
 

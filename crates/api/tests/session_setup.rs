@@ -195,3 +195,53 @@ async fn an_explicit_empty_effort_clears_a_previously_saved_effort() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(state.sessions.get("s1").await.unwrap().thought_level, None);
 }
+
+#[tokio::test]
+async fn new_sessions_use_the_default_model_and_reject_unknown_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(dir.path(), Arc::new(Driver::default())).await;
+    let project = state
+        .projects
+        .insert(store::Project {
+            id: "p1".into(),
+            name: "project".into(),
+            root: dir.path().to_path_buf(),
+        })
+        .await
+        .unwrap();
+    let app = build_router(state);
+    let response = app
+        .clone()
+        .oneshot(req(
+            "PUT",
+            "/api/settings",
+            serde_json::json!({"default_model":"claude-opus-5-5"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(req(
+            "POST",
+            "/api/sessions",
+            serde_json::json!({"projectId":project.id}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(session["model"], "claude-opus-5-5");
+    let response = app
+        .oneshot(req(
+            "PUT",
+            "/api/settings",
+            serde_json::json!({"default_model":"missing"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

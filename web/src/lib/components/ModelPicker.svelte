@@ -1,7 +1,11 @@
 <script lang="ts">
   import { Combobox } from 'bits-ui';
+  import { createVirtualizer } from '@tanstack/svelte-virtual';
+  import { get } from 'svelte/store';
+  import { brandSvg } from '$lib/brands';
   import type { Model } from '$lib/api/types';
   import { slideDown } from '$lib/motion';
+  import Brand from './Brand.svelte';
 
   let { models = [], value = $bindable(''), label = 'Model', disabled = false,
     searchable = true, onchange }: {
@@ -21,6 +25,39 @@
     }
     return [...grouped].sort(([a], [b]) => a.localeCompare(b));
   });
+  // Headings and items in one flat list, so the virtualizer windows both.
+  type Row = { key: string; label: string; model?: Model };
+  const rows = $derived<Row[]>(groups.flatMap(([group, items]) => [
+    { key: `h:${group}`, label: group },
+    ...items.map((model) => ({ key: `m:${model.id}`, label: model.label, model }))
+  ]));
+
+  let viewport: HTMLElement | null = null;
+  const virtualizer = createVirtualizer({
+    count: 0,
+    getScrollElement: () => viewport,
+    estimateSize: (index) => (rows[index]?.model ? 36 : 28),
+    overscan: 6,
+    getItemKey: (index) => rows[index]?.key ?? index
+  });
+  // The viewport mounts only while open; re-sync the virtualizer count when rows or open change.
+  $effect(() => {
+    void open;
+    get(virtualizer).setOptions({ count: rows.length });
+  });
+
+  // Harnesses without a provider logo (e.g. an unlisted provider) fall back to the harness logo.
+  const iconId = (model: Model) => (brandSvg(model.provider) ? model.provider : model.source);
+  // Bits-ui moves the highlight over rows the window has not rendered; scroll the window to the row it lands on.
+  function viewportAction(node: HTMLElement) {
+    viewport = node;
+    const observer = new MutationObserver(() => {
+      const index = node.querySelector<HTMLElement>('[data-highlighted]')?.closest<HTMLElement>('[data-index]')?.dataset.index;
+      if (index !== undefined) get(virtualizer).scrollToIndex(Number(index), { align: 'auto' });
+    });
+    observer.observe(node, { subtree: true, attributes: true, attributeFilter: ['data-highlighted'] });
+    return { destroy: () => { observer.disconnect(); viewport = null; } };
+  }
   function windowLabel(model: Model) {
     if (!model.context_window) return 'window unknown';
     return model.context_window >= 1_000_000
@@ -45,21 +82,28 @@
         {#snippet child({ props, wrapperProps })}
           {#if open}
             <div {...wrapperProps} class="z-[70]">
-            <div {...props} transition:slideDown class="z-[70] max-h-[min(45dvh,360px)] w-[var(--bits-combobox-anchor-width)] overflow-y-auto rounded-xl border border-border bg-surface-2 p-1 shadow-xl">
-              {#each groups as [group, items] (group)}
-                <Combobox.Group>
-                  <Combobox.GroupHeading class="sticky top-0 bg-surface-2 px-2 py-2 text-[11px] font-semibold text-fg-3">{group}</Combobox.GroupHeading>
-                  {#each items as model (model.id)}
-                    <Combobox.Item value={model.id} label={model.label}
-                      class="cursor-pointer rounded-lg px-2 py-2 text-[13px] text-fg-1 outline-none data-highlighted:bg-surface-3 data-selected:bg-surface-3">
-                      {model.label} · {windowLabel(model)}{model.stale ? ' · stale' : ''}
-                    </Combobox.Item>
-                  {/each}
-                </Combobox.Group>
-              {:else}
-                <p class="px-3 py-4 text-[13px] text-fg-3">No matching models.</p>
-              {/each}
-            </div>
+              <div {...props} use:viewportAction data-testid="model-viewport" transition:slideDown class="z-[70] max-h-[min(45dvh,360px)] w-[var(--bits-combobox-anchor-width)] overflow-y-auto rounded-xl border border-border bg-surface-2 p-1 shadow-xl">
+                {#if rows.length === 0}
+                  <p class="px-3 py-4 text-[13px] text-fg-3">No matching models.</p>
+                {:else}
+                  <div class="relative w-full" style:height="{$virtualizer.getTotalSize()}px">
+                    {#each $virtualizer.getVirtualItems() as row (row.key)}
+                      {@const entry = rows[row.index]}
+                      <div class="absolute left-0 top-0 w-full" data-index={row.index} style:transform="translateY({row.start}px)" style:height="{row.size}px">
+                        {#if entry?.model}
+                          <Combobox.Item value={entry.model.id} label={entry.model.label}
+                            class="flex h-full cursor-pointer items-center gap-2 rounded-lg px-2 text-[13px] text-fg-1 outline-none data-highlighted:bg-surface-3 data-selected:bg-surface-3">
+                            <Brand id={iconId(entry.model)} size={16} />
+                            <span class="min-w-0 truncate">{entry.model.label} · {windowLabel(entry.model)}{entry.model.stale ? ' · stale' : ''}</span>
+                          </Combobox.Item>
+                        {:else if entry}
+                          <div class="flex h-full items-end px-2 pb-1 text-[11px] font-semibold text-fg-3">{entry.label}</div>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
             </div>
           {/if}
         {/snippet}

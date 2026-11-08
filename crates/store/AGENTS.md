@@ -5,7 +5,7 @@
 Filesystem persistence and storage layer:
 - `DataRoot`: manages layout `<data_root>/projects.json`, `<data_root>/blobs/<sha256>`, `<data_root>/models/catalogue.json`, and `<data_root>/sessions/<id>/{meta.json (carries `resumeToken`), events/NNNNNN.jsonl, events/index.json, events.zstd, splices.jsonl, images/, spill/}`
 - `ProjectsStore`: atomic JSON store for Projects (`{id, name, root, ...}`)
-- `SessionsStore`: atomic metadata store for Sessions (`{id, project_id, title, ponytail_level, model, promptHashes, lastUsedAt, archivedAt, restoredAt, state, ...}`)
+- `SessionsStore`: atomic metadata store for Sessions (`{id, project_id, title, model, promptHashes, lastUsedAt, archivedAt, restoredAt, state, ...}`)
 - `EventLog`: segmented append-only log with a sidecar segment/turn index, bounded live ring and tail reads
 - `BlobStore`: content-addressed blobs, one file per sha256
 - `EventCoalescer` and `CoalescedWriter`: assistant-text buffer and one-event writes
