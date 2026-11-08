@@ -2,6 +2,8 @@
   import { onDestroy } from 'svelte';
   import { resolveComposerAction, shouldSend } from '$lib/composer';
   import { MAX_IMAGES, pickImages, type ImageAttachment, type RejectReason } from '$lib/images';
+  import { api } from '$lib/api';
+  import { insertAt, MAX_AUDIO_BYTES, pickAudioType } from '$lib/voice';
   import { collapse, fadeAt, flip, flipAnimation, flipReady, rise, slideDown } from '$lib/motion';
   import { cn } from '$lib/utils';
   import ContextRing from './ContextRing.svelte';
@@ -55,6 +57,10 @@
   let dragging = $state(false);
   let textarea = $state<HTMLTextAreaElement | null>(null);
   let picker = $state<HTMLInputElement | null>(null);
+  let recording = $state(false);
+  let recorder: MediaRecorder | null = null;
+  let stream: MediaStream | null = null;
+  let chunks: Blob[] = [];
 
   const action = $derived(resolveComposerAction(working));
   const canSend = $derived(!disabled && !busy && (!!text.trim() || (!working && attachments.length > 0)));
@@ -73,7 +79,10 @@
         ? 'is not a PNG, JPEG, WebP or GIF image.'
         : `was not attached (limit ${MAX_IMAGES}).`;
 
-  onDestroy(clearAttachments);
+  onDestroy(() => {
+    clearAttachments();
+    cancelVoice();
+  });
 
   function addFiles(files: Iterable<File>) {
     if (!imageInput || working) {
@@ -139,6 +148,74 @@
     event.preventDefault();
     dragging = false;
     addFiles(Array.from(event.dataTransfer?.files ?? []));
+  }
+
+  // Voice note: record, then Groq transcript goes in the draft for the user to edit and send.
+  async function toggleVoice() {
+    if (recording) {
+      recorder?.stop();
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      errors = ['Voice input needs https or localhost and a browser with MediaRecorder.'];
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const type = pickAudioType((candidate) => MediaRecorder.isTypeSupported(candidate));
+      const current = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+      chunks = [];
+      current.ondataavailable = (event) => {
+        if (event.data.size) chunks.push(event.data);
+      };
+      current.onstop = () => void finishVoice(current.mimeType);
+      recorder = current;
+      current.start();
+      recording = true;
+    } catch (error) {
+      releaseMic();
+      errors = [error instanceof Error ? error.message : String(error)];
+    }
+  }
+
+  async function finishVoice(mimeType: string) {
+    recording = false;
+    releaseMic();
+    const audio = new Blob(chunks, { type: mimeType || 'audio/webm' });
+    chunks = [];
+    if (audio.size > MAX_AUDIO_BYTES) {
+      errors = ['Recording is over 25 MB. Record a shorter note.'];
+      return;
+    }
+    busy = true;
+    try {
+      const { text: spoken } = await api.transcribe(audio);
+      if (!spoken) {
+        errors = ['No speech was recognized.'];
+        return;
+      }
+      const start = textarea?.selectionStart ?? text.length;
+      const end = textarea?.selectionEnd ?? text.length;
+      text = insertAt(text, start, end, spoken);
+    } catch (error) {
+      errors = [error instanceof Error ? error.message : String(error)];
+    } finally {
+      busy = false;
+    }
+  }
+
+  function releaseMic() {
+    stream?.getTracks().forEach((track) => track.stop());
+    stream = null;
+  }
+
+  function cancelVoice() {
+    if (recorder?.state === 'recording') {
+      recorder.onstop = null;
+      recorder.stop();
+    }
+    recording = false;
+    releaseMic();
   }
 </script>
 
@@ -223,6 +300,14 @@
             event.currentTarget.value = '';
           }}
         />
+        <button
+          type="button"
+          class={cn('icon-btn', recording && 'text-status-failed')}
+          aria-label={recording ? 'Stop recording' : 'Record voice note'}
+          title={recording ? 'Stop and transcribe' : 'Record voice note'}
+          disabled={disabled || busy}
+          onclick={() => void toggleVoice()}
+        ><Icon name="mic" size={16} /></button>
         {#if !working}
           <button
             type="button"

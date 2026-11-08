@@ -405,7 +405,8 @@ impl Daemon {
             Arc::clone(&prompts),
         )
         .with_models(models)
-        .with_tool_keys_file(config.config_root.join("tool-keys.json"));
+        .with_tool_keys_file(config.config_root.join("tool-keys.json"))
+        .with_groq_keys(keys_file.clone(), api::transcribe::GROQ_URL);
         app_state.models.spawn_refresher();
 
         let updated = announce_update(&app_state, &events, &data_root).await;

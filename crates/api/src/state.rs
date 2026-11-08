@@ -78,6 +78,8 @@ pub struct AppState {
     pub prompts: Arc<PromptStore>,
     pub settings: Arc<RwLock<Settings>>,
     pub event_logs: Arc<RwLock<HashMap<String, EventLog>>>,
+    /// Groq key file and transcription URL for `/api/transcribe`; `None` answers 409.
+    pub groq: Option<(PathBuf, String)>,
     pub models: Arc<ModelCatalogue>,
     pub steers: SteerQueues,
     pub driver: Arc<dyn SessionDriver>,
@@ -122,7 +124,13 @@ impl AppState {
             driver: Arc::new(NoopDriver),
             provider_login: None,
             tool_keys_file: None,
+            groq: None,
         }
+    }
+
+    pub fn with_groq_keys(mut self, keys_file: impl Into<PathBuf>, url: impl Into<String>) -> Self {
+        self.groq = Some((keys_file.into(), url.into()));
+        self
     }
 
     pub fn with_tool_keys_file(mut self, tool_keys_file: impl Into<PathBuf>) -> Self {

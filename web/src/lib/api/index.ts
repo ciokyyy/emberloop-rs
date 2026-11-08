@@ -83,6 +83,13 @@ export const api = {
   refreshModels: () => request<Model[]>('/api/models/refresh', { method: 'POST' }),
 
   listToolKeys: () => request<ToolKey[]>('/api/tool-keys'),
+  // Raw audio body; the content type overrides the JSON default in request().
+  transcribe: (audio: Blob) =>
+    request<{ text: string }>('/api/transcribe', {
+      method: 'POST',
+      headers: { 'content-type': audio.type || 'audio/webm' },
+      body: audio
+    }),
   setToolKey: (name: string, value: string) =>
     request<ToolKey>(`/api/tool-keys/${encodeURIComponent(name)}`, {
       method: 'PUT',

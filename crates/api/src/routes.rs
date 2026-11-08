@@ -934,6 +934,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .merge(providers)
+        .merge(crate::transcribe::router())
         .with_state(state)
 }
 
