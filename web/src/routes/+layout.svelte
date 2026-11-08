@@ -242,7 +242,7 @@
   // openView keeps Settings and Providers on a Project's URL, so Back returns to its Session.
   function openView(next: Page) {
     drawer = false;
-    void goto(viewPath(projectOf?.id ?? projects[0]?.id ?? null, next));
+    void goto(viewPath(scope ?? projectOf?.id ?? projects[0]?.id ?? null, next));
   }
 
   // The cache page is one level under the Session: its details dialog closes as the URL changes.

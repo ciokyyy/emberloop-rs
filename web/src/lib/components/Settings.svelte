@@ -6,10 +6,11 @@
   import ModelPicker from './ModelPicker.svelte';
   import Prompts from './Prompts.svelte';
   import Button from './ui/button.svelte';
+  import Slider from './ui/slider.svelte';
   import Switch from './ui/switch.svelte';
 
   let {
-    settings,
+    settings: saved,
     models = [],
     saving = false,
     onsave
@@ -20,8 +21,38 @@
     onsave: (settings: Settings) => void;
   } = $props();
 
-  // Tool keys live in the runtime env file the tool shells source, so a saved key applies to the
-  // next command with no restart. The API never returns a stored value, only whether one is set.
+  // Edits stay in a draft until Save. A saved copy from the daemon replaces the draft.
+  let settings = $state<Settings>({} as Settings);
+  $effect.pre(() => {
+    settings = { ...saved };
+  });
+  const dirty = $derived(JSON.stringify(settings) !== JSON.stringify(saved));
+  const change = (patch: Partial<Settings>) => {
+    settings = { ...settings, ...patch };
+  };
+  const discard = () => {
+    settings = { ...saved };
+  };
+
+  const levels = ['off', 'lite', 'full', 'ultra'];
+  const percent = (n: number) => `${n}%`;
+  const tokens = (n: number) => (n === 0 ? 'auto' : `${n.toLocaleString()} tokens`);
+  const count = (n: number) => (n === 0 ? 'off' : String(n));
+
+  // Title model list: the free OpenRouter model is always offered first.
+  const titleModels: Model[] = $derived([
+    { id: 'openrouter/openrouter/free', label: 'OpenRouter Free', provider: 'openrouter', source: 'pi', kind: 'chat', efforts: [], image_input: false, context_window: 0, stale: false, updated_at: 0 },
+    ...models.filter((model) => model.source === 'pi' && model.id !== 'openrouter/openrouter/free')
+  ]);
+
+  const subagents = [
+    { name: 'scout', description: 'Reads and searches. Cannot edit.', tools: 'read, grep' },
+    { name: 'worker', description: 'Edits and runs commands. One at a time per Session.', tools: 'all tools except subagents' }
+  ];
+
+  // Tool keys live in the runtime env file the tool shells read on every call, so a saved key
+  // applies to the next call with no restart. The API never returns a stored value, only whether one is set.
+  const labels: Record<string, string> = { brave: 'Brave search', exa: 'Exa search', jina: 'Jina reader' };
   let toolKeys = $state<ToolKey[]>([]);
   let drafts = $state<Record<string, string>>({});
   let toolError = $state('');
@@ -49,102 +80,41 @@
       toolSaving = '';
     }
   }
-
-  const labels: Record<string, string> = { brave: 'Brave search', exa: 'Exa search', jina: 'Jina reader' };
-
-  const levels = ['off', 'lite', 'full', 'ultra'];
-  const subagents = [
-    { name: 'scout', description: 'Reads and searches. Cannot edit.', tools: 'read, grep' },
-    { name: 'worker', description: 'Edits and runs commands. One at a time per Session.', tools: 'all tools except subagents' }
-  ];
 </script>
 
 <div class="h-full overflow-y-auto px-4 py-6" in:rise|global>
   <div class="mx-auto flex max-w-[760px] flex-col gap-8">
-    <div>
+    <header class="flex flex-col gap-1">
       <h2 class="text-[1.75rem] font-semibold leading-[1.2] tracking-[-0.02em]">Settings</h2>
-      <p class="text-fg-3">
+      <p class="text-[13px] text-fg-3">
         Daemon-wide. Changes apply to the next Session, not to running ones.
-        {#if saving}<span class="text-fg-3"> Saving…</span>{/if}
+        {#if saving}<span> Saving…</span>{/if}
       </p>
+    </header>
+
+    <div class="sticky top-0 z-10 flex items-center justify-between gap-3 rounded-2xl border border-border bg-surface-1 p-3">
+      <span class="text-[13px] text-fg-3">{dirty ? 'Unsaved changes' : 'All changes saved'}</span>
+      <div class="flex gap-2">
+        <Button disabled={!dirty || saving} onclick={discard}>Discard</Button>
+        <Button disabled={!dirty || saving} onclick={() => onsave(settings)}>Save</Button>
+      </div>
     </div>
 
-    <section class="flex flex-col gap-3">
-      <h3 class="text-[1.0625rem] font-semibold">Tool keys</h3>
+    <section class="flex flex-col gap-3" aria-labelledby="g-new">
+      <h3 id="g-new" class="text-[1.0625rem] font-semibold">New Sessions</h3>
       <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
-        <p class="text-[13px] text-fg-3">
-          Saved here, not exported in a shell: the tool shells read them from the runtime env file
-          on their next command. An empty value removes a key.
-        </p>
-        {#each toolKeys as key (key.name)}
-          <div class="flex items-end gap-2">
-            <label class="flex min-w-0 flex-1 flex-col gap-1 text-[12px] text-fg-3">
-              {labels[key.name] ?? key.name} <span class="font-mono text-fg-4">{key.variable}</span>
-              ({key.set ? 'set' : 'not set'})
-              <input
-                class="field"
-                type="password"
-                autocomplete="off"
-                placeholder={key.set ? 'Replace saved key' : 'Paste key'}
-                bind:value={drafts[key.name]}
-              />
-            </label>
-            <Button
-              disabled={toolSaving === key.name || !(drafts[key.name] ?? '').trim()}
-              onclick={() => void saveToolKey(key.name)}
-            >Save</Button>
-          </div>
-        {/each}
-        {#if toolError}<p class="text-[13px] text-status-failed">{toolError}</p>{/if}
-      </div>
-    </section>
-
-    <section class="flex flex-col gap-3">
-      <h3 class="text-[1.0625rem] font-semibold">New Sessions</h3>
-      <ModelPicker label="Default model" {models} value={settings.default_model}
-        onchange={(default_model) => onsave({ ...settings, default_model })} />
-    </section>
-
-    <section class="flex flex-col gap-3">
-      <h3 class="text-[1.0625rem] font-semibold">Session titles</h3>
-      <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
-        <label class="flex items-center justify-between gap-4">
-          Generate titles automatically
-          <Switch label="Generate titles automatically" checked={settings.title_generation} onchange={(title_generation) => onsave({ ...settings, title_generation })} />
-        </label>
-        <ModelPicker label="Title model" models={[{ id: 'openrouter/openrouter/free', label: 'OpenRouter Free', provider: 'openrouter', source: 'pi', kind: 'chat', efforts: [], image_input: false, context_window: 0, stale: false, updated_at: 0 }, ...models.filter((model) => model.source === 'pi' && model.id !== 'openrouter/openrouter/free')]} value={settings.title_model} onchange={(title_model) => onsave({ ...settings, title_model })} />
-        <p class="text-[13px] text-fg-3">Uses saved provider credentials. Retries until saved. Manual titles stay unchanged.</p>
-      </div>
-    </section>
-
-    <section class="flex flex-col gap-3">
-      <h3 class="text-[1.0625rem] font-semibold">Proxy</h3>
-      <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
-        <div class="flex items-center justify-between gap-4">
-          <div>
-            <div>Billion context</div>
-            <div class="text-[13px] text-fg-3">
-              Compress, decompress and search the history through the proxy.
-            </div>
-          </div>
-          <Switch
-            checked={settings.proxy_compression}
-            label="Billion context"
-            onchange={(checked) => onsave({ ...settings, proxy_compression: checked })}
-          />
-        </div>
+        <ModelPicker label="Default model" {models} value={settings.default_model}
+          onchange={(default_model) => change({ default_model })} />
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <div>Ponytail level</div>
-            <div class="text-[13px] text-fg-3">
-              Default for new Sessions. One embedded skill text, appended by the proxy.
-            </div>
+            <div class="text-[13px]">Ponytail level</div>
+            <div class="text-[12px] text-fg-3">Starting level for new Sessions.</div>
           </div>
-          <div class="seg">
+          <div class="seg" role="group" aria-label="Ponytail level">
             {#each levels as level (level)}
               <button
                 aria-pressed={settings.ponytail_default_level === level}
-                onclick={() => onsave({ ...settings, ponytail_default_level: level })}
+                onclick={() => change({ ponytail_default_level: level })}
               >{level}</button>
             {/each}
           </div>
@@ -152,224 +122,144 @@
       </div>
     </section>
 
-    <section class="flex flex-col gap-3">
-      <h3 class="text-[1.0625rem] font-semibold">Context</h3>
-      <div class="grid gap-4 rounded-2xl border border-border bg-surface-1 p-4 sm:grid-cols-2">
-        <label class="flex flex-col gap-1 text-[13px]">
-          Pressure band (%)
-          <input
-            class="field"
-            type="number"
-            min="1"
-            max="100"
-            value={settings.max_context_limit}
-            onchange={(event) =>
-              onsave({
-                ...settings,
-                max_context_limit: Math.max(1, Number((event.currentTarget as HTMLInputElement).value) || 75)
-              })}
-          />
-          <span class="text-[12px] text-fg-3">maxContextLimit; a nudge every turn while over.</span>
-        </label>
-        <label class="flex flex-col gap-1 text-[13px]">
-          Emergency band (%)
-          <input
-            class="field"
-            type="number"
-            min="1"
-            max="100"
-            value={settings.emergency_threshold_percent}
-            onchange={(event) =>
-              onsave({
-                ...settings,
-                emergency_threshold_percent: Math.max(
-                  1,
-                  Number((event.currentTarget as HTMLInputElement).value) || 95
-                )
-              })}
-          />
-          <span class="text-[12px] text-fg-3">emergencyThresholdPercent; truncates large tool output.</span>
-        </label>
-        <label class="flex flex-col gap-1 text-[13px]">
-          Pressure floor (tokens)
-          <input
-            class="field"
-            type="number"
-            min="0"
-            value={settings.min_pressure_benefit_tokens}
-            onchange={(event) =>
-              onsave({
-                ...settings,
-                min_pressure_benefit_tokens: Math.max(
-                  0,
-                  Number((event.currentTarget as HTMLInputElement).value) || 0
-                )
-              })}
-          />
-          <span class="text-[12px] text-fg-3">minPressureBenefitTokens; 0 means auto.</span>
-        </label>
-        <label class="flex flex-col gap-1 text-[13px]">
-          Preserved recent messages
-          <input
-            class="field"
-            type="number"
-            min="0"
-            value={settings.preserve_recent_messages}
-            onchange={(event) =>
-              onsave({
-                ...settings,
-                preserve_recent_messages: Math.max(
-                  0,
-                  Number((event.currentTarget as HTMLInputElement).value) || 0
-                )
-              })}
-          />
-          <span class="text-[12px] text-fg-3">preserveRecentMessages; the tail never folds.</span>
-        </label>
-        <label class="flex flex-col gap-1 text-[13px]">
-          Tier 2 blocks
-          <input
-            class="field"
-            type="number"
-            min="1"
-            value={settings.tier2_trigger}
-            onchange={(event) =>
-              onsave({
-                ...settings,
-                tier2_trigger: Math.max(1, Number((event.currentTarget as HTMLInputElement).value) || 1000)
-              })}
-          />
-        </label>
-        <label class="flex flex-col gap-1 text-[13px]">
-          Tier 3 blocks
-          <input
-            class="field"
-            type="number"
-            min="1"
-            value={settings.tier3_trigger}
-            onchange={(event) =>
-              onsave({
-                ...settings,
-                tier3_trigger: Math.max(1, Number((event.currentTarget as HTMLInputElement).value) || 2000)
-              })}
-          />
-        </label>
-        <label class="flex flex-col gap-1 text-[13px] sm:col-span-2">
-          Protected tools
-          <input
-            class="field"
-            value={settings.protected_tools.join(', ')}
-            placeholder="comma separated, e.g. read, bash"
-            onchange={(event) =>
-              onsave({
-                ...settings,
-                protected_tools: (event.currentTarget as HTMLInputElement).value
-                  .split(',')
-                  .map((name) => name.trim())
-                  .filter(Boolean)
-              })}
-          />
-          <span class="text-[12px] text-fg-3">protectedTools; their results never fold.</span>
-        </label>
+    <section class="flex flex-col gap-3" aria-labelledby="g-titles">
+      <h3 id="g-titles" class="text-[1.0625rem] font-semibold">Session titles</h3>
+      <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
         <div class="flex items-center justify-between gap-4">
-          <div>
-            <div>Inject tools</div>
-            <div class="text-[13px] text-fg-3">Declare compress, decompress, search and status.</div>
-          </div>
-          <Switch
-            checked={settings.inject_tool}
-            label="Inject tools"
-            onchange={(checked) => onsave({ ...settings, inject_tool: checked })}
-          />
+          <div class="text-[13px]">Generate titles automatically</div>
+          <Switch label="Generate titles automatically" checked={settings.title_generation}
+            onchange={(title_generation) => change({ title_generation })} />
         </div>
-        <div class="flex items-center justify-between gap-4">
-          <div>
-            <div>Inject nudges</div>
-            <div class="text-[13px] text-fg-3">Ask the model to compress at the bands above.</div>
-          </div>
-          <Switch
-            checked={settings.inject_nudge}
-            label="Inject nudges"
-            onchange={(checked) => onsave({ ...settings, inject_nudge: checked })}
-          />
-        </div>
+        <ModelPicker label="Title model" models={titleModels} value={settings.title_model}
+          onchange={(title_model) => change({ title_model })} />
+        <p class="text-[12px] text-fg-3">Uses saved provider credentials. Retries until saved. Manual titles stay unchanged.</p>
       </div>
     </section>
-    <section class="flex flex-col gap-3">
-      <h3 class="text-[1.0625rem] font-semibold">Todo</h3>
+
+    <section class="flex flex-col gap-3" aria-labelledby="g-context">
+      <h3 id="g-context" class="text-[1.0625rem] font-semibold">Context</h3>
+      <div class="flex flex-col gap-6 rounded-2xl border border-border bg-surface-1 p-4">
+        <Slider label="Pressure band" min={1} max={100} step={1} format={percent}
+          hint="Share of the context window where the model gets a nudge to compress, every turn."
+          value={settings.max_context_limit} onchange={(max_context_limit) => change({ max_context_limit })} />
+        <Slider label="Emergency band" min={1} max={100} step={1} format={percent}
+          hint="Share of the context window where large tool output gets cut short."
+          value={settings.emergency_threshold_percent}
+          onchange={(emergency_threshold_percent) => change({ emergency_threshold_percent })} />
+        <Slider label="Pressure floor" min={0} max={20000} step={500} format={tokens}
+          hint="Smallest saving a fold must make. Auto picks the value itself."
+          value={settings.min_pressure_benefit_tokens}
+          onchange={(min_pressure_benefit_tokens) => change({ min_pressure_benefit_tokens })} />
+        <Slider label="Preserved recent messages" min={0} max={50} step={1}
+          hint="Newest messages that never fold."
+          value={settings.preserve_recent_messages}
+          onchange={(preserve_recent_messages) => change({ preserve_recent_messages })} />
+        <Slider label="Tier 2 blocks" min={1} max={10000} step={100}
+          value={settings.tier2_trigger} onchange={(tier2_trigger) => change({ tier2_trigger })} />
+        <Slider label="Tier 3 blocks" min={1} max={10000} step={100}
+          value={settings.tier3_trigger} onchange={(tier3_trigger) => change({ tier3_trigger })} />
+      </div>
+    </section>
+
+    <section class="flex flex-col gap-3" aria-labelledby="g-tools">
+      <h3 id="g-tools" class="text-[1.0625rem] font-semibold">Tools and proxy</h3>
       <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
         <div class="flex items-center justify-between gap-4">
           <div>
-            <div>Stop reminders</div>
-            <div class="text-[13px] text-fg-3">
-              Wake the model when a turn ends with items still open.
-            </div>
+            <div class="text-[13px]">Billion context</div>
+            <div class="text-[12px] text-fg-3">Compress, decompress and search the history through the proxy.</div>
           </div>
-          <Switch
-            checked={settings.todo_reminders}
-            label="Stop reminders"
-            onchange={(checked) => onsave({ ...settings, todo_reminders: checked })}
-          />
+          <Switch label="Billion context" checked={settings.proxy_compression}
+            onchange={(proxy_compression) => change({ proxy_compression })} />
         </div>
-        <label class="flex flex-wrap items-center justify-between gap-4">
-          <span>
-            <span>Reminders per turn</span>
-            <span class="block text-[13px] text-fg-3">
-              Reset by the next message; 0 turns reminders off.
-            </span>
-          </span>
-          <input
-            class="field w-20"
-            type="number"
-            min="0"
-            max="10"
-            value={settings.todo_reminders_max}
-            onchange={(event) =>
-              onsave({
-                ...settings,
-                todo_reminders_max: Math.max(0, Number((event.currentTarget as HTMLInputElement).value) || 0)
-              })}
-          />
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <div class="text-[13px]">Inject tools</div>
+            <div class="text-[12px] text-fg-3">Declare compress, decompress, search and status to the model.</div>
+          </div>
+          <Switch label="Inject tools" checked={settings.inject_tool}
+            onchange={(inject_tool) => change({ inject_tool })} />
+        </div>
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <div class="text-[13px]">Inject nudges</div>
+            <div class="text-[12px] text-fg-3">Ask the model to compress when a band is crossed.</div>
+          </div>
+          <Switch label="Inject nudges" checked={settings.inject_nudge}
+            onchange={(inject_nudge) => change({ inject_nudge })} />
+        </div>
+        <label class="flex flex-col gap-1 text-[13px]">
+          Protected tools
+          <input class="field" value={settings.protected_tools.join(', ')} placeholder="comma separated, e.g. read, bash"
+            onchange={(event) => change({
+              protected_tools: (event.currentTarget as HTMLInputElement).value
+                .split(',').map((name) => name.trim()).filter(Boolean)
+            })} />
+          <span class="text-[12px] text-fg-3">Their results never fold.</span>
         </label>
+      </div>
+    </section>
+
+    <section class="flex flex-col gap-3" aria-labelledby="g-todo">
+      <h3 id="g-todo" class="text-[1.0625rem] font-semibold">Todo</h3>
+      <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
         <div class="flex items-center justify-between gap-4">
           <div>
-            <div>Open the plan on create</div>
-            <div class="text-[13px] text-fg-3">The card expands for two seconds when the list changes.</div>
+            <div class="text-[13px]">Stop reminders</div>
+            <div class="text-[12px] text-fg-3">Wake the model when a turn ends with items still open.</div>
           </div>
-          <Switch
-            checked={settings.todo_auto_expand}
-            label="Open the plan on create"
-            onchange={(checked) => onsave({ ...settings, todo_auto_expand: checked })}
-          />
+          <Switch label="Stop reminders" checked={settings.todo_reminders}
+            onchange={(todo_reminders) => change({ todo_reminders })} />
+        </div>
+        <Slider label="Reminders per turn" min={0} max={10} step={1} format={count}
+          hint="Resets with the next message. Off stops reminders."
+          value={settings.todo_reminders_max} onchange={(todo_reminders_max) => change({ todo_reminders_max })} />
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <div class="text-[13px]">Open the plan on create</div>
+            <div class="text-[12px] text-fg-3">The card expands for two seconds when the list changes.</div>
+          </div>
+          <Switch label="Open the plan on create" checked={settings.todo_auto_expand}
+            onchange={(todo_auto_expand) => change({ todo_auto_expand })} />
         </div>
         <div class="flex items-center justify-between gap-4">
           <div>
-            <div>Fade when done</div>
-            <div class="text-[13px] text-fg-3">
-              The card fades a few seconds after the last item resolves.
-            </div>
+            <div class="text-[13px]">Fade when done</div>
+            <div class="text-[12px] text-fg-3">The card fades a few seconds after the last item resolves.</div>
           </div>
-          <Switch
-            checked={settings.todo_hide_when_done}
-            label="Fade when done"
-            onchange={(checked) => onsave({ ...settings, todo_hide_when_done: checked })}
-          />
+          <Switch label="Fade when done" checked={settings.todo_hide_when_done}
+            onchange={(todo_hide_when_done) => change({ todo_hide_when_done })} />
         </div>
+      </div>
+    </section>
+
+    <section class="flex flex-col gap-3" aria-labelledby="g-web">
+      <h3 id="g-web" class="text-[1.0625rem] font-semibold">Web search and fetching</h3>
+      <div class="flex flex-col gap-4 rounded-2xl border border-border bg-surface-1 p-4">
+        <p class="text-[12px] text-fg-3">
+          API keys for search and page reading. Saved to the tool keys file; the tools read it on their next call. An empty value removes a key.
+        </p>
+        {#each toolKeys as key (key.name)}
+          <div class="flex items-end gap-2">
+            <label class="flex min-w-0 flex-1 flex-col gap-1 text-[12px] text-fg-3">
+              {labels[key.name] ?? key.name} <span class="font-mono text-fg-4">{key.variable}</span>
+              ({key.set ? 'set' : 'not set'})
+              <input class="field" type="password" autocomplete="off"
+                placeholder={key.set ? 'Replace saved key' : 'Paste key'} bind:value={drafts[key.name]} />
+            </label>
+            <Button disabled={toolSaving === key.name || !(drafts[key.name] ?? '').trim()}
+              onclick={() => void saveToolKey(key.name)}>Save</Button>
+          </div>
+        {/each}
+        {#if toolError}<p class="text-[13px] text-status-failed">{toolError}</p>{/if}
       </div>
     </section>
 
     <Prompts />
 
-    <section class="flex flex-col gap-3">
-      <div class="flex items-center gap-2">
-        <h3 class="text-[1.0625rem] font-semibold">Subagents</h3>
-        <span class="chip">phase 2</span>
-      </div>
-      <p class="text-[13px] text-fg-3">
-        scout reads and searches. worker edits. Both are off until phase 2; the form shows what will
-        be configurable.
-      </p>
-      <div class="grid gap-3 sm:grid-cols-2">
+    <details class="rounded-2xl border border-border bg-surface-1 p-4">
+      <summary class="cursor-pointer text-[1.0625rem] font-semibold">Subagents <span class="chip">phase 2</span></summary>
+      <div class="mt-3 grid gap-3 sm:grid-cols-2">
         {#each subagents as agent (agent.name)}
           <div class="flex flex-col gap-3 rounded-2xl border border-border bg-surface-1 p-4 opacity-70">
             <div class="flex items-start justify-between gap-3">
@@ -388,6 +278,6 @@
           </div>
         {/each}
       </div>
-    </section>
+    </details>
   </div>
 </div>
