@@ -98,14 +98,65 @@ pub fn default_manifest_url() -> String {
 
 /// fetch reads the release manifest.
 pub async fn fetch(manifest_url: &str) -> anyhow::Result<Latest> {
-    let body = client()?
-        .get(manifest_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-    Ok(serde_json::from_str(&body)?)
+    let bytes = get_bytes(manifest_url).await?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// get_bytes downloads `url`. A GitHub release URL that plain HTTP cannot reach (a network that
+/// blocks release downloads answers 504) is retried through `gh`, which uses the API.
+async fn get_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
+    let gh = std::env::var_os("EMBERLOOP_GH").map_or_else(|| PathBuf::from("gh"), PathBuf::from);
+    get_bytes_with(url, &gh).await
+}
+
+async fn get_bytes_with(url: &str, gh: &Path) -> anyhow::Result<Vec<u8>> {
+    get_bytes_with_github(url, url, gh).await
+}
+
+async fn get_bytes_with_github(url: &str, github_url: &str, gh: &Path) -> anyhow::Result<Vec<u8>> {
+    let http = async {
+        let response = client()?.get(url).send().await?.error_for_status()?;
+        Ok::<_, anyhow::Error>(response.bytes().await?.to_vec())
+    }
+    .await;
+    let err = match http {
+        Ok(bytes) => return Ok(bytes),
+        Err(err) => err,
+    };
+    let Some(args) = gh_download_args(github_url) else {
+        return Err(err);
+    };
+    let out = tokio::process::Command::new(gh)
+        .args(&args)
+        .output()
+        .await
+        .map_err(|spawn| anyhow::anyhow!("{err:#}; gh fallback could not start: {spawn}"))?;
+    anyhow::ensure!(
+        out.status.success(),
+        "{err:#}; gh fallback failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(out.stdout)
+}
+
+/// gh_download_args maps `https://github.com/<owner>/<repo>/releases[/latest]/download/…` to the
+/// `gh release download` arguments that print the same asset on stdout.
+fn gh_download_args(url: &str) -> Option<Vec<String>> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    let (repo, tag, name) = match parts.as_slice() {
+        [owner, repo, "releases", "latest", "download", name] => {
+            (format!("{owner}/{repo}"), None, *name)
+        }
+        [owner, repo, "releases", "download", tag, name] => {
+            (format!("{owner}/{repo}"), Some(*tag), *name)
+        }
+        _ => return None,
+    };
+    let mut args = vec!["release".to_string(), "download".to_string()];
+    args.extend(tag.map(str::to_string));
+    args.extend(["-R", &repo, "-p", name, "-O", "-"].map(str::to_string));
+    Some(args)
 }
 
 fn client() -> anyhow::Result<reqwest::Client> {
@@ -121,13 +172,7 @@ const BINARY: &str = "emberloop-daemon";
 /// install downloads `artifact`, checks its sum and keeps it as `releases/<version>/` under
 /// `root`. Nothing running is touched; `activate` switches to it.
 pub async fn install(artifact: &Artifact, version: &str, root: &Path) -> anyhow::Result<()> {
-    let bytes = client()?
-        .get(&artifact.url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+    let bytes = get_bytes(&artifact.url).await?;
     let sum = format!("{:x}", Sha256::digest(&bytes));
     anyhow::ensure!(
         sum == artifact.sha256.to_ascii_lowercase(),
@@ -384,11 +429,17 @@ fn request_path(data_root: &Path) -> PathBuf {
     data_root.join("update-request.json")
 }
 
-pub fn write_request(data_root: &Path, request: &InstallRequest) -> std::io::Result<()> {
+pub fn write_request(data_root: &Path, request: &InstallRequest) -> anyhow::Result<()> {
     let path = request_path(data_root);
     let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_vec_pretty(request)?)?;
-    std::fs::rename(&tmp, &path)
+    let wrote = std::fs::write(&tmp, serde_json::to_vec_pretty(request)?)
+        .and_then(|()| std::fs::rename(&tmp, &path));
+    wrote.map_err(|err| {
+        anyhow::anyhow!(
+            "cannot queue the update in {} ({err}); pass --data-root <daemon data root>",
+            data_root.display()
+        )
+    })
 }
 
 pub fn read_request(data_root: &Path) -> Option<InstallRequest> {
@@ -538,6 +589,89 @@ mod tests {
         assert!(!is_newer("0.0.3", "0.0.4"));
         assert!(is_newer("1.0.0", "1.0.0-rc.1"));
         assert!(!is_newer("1.0.0-rc.1", "1.0.0"));
+    }
+
+    #[test]
+    fn queueing_into_a_missing_root_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nope");
+        let request = InstallRequest {
+            to: "1".into(),
+            artifact: None,
+            file: None,
+            session: None,
+        };
+        let err = write_request(&missing, &request).unwrap_err().to_string();
+        assert!(err.contains("nope") && err.contains("--data-root"), "{err}");
+    }
+
+    #[test]
+    fn a_github_release_url_maps_to_a_gh_download() {
+        let args =
+            gh_download_args("https://github.com/o/r/releases/download/v0.0.37/emberloop-daemon-x")
+                .unwrap();
+        assert_eq!(
+            args,
+            [
+                "release",
+                "download",
+                "v0.0.37",
+                "-R",
+                "o/r",
+                "-p",
+                "emberloop-daemon-x",
+                "-O",
+                "-"
+            ]
+        );
+        let latest =
+            gh_download_args("https://github.com/o/r/releases/latest/download/latest.json")
+                .unwrap();
+        assert_eq!(
+            latest,
+            [
+                "release",
+                "download",
+                "-R",
+                "o/r",
+                "-p",
+                "latest.json",
+                "-O",
+                "-"
+            ]
+        );
+        assert!(gh_download_args("https://example.com/a/b").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_blocked_download_falls_back_to_gh() {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut buf = [0u8; 512];
+                let _ = conn.read(&mut buf);
+                let _ =
+                    conn.write_all(b"HTTP/1.1 504 Gateway Time-out\r\ncontent-length: 0\r\n\r\n");
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let gh = dir.path().join("gh");
+        std::fs::write(&gh, "#!/bin/sh\nprintf 'via-gh %s' \"$*\"\n").unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let url = format!("http://127.0.0.1:{port}/releases/download/v1/x");
+        let bytes = get_bytes_with(&url, &gh).await;
+        // Not a GitHub URL: the HTTP error stands and gh is not consulted.
+        assert!(bytes.is_err());
+        let bytes =
+            get_bytes_with_github(&url, "https://github.com/o/r/releases/download/v1/x", &gh)
+                .await
+                .unwrap();
+        assert!(String::from_utf8(bytes)
+            .unwrap()
+            .starts_with("via-gh release download v1"));
     }
 
     #[test]
