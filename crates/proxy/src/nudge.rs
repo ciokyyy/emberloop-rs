@@ -8,8 +8,9 @@
 //! `max(5000, window / 100)`). After a nudge, another fires as soon as the context has
 //! grown by `NUDGE_GROWTH_TOKENS` since the previous one, so a model that skipped one
 //! nudge is asked again. Tiers fire once when the active block count reaches their
-//! trigger and usage is under the pressure band. A successful compress closes the gate
-//! again.
+//! trigger and usage is under the pressure band. A successful compress keeps the gate
+//! shut, so the next fold waits for that same growth step: a fold rewrites the provider
+//! cache from its first turn on, and folding on every step keeps the cache cold.
 //!
 //! Bands and minimums follow the reference (billion-context, `maxContextLimit` 75%,
 //! `emergencyThresholdPercent` 95%, `minCompressRange` 5000, `nudgeGrowthTokens`
@@ -183,10 +184,12 @@ impl NudgeState {
         })
     }
 
-    /// A successful compress closes the gate; the next first nudge comes before any
-    /// pressure, emergency or tier nudge again.
+    /// A successful compress ends the sticky emergency truncation, and clears the tier flags
+    /// without reopening the first-nudge gate: the context the fold left is not new, so the
+    /// next fold waits for `NUDGE_GROWTH_TOKENS` since the last nudge, the same growth step a
+    /// nudge leaves behind. Otherwise every step over the threshold would fold again and
+    /// restart the provider cache from turn 1.
     pub fn reset_after_compress(&mut self) {
-        self.first_fired = false;
         self.tier2_fired = false;
         self.tier3_fired = false;
     }

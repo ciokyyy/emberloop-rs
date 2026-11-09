@@ -162,15 +162,38 @@ fn compress_closes_the_gate_and_the_bands_win_over_the_first_nudge_again() {
 }
 
 #[test]
-fn after_a_compress_the_first_nudge_still_fires_below_the_bands() {
+fn after_a_compress_the_next_fold_waits_for_the_growth_step() {
     let window = 64_000;
     let mut state = NudgeState::default();
     observe(&mut state, 32_000, window);
     state.reset_after_compress();
-    // 40000 is 62 percent of the window: under the pressure band, so the first nudge.
-    let fired = observe(&mut state, 40_000, window).expect("gate reopens");
-    assert_eq!(fired.kind, NudgeKind::First);
-    assert!(!fired.over_limit);
+    // 40000 is 62 percent of the window and only 8000 over the last nudge: a fold here
+    // rewrites the provider cache to free a few thousand tokens.
+    assert_eq!(observe(&mut state, 40_000, window), None);
+    // The growth step still fires, and the band outranks it.
+    let fired = observe(&mut state, 82_000, window).expect("growth nudge");
+    assert_eq!(fired.kind, NudgeKind::Emergency);
+    assert_eq!(fired.since_last, 50_000);
+}
+
+#[test]
+fn a_compress_does_not_rearm_the_gate_on_the_next_step() {
+    // The reported Session: gemini-3.8-flash, 1M window, about 19000 tokens per step. The
+    // fold left 71178 and the next step was 91225, which re-armed the gate and folded
+    // again, so the prompt cache restarted on every step.
+    let window = 1_048_576;
+    let mut state = NudgeState::default();
+    assert_eq!(
+        observe(&mut state, 88_426, window).map(|n| n.kind),
+        Some(NudgeKind::First)
+    );
+    state.reset_after_compress();
+    assert_eq!(observe(&mut state, 71_178, window), None);
+    assert_eq!(observe(&mut state, 91_225, window), None);
+    assert_eq!(
+        observe(&mut state, 121_178, window).map(|n| n.kind),
+        Some(NudgeKind::First)
+    );
 }
 
 #[test]
@@ -422,25 +445,25 @@ fn reference_first(name: &str) -> Option<(u64, u64)> {
 
 /// Frames where the engine nudges and the reference stays silent, as `(scenario, step,
 /// kind)`. Every one is the first-nudge threshold this project keeps on purpose (ticket
-/// 20): the engine fires at `min(75000, window / 2)`, so at 64k at 32000 tokens, the
-/// session's first nudge or the first after a compress. The reference waits for its own
-/// first at 48055 (64k), 51855 (200k) or 50255 (1M). Each frame has compressible mass of
-/// at least 30000, far above the floor, so the token substitution is not what fires it.
-/// Any other early frame, or one of these going quiet, fails the test.
+/// 20): the engine fires at `min(75000, window / 2)`, so at 64k at 32000 tokens. The
+/// reference waits for its own first at 48055 (64k), 51855 (200k) or 50255 (1M). Each frame
+/// has compressible mass of at least 30000, far above the floor, so the token substitution
+/// is not what fires it. Any other early frame, or one of these going quiet, fails the test.
+///
+/// A compress no longer re-arms the gate (`reset_after_compress`), so the post-compress
+/// frames the reference injects on stay quiet here: `blocks` 52 and 70, and
+/// `compress-reset` 70. That is a deliberate deviation, not a parity miss: a fold rewrites
+/// the provider cache from turn 1, and re-armed folds once folded on every step.
 ///
 /// - `pressure` 42: the session's first nudge at 32555 tokens, before the reference's 48055.
-/// - `blocks` 47, 52, 70 and `compress-reset` 42, 70: the gate reopens at 32000 tokens,
-///   after a compress or as the session's first (`blocks` 47 follows the compress at 30,
-///   52 the one at 50, 70 the one at 70; `compress-reset` 42 is its first, 70 follows its
-///   compress at 70). The reference waits for 48000 tokens.
+/// - `blocks` 47: the first nudge at 32592 tokens, after the compress at 30, which left the
+///   gate shut but less than the growth step behind the last nudge.
+/// - `compress-reset` 42: the session's first nudge at 32555 tokens.
 /// - `200k` 50: the first nudge at 76255 tokens; the reference fired at 51855 and 74730.
 const KNOWN_EARLY: &[(&str, u64, &str)] = &[
     ("window-64k-pressure", 42, "first"),
     ("window-64k-blocks", 47, "first"),
-    ("window-64k-blocks", 52, "first"),
-    ("window-64k-blocks", 70, "first"),
     ("window-64k-compress-reset", 42, "first"),
-    ("window-64k-compress-reset", 70, "first"),
     ("window-200k-steady", 50, "first"),
 ];
 

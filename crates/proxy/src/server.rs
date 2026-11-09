@@ -248,8 +248,9 @@ impl SessionRuntime {
         })
     }
 
-    /// A compress or a conversation restart closes the first-nudge gate (ticket 20) and ends
-    /// the sticky emergency truncation.
+    /// A compress or a conversation restart clears the tier flags (ticket 20) and ends the
+    /// sticky emergency truncation. The first-nudge gate stays shut, so the next fold waits
+    /// for the growth step instead of firing on the step after the fold.
     fn close_nudge_gate(&self) -> Result<(), ProxyError> {
         self.emergency_truncated.store(false, Ordering::Relaxed);
         let mut gate = lock(&self.nudge)?;

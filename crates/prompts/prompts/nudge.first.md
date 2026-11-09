@@ -7,6 +7,7 @@ Compression Philosophy:
 - Context capacity is precious. Save context by compressing consumed outputs, not by avoiding tools.
 - Compress by need, not by percentage.
 - Work from summaries, not raw tool outputs. Compress a range only when its content is genuinely consumed. Keep content the current step is still using, content you cannot reconstruct, and results of protected tools (compress rejects them and names the tool).
+- A fold rewrites the head of the conversation, so the provider prompt cache restarts from turn 1 and the next request pays full price. Space folds by about 50,000 tokens of new context.
 
 {{ context_breakdown }}
 {{ since_last_nudge }}
