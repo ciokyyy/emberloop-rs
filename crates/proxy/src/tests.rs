@@ -478,6 +478,37 @@ async fn injects_tools_prompts_and_meters_usage() {
 }
 
 #[tokio::test]
+async fn reviewer_prompts_are_pinned_and_edit_is_removed_on_the_model_wire() {
+    let fixture = fixture().await;
+    let mut meta = fixture.sessions.get("ses_1").await.unwrap();
+    meta.reviewer = Some(store::sessions::ReviewerAssignment {
+        parent_id: "parent".into(),
+        role: "spec".into(),
+        ticket_path: "ticket.md".into(),
+        starting_point: "abc123".into(),
+    });
+    fixture.sessions.save(&meta).await.unwrap();
+    let mut request = body(conversation());
+    request["tools"] = json!([{"functionDeclarations": [{"name":"mcp__el__edit"},{"name":"bash"},{"name":"write"}]}]);
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        request,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let upstream = fixture.fake.body(0);
+    let system = upstream["systemInstruction"].to_string();
+    assert!(system.contains("# Spec reviewer"));
+    assert!(system.contains("do not edit code"));
+    let names = upstream["tools"].to_string();
+    assert!(!names.contains("mcp__el__edit"));
+    assert!(names.contains("bash"));
+    assert!(names.contains("write"));
+}
+
+#[tokio::test]
 async fn swallows_compress_and_resplices_the_turn_byte_exact() {
     let fixture = fixture().await;
     let original = conversation();
@@ -2322,7 +2353,7 @@ fn heavy_conversation() -> Value {
         {
             "role": "model",
             "parts": [{
-                "functionResponse": { "name": "bash", "id": "call_9", "response": { "output": "x".repeat(320_000) } }
+                "functionResponse": { "name": "bash", "id": "call_9", "response": { "output": "x".repeat(440_000) } }
             }]
         },
         { "role": "user", "parts": [{ "text": "next" }] },
@@ -2429,7 +2460,7 @@ async fn a_first_nudge_is_transient_and_rides_the_tool_result_turn() {
 async fn a_compress_drops_the_stale_usage_so_the_next_request_does_not_renudge() {
     let fixture = fixture().await;
     let runtime = fixture.state.runtime("ses_1").await.unwrap();
-    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
+    runtime.last_input_tokens.store(105_000, Ordering::Relaxed);
     let mut contents = conversation().as_array().unwrap().clone();
     let call = ProxyCall {
         name: "compress".into(),
@@ -3075,7 +3106,7 @@ async fn a_chat_wire_nudge_arrives_as_a_user_message_and_the_tools_are_offered()
     .await;
     let state = fixture.state.clone();
     let runtime = state.runtime("ses_1").await.unwrap();
-    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
+    runtime.last_input_tokens.store(105_000, Ordering::Relaxed);
 
     // Four 8000-character results are 2000 reference tokens each; the old byte rule counted the
     // `_raw` copy too and cleared the minimum compressible mass at 4000.
@@ -3607,9 +3638,9 @@ async fn prefix_is_stable_while_the_conversation_grows() {
 #[tokio::test]
 async fn prefix_is_stable_across_the_first_nudge() {
     let fixture = fixture_with(echoed_usage_fake()).await;
-    // Twenty-two steps are warm (about 66000 tokens); the first nudge fires within the run, at
-    // about 75000 tokens. Fewer driven requests keep the debug-build run short.
-    let requests = drive_growing(&fixture, 22, 6, |_, _| None).await;
+    // Thirty-four steps are warm (about 102000 tokens); the first nudge fires within the run, at
+    // the 100000-token gate a 1M window now uses. Fewer driven requests keep the run short.
+    let requests = drive_growing(&fixture, 34, 6, |_, _| None).await;
     let fired: Vec<usize> = requests
         .iter()
         .enumerate()
@@ -3712,7 +3743,7 @@ async fn prefix_is_stable_after_a_compress_folds_the_pairs_anchor() {
 async fn prefix_is_stable_after_emergency_truncation_stops() {
     let fixture = fixture_with(echoed_usage_fake()).await;
     let runtime = fixture.state.runtime("ses_1").await.unwrap();
-    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
+    runtime.last_input_tokens.store(105_000, Ordering::Relaxed);
     // Four steps are already in the history (about 12000 tokens), so the first request is in
     // emergency at a 1 percent band: older results are truncated from the start and no request
     // sees the untruncated history.
@@ -3851,7 +3882,7 @@ async fn a_compress_during_an_emergency_restores_the_full_results() {
     let fixture = fixture_with(echoed_usage_fake()).await;
     // A billed reading exists, so the phantom-pressure guard does not hold the emergency.
     let runtime = fixture.state.runtime("ses_1").await.unwrap();
-    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
+    runtime.last_input_tokens.store(105_000, Ordering::Relaxed);
     {
         let mut settings = fixture.settings.try_write().unwrap();
         settings.emergency_threshold_percent = 1;
@@ -4447,7 +4478,7 @@ async fn the_background_review_does_not_see_the_nudge() {
     post_anthropic(&fixture, review_request(tools)).await;
     // The provider reported a big context, so the first-nudge gate opens on this request.
     let runtime = fixture.state.runtime("ses_1").await.unwrap();
-    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
+    runtime.last_input_tokens.store(105_000, Ordering::Relaxed);
     post_anthropic(&fixture, heavy).await;
     wait_for_upstream(&upstream, 3).await;
 

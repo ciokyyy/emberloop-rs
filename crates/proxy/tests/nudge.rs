@@ -22,9 +22,9 @@ fn observe(state: &mut NudgeState, tokens: u64, window: u64) -> Option<Nudge> {
 }
 
 #[test]
-fn first_nudge_gate_is_min_of_75000_and_half_the_window() {
+fn first_nudge_gate_scales_with_a_large_window() {
     let cases = [
-        (1_000_000, 75_000),
+        (1_000_000, 100_000),
         (200_000, 75_000),
         (150_000, 75_000),
         (128_000, 64_000),
@@ -55,20 +55,20 @@ fn a_nudge_repeats_once_the_context_grew_by_fifty_thousand_tokens() {
     let window = 1_000_000;
     let mut state = NudgeState::default();
     assert_eq!(
-        observe(&mut state, 75_000, window).map(|n| n.kind),
+        observe(&mut state, 100_000, window).map(|n| n.kind),
         Some(NudgeKind::First)
     );
     assert_eq!(
-        observe(&mut state, 100_000, window),
+        observe(&mut state, 125_000, window),
         None,
         "inside the growth step"
     );
-    let again = observe(&mut state, 125_000, window).expect("growth nudge");
+    let again = observe(&mut state, 150_000, window).expect("growth nudge");
     assert_eq!(again.kind, NudgeKind::First);
     assert_eq!(again.since_last, 50_000);
     assert!(!again.over_limit);
     assert_eq!(
-        observe(&mut state, 150_000, window),
+        observe(&mut state, 175_000, window),
         None,
         "step starts again"
     );
@@ -78,17 +78,17 @@ fn a_nudge_repeats_once_the_context_grew_by_fifty_thousand_tokens() {
 fn a_growth_nudge_still_needs_compressible_mass() {
     let window = 1_000_000;
     let mut state = NudgeState::default();
-    assert!(state.observe(75_000, window, 75_000).is_some());
-    assert_eq!(state.observe(125_000, window, MIN_COMPRESS_RANGE - 1), None);
+    assert!(state.observe(100_000, window, 100_000).is_some());
+    assert_eq!(state.observe(150_000, window, MIN_COMPRESS_RANGE - 1), None);
 }
 
 #[test]
 fn the_growth_reference_falls_when_the_context_shrinks() {
     let window = 1_000_000;
     let mut state = NudgeState::default();
-    observe(&mut state, 75_000, window);
+    observe(&mut state, 100_000, window);
     assert_eq!(
-        observe(&mut state, 125_000, window).map(|n| n.kind),
+        observe(&mut state, 150_000, window).map(|n| n.kind),
         Some(NudgeKind::First)
     );
     // The context shrank (a fold outside a compress, or a new conversation): no nudge,
@@ -180,11 +180,13 @@ fn after_a_compress_the_next_fold_waits_for_the_growth_step() {
 fn a_compress_does_not_rearm_the_gate_on_the_next_step() {
     // The reported Session: gemini-3.8-flash, 1M window, about 19000 tokens per step. The
     // fold left 71178 and the next step was 91225, which re-armed the gate and folded
-    // again, so the prompt cache restarted on every step.
+    // again, so the prompt cache restarted on every step. The window-scaled gate folds this
+    // Session first at 104857, so 88426 stays under it.
     let window = 1_048_576;
     let mut state = NudgeState::default();
+    assert_eq!(observe(&mut state, 88_426, window), None);
     assert_eq!(
-        observe(&mut state, 88_426, window).map(|n| n.kind),
+        observe(&mut state, 104_857, window).map(|n| n.kind),
         Some(NudgeKind::First)
     );
     state.reset_after_compress();
@@ -510,7 +512,7 @@ const FIRST_FIRES: &[(&str, EngineFirst, ReferenceFirst)] = &[
     ),
     (
         "window-1m-steady",
-        Some((15, 75380, "first")),
+        Some((20, 100505, "first")),
         Some((10, 50255)),
     ),
 ];

@@ -1,8 +1,8 @@
 //! Billion-context nudge gate (ticket 20). The state machine is pure: no clock, no IO.
 //! `load` and `save` are the only IO, for the Session's `nudge.json`.
 //!
-//! The first nudge fires when context tokens reach `min(75000, window / 2)` and the
-//! Session has compressible mass. Pressure fires every turn while usage is at or over
+//! The first nudge fires when context tokens reach `max(min(75000, window / 2), window / 10)`
+//! and the Session has compressible mass. Pressure fires every turn while usage is at or over
 //! `maxContextLimit`, emergency over `emergencyThresholdPercent`; both win over the first
 //! nudge and need compressible mass of at least `minPressureBenefitTokens` (default
 //! `max(5000, window / 100)`). After a nudge, another fires as soon as the context has
@@ -14,7 +14,9 @@
 //!
 //! Bands and minimums follow the reference (billion-context, `maxContextLimit` 75%,
 //! `emergencyThresholdPercent` 95%, `minCompressRange` 5000, `nudgeGrowthTokens`
-//! 50000). The first nudge's threshold is this project's own (ticket 20).
+//! 50000). The first nudge's threshold is this project's own (ticket 20): it follows the
+//! window, because a fold restarts the provider cache, so folding a large window early buys
+//! little and costs a full-price request.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -195,9 +197,11 @@ impl NudgeState {
     }
 }
 
-/// `min(FIRST_NUDGE_TOKENS, window / 2)`, computed in integers.
+/// `max(min(FIRST_NUDGE_TOKENS, window / 2), window / 10)`, computed in integers. A large window
+/// keeps the first fold proportional to its capacity: a recorded 1M-window Session sat at 124k
+/// tokens with 97% cache hits, so folding it at 75k only restarted the provider cache.
 fn first_threshold(window: u64) -> u64 {
-    FIRST_NUDGE_TOKENS.min(window / 2)
+    FIRST_NUDGE_TOKENS.min(window / 2).max(window / 10)
 }
 
 /// `max(MIN_COMPRESS_RANGE, window / 100)` unless Settings pins a value.

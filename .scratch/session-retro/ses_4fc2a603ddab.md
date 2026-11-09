@@ -62,7 +62,7 @@ Navigation cost nothing in this investigation: the causal file was found by grep
 ## Proposed changes
 
 - `crates/prompts/prompts/compress.md` keeps its current text: it is a tool description and loads on every request, so the cache-cost line belongs in the nudge the model actually reads when it decides.
-- A window-scaled first threshold is the one item still open, because it moves a parity constant. Written as `FIRST_NUDGE_TOKENS.min(window / 2).max(window / 10)` it made `first_nudge_gate_is_min_of_75000_and_half_the_window`, `a_nudge_repeats_once_the_context_grew_by_fifty_thousand_tokens`, `a_growth_nudge_still_needs_compressible_mass`, `a_compress_does_not_rearm_the_gate_on_the_next_step` and the `window-1m-steady` first fires (frame 15, 75,380 tokens) fail, so the change was reverted and left as a decision: the constant came from ticket 20, and the loop was the re-arm, not the value. The measured case for moving it: this Session sat at 124,592 tokens with 97–98% cache hits after the model ignored a nudge, so folds at 75,000–95,000 earned nothing.
+- A window-scaled first threshold, applied after asking: the parity constant moved, and the recorded Session makes the case. It sat at 124,592 tokens with 97–98% cache hits after the model ignored a nudge, so folds at 75,000–95,000 earned nothing.
 - No fixture replay of the recorded 1,385-request trace: the two new tests pin the same arithmetic with four recorded observations, and a fixture asserting a fold count per growth step would restate them at the cost of a large committed data file.
 
 ## Applied changes
@@ -77,3 +77,6 @@ Navigation cost nothing in this investigation: the causal file was found by grep
 - `crates/api/tests/usage.rs`: `a_request_after_a_fold_is_marked_and_the_requests_before_it_are_not`.
 - `web/src/lib/components/CacheView.svelte`: a `fold` badge on the affected request and a footnote saying what it means; `CacheView.test.ts` covers it.
 - `.config/nextest.toml`: the `pi` test binary, which spawns the harness binary, runs one test at a time with a 20s slow-timeout, so load no longer turns it into a spurious failure.
+- `crates/proxy/src/nudge.rs`: `first_threshold` is now `max(min(75000, window / 2), window / 10)`, so a 1M window folds first at 104,857 tokens instead of 75,000 and a 200,000-token window is unchanged.
+- `crates/proxy/tests/nudge.rs`: the gate cases gained the 1M window at 100,000, the growth tests moved to a 100,000-token start, and the `window-1m-steady` first fires moved to frame 20 at 100,505 tokens.
+- `crates/proxy/src/tests.rs`: the first-nudge fixtures now carry 105,000 tokens (a 440,000-character result, or a stored usage reading), and the prefix-stability run drives 34 steps to reach the new gate.
