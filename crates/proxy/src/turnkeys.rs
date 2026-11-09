@@ -49,12 +49,39 @@ pub fn canonical(value: &Value) -> Value {
         Value::Object(map) => Value::Object(
             map.iter()
                 .filter(|(key, _)| !is_ignored(key))
-                .map(|(key, field)| (key.clone(), canonical(field)))
+                .map(|(key, field)| {
+                    let field = if key == "functionResponse" {
+                        response_identity(field)
+                    } else {
+                        canonical(field)
+                    };
+                    (key.clone(), field)
+                })
                 .collect(),
         ),
         Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
         other => other.clone(),
     }
+}
+
+/// A function response without what its copies disagree on: the wires name every tool result
+/// "tool", a proxy pair names it after the call and holds its splice marker in `response.splice`
+/// while the stored copy holds it in the `result` text.
+fn response_identity(field: &Value) -> Value {
+    let mut view = canonical(field);
+    if let Some(map) = view.as_object_mut() {
+        map.remove("name");
+        if let Some(response) = map.get_mut("response").and_then(Value::as_object_mut) {
+            response.remove("splice");
+            if let Some(Value::String(result)) = response.get_mut("result") {
+                if let Some(at) = result.find(&format!("[{SPLICE_PREFIX}")) {
+                    result.truncate(at);
+                }
+                *result = result.trim_end().to_string();
+            }
+        }
+    }
+    view
 }
 
 /// Whether two turns are the same conversation turn: equal canonical views.

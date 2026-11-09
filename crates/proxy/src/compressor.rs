@@ -1639,8 +1639,8 @@ mod tests {
             .contains("block b1"));
     }
 
-    // [DEBUG-fm01] replicates ses_d5becad88573 fold-miss: splice store empty after reset, request
-    // carries the proxy-shaped pair while the block stored the wire-shaped one.
+    // Regression: after a reset the splice store is empty, the request carries the proxy-shaped
+    // pair, and the block stored the wire-shaped one; the fold must still apply.
     #[test]
     fn fold_applies_when_carried_proxy_pair_differs_from_stored_wire_pair() {
         let dir = tempdir().unwrap();
