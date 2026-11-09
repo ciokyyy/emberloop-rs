@@ -25,6 +25,7 @@ async fn harness(upstream: Option<String>) -> Harness {
         host: "127.0.0.1".to_string(),
         data_root: dir.path().join("data"),
         config_root: dir.path().join("config"),
+        global_skills: dir.path().join("home/.agents/skills"),
         upstream,
         allow_remote: false,
     };
@@ -416,6 +417,7 @@ async fn harness_wiring_carries_a_signed_proxy_url_and_mcp_command() {
     assert!(command.iter().any(|arg| arg == "--config-root"));
     assert!(command.iter().any(|arg| arg == "--root"));
     assert!(command.iter().any(|arg| arg == "--spill"));
+    assert!(command.iter().any(|arg| arg == "--global-skills"));
 }
 
 #[tokio::test]
@@ -465,6 +467,7 @@ async fn pi_sessions_and_catalogue_run_on_the_pi_harness_without_an_agy_account(
         host: "127.0.0.1".to_string(),
         data_root,
         config_root: dir.path().join("config"),
+        global_skills: dir.path().join("home/.agents/skills"),
         upstream: None,
         allow_remote: false,
     };

@@ -26,7 +26,7 @@ impl SessionDriver for Driver {
     async fn cancel(&self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    async fn wake(&self, _: &str, _: &str) -> Result<(), String> {
+    async fn wake(&self, _: &str, _: &str, _: Vec<PromptImageDto>) -> Result<(), String> {
         Ok(())
     }
     async fn connect(&self, _: &str) -> Result<(), String> {
@@ -165,13 +165,19 @@ async fn images_over_the_default_two_megabyte_body_limit_reach_the_driver() {
 }
 
 #[tokio::test]
-async fn images_are_never_discarded_by_the_busy_prompt_to_steer_path() {
+async fn images_sent_during_a_turn_are_queued_as_a_steer() {
     let dir = tempfile::tempdir().unwrap();
-    let state = state(dir.path(), Arc::new(Driver::default())).await;
+    let driver = Arc::new(Driver::default());
+    let state = state(dir.path(), driver.clone()).await;
     state.steers.queue("s1").set_turn_active(true);
-    let app = build_router(state);
+    let app = build_router(state.clone());
     let response = app.oneshot(req("POST", "/api/sessions/s1/prompt", serde_json::json!({"text":"see image", "images":[{"mimeType":"image/png", "dataBase64":"AAAA"}]}))).await.unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(driver.images.lock().unwrap().is_empty());
+    let entries = state.steers.queue("s1").entries().await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].images.len(), 1);
+    assert_eq!(entries[0].images[0].data_base64, "AAAA");
 }
 
 #[tokio::test]
@@ -244,4 +250,68 @@ async fn new_sessions_use_the_default_model_and_reject_unknown_defaults() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+struct Listed(&'static str, &'static [&'static str]);
+
+#[async_trait]
+impl api::models::Source for Listed {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+    async fn fetch(&self) -> Result<Vec<api::models::ModelEntry>, api::models::CatalogueError> {
+        Ok(self
+            .1
+            .iter()
+            .map(|id| api::models::ModelEntry {
+                id: (*id).into(),
+                provider: self.0.into(),
+                label: (*id).into(),
+                kind: "chat".into(),
+                efforts: Vec::new(),
+                image_input: false,
+                context_window: 1000,
+                source: String::new(),
+                stale: false,
+                updated_at: 0,
+            })
+            .collect())
+    }
+}
+
+#[tokio::test]
+async fn a_model_from_another_harness_drops_the_old_resume_token_and_the_same_harness_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(dir.path(), Arc::new(Driver::default())).await;
+    let sources: Vec<Arc<dyn api::models::Source>> = vec![
+        Arc::new(Listed("agy", &["gemini-3.8-flash", "gemini-4"])),
+        Arc::new(Listed("claude", &["claude/haiku"])),
+    ];
+    let models = Arc::new(api::models::ModelCatalogue::new(
+        dir.path().join("catalogue.json"),
+        sources,
+    ));
+    models.refresh().await.unwrap();
+    let state = state.with_models(models);
+    let mut meta = state.sessions.get("s1").await.unwrap();
+    meta.resume_token = Some("agy-conversation".into());
+    state.sessions.save(&meta).await.unwrap();
+    let app = build_router(state.clone());
+    for (model, token) in [
+        ("gemini-4", Some("agy-conversation")),
+        ("claude/haiku", None),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(req(
+                "PATCH",
+                "/api/sessions/s1",
+                serde_json::json!({ "model": model }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let saved = state.sessions.get("s1").await.unwrap();
+        assert_eq!(saved.resume_token.as_deref(), token, "{model}");
+    }
 }

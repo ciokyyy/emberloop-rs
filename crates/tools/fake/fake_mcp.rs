@@ -1,6 +1,7 @@
 //! A scripted stdio MCP server for the client tests: answers the handshake,
 //! lists whatever `FAKE_MCP_TOOLS` names, and echoes each tool call's
 //! arguments back as text, so a test can assert what the client sent.
+#![allow(clippy::disallowed_methods)]
 use std::io::{BufRead, Write};
 
 use serde_json::{json, Value};
@@ -30,6 +31,12 @@ fn main() {
     }
     if std::env::var_os("FAKE_MCP_EXIT").is_some() {
         std::process::exit(1);
+    }
+    if let Some(ms) = std::env::var("FAKE_MCP_DELAY_MS")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
     }
     let tools = std::env::var("FAKE_MCP_TOOLS")
         .ok()

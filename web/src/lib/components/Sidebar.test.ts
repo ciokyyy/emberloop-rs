@@ -63,10 +63,14 @@ it('names the Project in the header select instead of a brand heading', () => {
   expect(screen.getByRole('combobox').textContent).toContain('Pi');
 });
 
-it('lists only the selected Project’s Sessions, with no Project header or count', () => {
+it('groups sessions by project, omitting projects with no sessions', () => {
   render(Sidebar, {
     ...base,
-    projects: [{ id: 'p', name: 'Pi', root: '/p' }, { id: 'q', name: 'Other', root: '/q' }],
+    projects: [
+      { id: 'p', name: 'Pi Project', root: '/p' },
+      { id: 'q', name: 'Other Project', root: '/q' },
+      { id: 'empty', name: 'Empty Project', root: '/empty' }
+    ],
     projectId: 'p',
     sessions: [
       { id: 'a', projectId: 'p', title: 'In Pi', model: 'x', createdAt: 0, updatedAt: 2 },
@@ -74,9 +78,12 @@ it('lists only the selected Project’s Sessions, with no Project header or coun
     ],
     selectedId: null
   });
+  const headers = screen.getAllByTestId('project-header').map((el) => el.textContent?.trim());
+  expect(headers).toContain('Pi Project');
+  expect(headers).toContain('Other Project');
+  expect(headers).not.toContain('Empty Project');
   expect(screen.getByText('In Pi')).toBeTruthy();
-  expect(screen.queryByText('In Other')).toBeNull();
-  expect(screen.queryByText('1')).toBeNull();
+  expect(screen.getByText('In Other')).toBeTruthy();
 });
 
 it('renames on double-click, commits the title on Enter', async () => {
@@ -110,4 +117,21 @@ it('asks before deleting: Delete key opens the dialog, confirm deletes', async (
   expect(ondelete).not.toHaveBeenCalled();
   await fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
   expect(ondelete).toHaveBeenCalledWith(expect.objectContaining({ id: 's' }));
+});
+
+it('shows active working sessions across projects at the top with a working dot', () => {
+  render(Sidebar, {
+    ...base,
+    projects: [{ id: 'p', name: 'Pi', root: '/p' }, { id: 'q', name: 'Other', root: '/q' }],
+    projectId: 'p',
+    statuses: { b: 'working' },
+    sessions: [
+      { id: 'a', projectId: 'p', title: 'In Pi', model: 'x', createdAt: 0, updatedAt: 2 },
+      { id: 'b', projectId: 'q', title: 'Working In Other', model: 'x', createdAt: 0, updatedAt: 1 }
+    ],
+    selectedId: null
+  });
+  expect(screen.getByText('Working In Other')).toBeTruthy();
+  expect(screen.getByLabelText('Working')).toBeTruthy();
+  expect(screen.getByText('In Pi')).toBeTruthy();
 });

@@ -17,6 +17,7 @@ harness-pi = { workspace = true }
 harness-claude = { workspace = true }
 tools = { workspace = true }
 axum = { workspace = true }
+tower-http = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 rust-embed = { workspace = true }

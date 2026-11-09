@@ -19,10 +19,12 @@ pub async fn configure(
     }
     let changed_model = model.as_ref().is_some_and(|id| id != &meta.model);
     let selected = model.as_deref().unwrap_or(&meta.model);
-    let entry = state
-        .models
-        .entries()
-        .await
+    let entries = state.models.entries().await;
+    let old_source = entries
+        .iter()
+        .find(|entry| entry.id == meta.model)
+        .map(|entry| entry.source.clone());
+    let entry = entries
         .into_iter()
         .find(|entry| entry.id == selected)
         .ok_or_else(|| {
@@ -49,6 +51,10 @@ pub async fn configure(
         .configure_model(&meta.id, selected, level.as_deref())
         .await
         .map_err(|error| (StatusCode::CONFLICT, error))?;
+    if old_source.as_deref() != Some(entry.source.as_str()) {
+        // Another harness cannot load the old conversation; it starts fresh and the proxy carries the history.
+        meta.resume_token = None;
+    }
     meta.model = selected.to_string();
     meta.thought_level = level;
     Ok(())
@@ -61,9 +67,6 @@ pub async fn validate_images(
 ) -> Result<(), ApiError> {
     if images.is_empty() {
         return Ok(());
-    }
-    if state.steers.queue(&meta.id).is_turn_active() {
-        return Err((StatusCode::CONFLICT, "Images cannot be sent while the Session is working. Try again after the turn finishes.".into()));
     }
     if images.len() > 5 || images.iter().any(invalid_image) {
         return Err((

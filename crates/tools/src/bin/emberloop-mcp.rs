@@ -19,6 +19,9 @@ struct Args {
     /// Rendered tool output above this many bytes spills to a ctx handle.
     #[arg(long, default_value_t = 10 * 1024)]
     overflow_threshold: usize,
+    /// Global skills root, readable beyond the project root; omit for none.
+    #[arg(long)]
+    global_skills: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -26,6 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
     let config = ToolConfig {
         overflow_threshold: args.overflow_threshold,
+        global_skills: args.global_skills,
         ..ToolConfig::new(args.root, args.spill)
     };
     let toolbox = Arc::new(Toolbox::new(config)?);

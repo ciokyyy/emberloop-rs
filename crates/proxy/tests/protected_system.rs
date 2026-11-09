@@ -254,7 +254,7 @@ fn the_proxy_policy_text_never_becomes_a_foldable_turn() {
         let body = request(wire);
         let before = extract_core_contents(wire, &body).unwrap();
         let mut injected = body.clone();
-        inject_prompts_for_wire(wire, &mut injected, &pins, true);
+        inject_prompts_for_wire(wire, &mut injected, &pins, true, "");
         assert_eq!(
             extract_core_contents(wire, &injected).unwrap(),
             before,

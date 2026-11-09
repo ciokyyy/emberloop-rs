@@ -10,7 +10,7 @@ const devApi = (
 
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit(), svelteTesting()],
-  server: devApi ? { proxy: { "/api": devApi, "/health": devApi } } : {},
+  server: devApi ? { proxy: { "/api": { target: devApi, ws: true }, "/figcraft": devApi, "/health": devApi } } : {},
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.ts"],

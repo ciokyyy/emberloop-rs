@@ -23,6 +23,10 @@ pub const CAVEMAN: &str = "caveman";
 pub const POLICY: &str = "policy";
 /// The `execute`-only code graph skill, injected when the graph server is up.
 pub const SKILL_CODEBASE_MEMORY: &str = "skill.codebase-memory";
+/// The frozen skill catalog's heading and instruction; the daemon appends the skill lines.
+pub const SKILL_CATALOG: &str = "skill.catalog";
+/// The background skill review prompt, sent by the proxy fork; see `proxy::review`.
+pub const REVIEW_SKILLS: &str = "review.skills";
 pub const COMPRESS: &str = "compress";
 pub const DECOMPRESS: &str = "decompress";
 pub const SEARCH_CONTEXT: &str = "search_context";
@@ -43,6 +47,8 @@ pub const TOOL_WEBSEARCH: &str = "tool.websearch.description";
 pub const TOOL_EXECUTE: &str = "tool.execute.description";
 pub const TOOL_TODO: &str = "tool.todo.description";
 pub const TOOL_CTX_SEARCH: &str = "tool.ctx_search.description";
+pub const TOOL_SKILL_SEARCH: &str = "tool.skill_search.description";
+pub const TOOL_SKILL_MANAGE: &str = "tool.skill_manage.description";
 /// Billion-context nudges (ticket 20). Derived from the reference wording; the
 /// emergency id is its own header over the pressure body. Raw templates: see `PinnedPrompts::pin`.
 pub const NUDGE_FIRST: &str = "nudge.first";
@@ -71,7 +77,11 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_EXECUTE,
     TOOL_TODO,
     TOOL_CTX_SEARCH,
+    TOOL_SKILL_SEARCH,
+    TOOL_SKILL_MANAGE,
     SKILL_CODEBASE_MEMORY,
+    SKILL_CATALOG,
+    REVIEW_SKILLS,
     ACP_STATUS_REPORT,
     TODO_REMINDER,
     NUDGE_FIRST,
@@ -130,6 +140,10 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_EXECUTE => defaults::TOOL_EXECUTE,
         TOOL_TODO => defaults::TOOL_TODO,
         TOOL_CTX_SEARCH => defaults::TOOL_CTX_SEARCH,
+        SKILL_CATALOG => defaults::SKILL_CATALOG,
+        REVIEW_SKILLS => defaults::REVIEW_SKILLS,
+        TOOL_SKILL_SEARCH => defaults::TOOL_SKILL_SEARCH,
+        TOOL_SKILL_MANAGE => defaults::TOOL_SKILL_MANAGE,
         SKILL_CODEBASE_MEMORY => defaults::SKILL_CODEBASE_MEMORY,
         ACP_STATUS_REPORT => defaults::ACP_STATUS_REPORT,
         TODO_REMINDER => defaults::TODO_REMINDER,

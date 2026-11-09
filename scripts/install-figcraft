@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Install matching upstream editor, MCP CLI and collaboration server (native; no container).
+set -euo pipefail
+version=0.16.0
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64) platform=linux-x86_64 ;;
+  Linux/aarch64) platform=linux-aarch64 ;;
+  *) echo 'FigCraft installer supports Linux x86_64 and aarch64.' >&2; exit 1 ;;
+esac
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+base="https://github.com/storytold/figcraft/releases/download/v$version"
+cd "$work"
+for asset in "figcraft-$version-$platform.tar.gz" "figcraft-server-$version-$platform.tar.gz" "figcraft-web-$version.zip" SHA256SUMS.txt; do
+  curl --fail --location --silent --show-error --remote-name "$base/$asset"
+done
+sha256sum --check --ignore-missing SHA256SUMS.txt
+tar xzf "figcraft-$version-$platform.tar.gz"
+tar xzf "figcraft-server-$version-$platform.tar.gz"
+unzip -q "figcraft-web-$version.zip"
+install -m 755 "figcraft-$version-$platform/bin/figcraft-cli" /usr/local/bin/figcraft-cli
+install -m 755 "figcraft-server-$version-$platform/figcraft-server" /usr/local/bin/figcraft-server
+install -d /usr/local/share/figcraft
+cp -a "figcraft-web-$version/." /usr/local/share/figcraft/
+printf 'Installed FigCraft %s. Restart Emberloop through its update workflow.\n' "$version"

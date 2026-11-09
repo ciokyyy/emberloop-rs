@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Model } from '$lib/api/types';
   import { chosenWindow } from '$lib/contextMeter';
+  import { modelIconId } from '$lib/brands';
   import Composer from './Composer.svelte';
   import SessionDialog from './SessionDialog.svelte';
 
@@ -24,7 +25,7 @@
   <h1 class="text-center text-2xl font-semibold">What are we working on today?</h1>
 </div>
 <Composer {sessionId} model={selected?.label ?? model} contextSize={size}
-  thoughtLevel={effort} imageInput={selected?.image_input ?? false}
+  providerIcon={selected ? modelIconId(selected) : ''} imageInput={selected?.image_input ?? false}
   ondetails={(next) => { tab = next; open = true; }}
   onsubmit={(text, files) => onsubmit(text, files, effort)} oncancel={() => {}} />
 <SessionDialog bind:open bind:tab {models} {model} thoughtLevel={effort}

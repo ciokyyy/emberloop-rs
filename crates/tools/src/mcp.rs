@@ -114,7 +114,7 @@ fn tool_specs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File, directory, http(s) URL or ctx:<handle> pointer."},
+                    "path": {"type": "string", "description": "File, directory, http(s) URL, ctx:<handle> pointer or el://skills/<name>."},
                     "offset": {"type": "integer", "description": "First line, 1-based."},
                     "limit": {"type": "integer", "description": "Maximum lines."}
                 },
@@ -264,6 +264,44 @@ fn tool_specs() -> Vec<Value> {
                     "limit": {"type": "integer", "description": "Matches per query (default 3)."}
                 },
                 "required": ["queries"]
+            }
+        },
+        {
+            "name": "skill_search",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "One or more words to rank skills by."},
+                    "limit": {"type": "integer", "description": "Matches to return (default 5, max 20)."}
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "skill_manage",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ops": {
+                        "type": "array",
+                        "description": "Operations applied in order, all or nothing.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "op": {"type": "string", "enum": ["create", "patch", "write_file", "remove_file"], "description": "The operation."},
+                                "name": {"type": "string", "description": "Skill name."},
+                                "scope": {"type": "string", "enum": ["global", "project"], "description": "create only: where the new skill lands; global by default."},
+                                "content": {"type": "string", "description": "create: full SKILL.md. patch: whole-file replacement, last resort. write_file: file text."},
+                                "path": {"type": "string", "description": "patch and write_file: a file under references/, templates/, scripts/ or assets/; patch may omit it to target SKILL.md."},
+                                "old_string": {"type": "string", "description": "patch: exact text to replace; must match once unless replace_all."},
+                                "new_string": {"type": "string", "description": "patch: replacement text."},
+                                "replace_all": {"type": "boolean", "description": "patch: replace every match."}
+                            },
+                            "required": ["op", "name"]
+                        }
+                    }
+                },
+                "required": ["ops"]
             }
         },
         {

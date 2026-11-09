@@ -312,7 +312,7 @@ async fn poll_and_exchange(
                     "ChatGPT device login failed with status {}: {}",
                     answer.status,
                     answer.text.trim()
-                )))
+                )));
             }
         }
     };

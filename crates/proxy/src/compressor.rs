@@ -552,7 +552,10 @@ impl Compressor for NativeCompressor {
             for block in &blocks {
                 // A fold already in the history is never folded again: its summary turn is the
                 // proof, and it keeps a stored fold from matching its own result.
-                if contents.contains(&block.summary_turn) {
+                if contents
+                    .iter()
+                    .any(|turn| turnkeys::same_turn(turn, &block.summary_turn))
+                {
                     continue;
                 }
                 let wanted = wanted_turns(block, skip, &skip_ids);
@@ -584,6 +587,12 @@ impl Compressor for NativeCompressor {
             .iter()
             .filter(|block| !block.restored && !block.originals.is_empty())
             .max_by_key(|block| block.originals.len())?;
+        if contents
+            .iter()
+            .any(|turn| turnkeys::same_turn(turn, &block.summary_turn))
+        {
+            return None;
+        }
         let wanted = wanted_turns(block, skip, &skip_ids);
         let head = wanted.first()?;
         let Some(start) = contents
@@ -690,12 +699,14 @@ pub fn latest_user_turn(contents: &[Value]) -> Option<usize> {
     contents.iter().rposition(is_user_message)
 }
 
-/// A message the user typed: a user-role turn that is neither a tool result nor the transient
-/// nudge. Tool results carry the user role on the Google wire too, so they are told apart by their
-/// function response.
+/// A message the user typed: a user-role turn that is neither a tool result, the transient
+/// nudge, nor the summary a fold left (the proxy's own text; forged markers are stripped from
+/// real input). Tool results carry the user role on the Google wire too, so they are told apart
+/// by their function response.
 fn is_user_message(turn: &Value) -> bool {
     turn.get("role").and_then(Value::as_str) == Some("user")
         && !is_transient(turn)
+        && !is_summary_turn(turn)
         && !turn
             .get("parts")
             .and_then(Value::as_array)
@@ -704,6 +715,12 @@ fn is_user_message(turn: &Value) -> bool {
                     .iter()
                     .any(|part| part.get("functionResponse").is_some())
             })
+}
+
+fn is_summary_turn(turn: &Value) -> bool {
+    turn.pointer("/parts/0/text")
+        .and_then(Value::as_str)
+        .is_some_and(marker::is_summary)
 }
 
 fn validate_range(
@@ -1620,6 +1637,28 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("block b1"));
+    }
+
+    // [DEBUG-fm01] replicates ses_d5becad88573 fold-miss: splice store empty after reset, request
+    // carries the proxy-shaped pair while the block stored the wire-shaped one.
+    #[test]
+    fn fold_applies_when_carried_proxy_pair_differs_from_stored_wire_pair() {
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let mut contents = raw_turns();
+        contents.splice(2..2, [
+            json!({"role": "model", "parts": [{"functionCall": {"id": "call_p", "name": "compress", "args": {}}}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "call_p", "name": "tool", "response": {"result": format!("folded\n[{}]", turnkeys::splice_marker("call_p"))}}}]}),
+        ]);
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 4)], &CompressPolicy::default())
+            .unwrap();
+        let mut rebuilt = raw_turns();
+        rebuilt.splice(2..2, [
+            json!({"role": "model", "parts": [{"functionCall": {"id": "call_p", "name": "compress", "args": {}}}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "call_p", "name": "compress", "response": {"result": "folded", "splice": turnkeys::splice_marker("call_p")}}}]}),
+        ]);
+        assert_eq!(compressor.apply_skipping(&mut rebuilt, &[]), 1, "fold-miss");
     }
 
     #[test]

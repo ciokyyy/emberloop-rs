@@ -156,7 +156,7 @@ async fn wake_writes_one_user_message() {
         .await
         .unwrap();
     let mut events = session.events();
-    session.wake("reminder").await.unwrap();
+    session.wake("reminder", Vec::new()).await.unwrap();
     assert_eq!(
         next(&mut events).await,
         HarnessEvent::AssistantChunk("echo:reminder".into())

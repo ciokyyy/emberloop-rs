@@ -89,7 +89,7 @@ impl HarnessSession for FakeSession {
         Ok(())
     }
 
-    async fn wake(&self, text: &str) -> Result<(), HarnessError> {
+    async fn wake(&self, text: &str, _images: Vec<PromptImage>) -> Result<(), HarnessError> {
         self.woken.lock().unwrap().push(text.to_string());
         Ok(())
     }
@@ -162,7 +162,7 @@ async fn runner_with_models(
         sessions.clone(),
         projects.clone(),
         data_root.clone(),
-        prompts,
+        prompts.clone(),
         models,
         Arc::clone(&events),
         steers.clone(),
@@ -174,19 +174,23 @@ async fn runner_with_models(
         ..FakeHarness::default()
     });
     let logs = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
-    let runner = Arc::new(SessionRunner::new(
-        fake.clone(),
-        sessions.clone(),
-        projects,
-        data_root.clone(),
-        Arc::clone(&events),
-        steers.clone(),
-        proxy,
-        "http://127.0.0.1:1".to_string(),
-        logs,
-        None,
-        Arc::new(tokio::sync::RwLock::new(api::state::Settings::default())),
-    ));
+    let runner = Arc::new(
+        SessionRunner::new(
+            fake.clone(),
+            sessions.clone(),
+            projects,
+            data_root.clone(),
+            Arc::clone(&events),
+            steers.clone(),
+            proxy,
+            "http://127.0.0.1:1".to_string(),
+            logs,
+            None,
+            Arc::new(tokio::sync::RwLock::new(api::state::Settings::default())),
+        )
+        .with_global_skills(dir.path().join("global-skills"))
+        .with_prompts(prompts),
+    );
     HarnessFixture {
         sessions,
         runner,
@@ -204,6 +208,54 @@ async fn prompt_once(fixture: &HarnessFixture) {
         .prompt("ses_1", "hi", Vec::<PromptImageDto>::new())
         .await
         .unwrap();
+}
+
+fn write_skill(global: &std::path::Path, name: &str) {
+    let dir = global.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = format!("---\nname: {name}\ndescription: a skill named {name}\n---\n# {name}\n");
+    std::fs::write(dir.join("SKILL.md"), text).unwrap();
+}
+
+#[tokio::test]
+async fn the_skill_catalog_is_frozen_per_session_and_the_next_session_sees_new_skills() {
+    let fixture = runner_with(Vec::new()).await;
+    let global = fixture._dir.path().join("global-skills");
+    write_skill(&global, "first");
+    prompt_once(&fixture).await;
+    write_skill(&global, "second");
+    prompt_once(&fixture).await;
+    let first = fixture
+        .data_root
+        .session_dir("ses_1")
+        .join("skill-catalog.md");
+    let frozen = std::fs::read_to_string(first).unwrap();
+    assert!(frozen.contains("- first: a skill named first"), "{frozen}");
+    assert!(!frozen.contains("second"), "{frozen}");
+
+    fixture
+        .sessions
+        .insert(SessionMeta {
+            id: "ses_2".into(),
+            project_id: "proj_1".into(),
+            title: "Next".into(),
+            created_at: 2,
+            updated_at: 2,
+            ..SessionMeta::default()
+        })
+        .await
+        .unwrap();
+    fixture
+        .runner
+        .prompt("ses_2", "hi", Vec::<PromptImageDto>::new())
+        .await
+        .unwrap();
+    let next = fixture
+        .data_root
+        .session_dir("ses_2")
+        .join("skill-catalog.md");
+    let next = std::fs::read_to_string(next).unwrap();
+    assert!(next.contains("- second: a skill named second"), "{next}");
 }
 
 #[tokio::test]
@@ -264,6 +316,35 @@ async fn a_resumed_conversation_keeps_the_stored_proxy_history() {
     prompt_once(&fixture).await;
 
     assert!(!std::fs::read_to_string(&splices).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_model_from_another_harness_starts_a_new_harness_conversation() {
+    let fixture = runner_with(vec![HarnessEvent::TurnFinished {
+        stop_reason: Some("end".into()),
+        usage: None,
+    }])
+    .await;
+    prompt_once(&fixture).await;
+    let queue = fixture.steers.queue("ses_1");
+    until(|| !queue.is_turn_active()).await;
+
+    fixture
+        .runner
+        .configure_model("ses_1", "claude/haiku", None)
+        .await
+        .unwrap();
+    // The API stores the new model and drops the old harness's token.
+    let mut meta = fixture.sessions.get("ses_1").await.unwrap();
+    meta.model = "claude/haiku".into();
+    meta.resume_token = None;
+    fixture.sessions.save(&meta).await.unwrap();
+    prompt_once(&fixture).await;
+
+    let wirings = fixture.fake.wirings.lock().unwrap().clone();
+    assert_eq!(wirings.len(), 2);
+    assert_eq!(wirings[1].model.as_deref(), Some("claude/haiku"));
+    assert_eq!(wirings[1].resume_token, None);
 }
 
 async fn until(mut check: impl FnMut() -> bool) {

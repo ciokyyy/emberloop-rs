@@ -37,7 +37,8 @@ impl WireKind {
     }
 }
 
-pub fn prompt_text(pins: &PinnedPrompts, codebase_memory: bool) -> String {
+/// The system text of one request: the pinned skill texts, then the Session's frozen catalog.
+pub fn prompt_text(pins: &PinnedPrompts, codebase_memory: bool, catalog: &str) -> String {
     let mut ids = vec![prompts::POLICY, prompts::PONYTAIL, prompts::CAVEMAN];
     if codebase_memory {
         ids.push(prompts::SKILL_CODEBASE_MEMORY);
@@ -52,6 +53,12 @@ pub fn prompt_text(pins: &PinnedPrompts, codebase_memory: bool) -> String {
         }
         text.push_str(part);
     }
+    if !catalog.trim().is_empty() {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(catalog.trim_end());
+    }
     text
 }
 
@@ -60,8 +67,9 @@ pub fn inject_prompts_for_wire(
     request: &mut Value,
     pins: &PinnedPrompts,
     codebase_memory: bool,
+    catalog: &str,
 ) {
-    let text = prompt_text(pins, codebase_memory);
+    let text = prompt_text(pins, codebase_memory, catalog);
     if text.is_empty() {
         return;
     }
@@ -577,6 +585,7 @@ fn core_model_to_chat(parts: &[Value]) -> Value {
 fn core_user_to_chat(parts: &[Value]) -> Vec<Value> {
     let mut out = Vec::new();
     let mut texts = Vec::new();
+    let mut images = Vec::new();
     for part in parts {
         if let Some(fr) = part.get("functionResponse") {
             let id = fr.get("id").and_then(Value::as_str).unwrap_or("call_1");
@@ -586,17 +595,35 @@ fn core_user_to_chat(parts: &[Value]) -> Vec<Value> {
                 "tool_call_id": id,
                 "content": content
             }));
+        } else if let Some((mime, data)) = inline_image(part) {
+            images.push(json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{data}") } }));
         } else if let Some(t) = part.get("text").and_then(Value::as_str) {
             texts.push(t);
         }
     }
-    if !texts.is_empty() {
+    if !images.is_empty() {
+        // Text-only turns keep the joined string form; a turn with images needs the part array.
+        let mut content: Vec<Value> = texts
+            .iter()
+            .map(|t| json!({ "type": "text", "text": t }))
+            .collect();
+        content.extend(images);
+        out.push(json!({ "role": "user", "content": content }));
+    } else if !texts.is_empty() {
         out.push(json!({
             "role": "user",
             "content": texts.join("\n\n")
         }));
     }
     out
+}
+
+fn inline_image(part: &Value) -> Option<(&str, &str)> {
+    let image = part.get("inlineData")?;
+    Some((
+        image.get("mimeType")?.as_str()?,
+        image.get("data")?.as_str()?,
+    ))
 }
 
 fn anthropic_to_core(messages: &[Value]) -> Option<Vec<Value>> {
@@ -805,7 +832,9 @@ fn core_to_anthropic(contents: &[Value]) -> Vec<Value> {
         };
         let mut blocks = Vec::new();
         for part in parts {
-            if let Some(t) = part.get("text").and_then(Value::as_str) {
+            if let Some((mime, data)) = inline_image(part) {
+                blocks.push(json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": data } }));
+            } else if let Some(t) = part.get("text").and_then(Value::as_str) {
                 blocks.push(json!({ "type": "text", "text": t }));
             } else if let Some(fc) = part.get("functionCall") {
                 blocks.push(json!({
@@ -893,7 +922,10 @@ fn core_to_responses(contents: &[Value]) -> Vec<Value> {
             continue;
         };
         for part in parts {
-            if let Some(t) = part.get("text").and_then(Value::as_str) {
+            if let Some((mime, data)) = inline_image(part) {
+                let url = format!("data:{mime};base64,{data}");
+                out.push(json!({ "role": resp_role, "content": [{ "type": "input_image", "image_url": url }] }));
+            } else if let Some(t) = part.get("text").and_then(Value::as_str) {
                 out.push(json!({ "role": resp_role, "content": t }));
             } else if let Some(fc) = part.get("functionCall") {
                 let args = serde_json::to_string(fc.get("args").unwrap_or(&json!({})))
@@ -1037,7 +1069,7 @@ fn content_as_string(val: Option<&Value>) -> String {
     }
 }
 
-fn parse_args_field(val: Option<&Value>) -> Value {
+pub(crate) fn parse_args_field(val: Option<&Value>) -> Value {
     match val {
         Some(Value::String(s)) => serde_json::from_str(s).unwrap_or_else(|_| json!({})),
         Some(v) if v.is_object() => v.clone(),
@@ -1111,12 +1143,51 @@ mod tests {
     use prompts::{PromptStore, PromptVars};
 
     #[test]
+    fn steer_images_reach_every_wire_as_image_parts() {
+        let turn = json!({"role": "user", "parts": [
+            {"text": "look"},
+            {"inlineData": {"mimeType": "image/png", "data": "AAAA"}}
+        ]});
+        let contents = vec![turn];
+
+        let mut chat = json!({"messages": []});
+        write_core_contents(WireKind::OpenAiChat, &mut chat, contents.clone());
+        assert_eq!(
+            chat["messages"][0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
+
+        let mut anthropic = json!({"messages": []});
+        write_core_contents(WireKind::Anthropic, &mut anthropic, contents.clone());
+        assert_eq!(
+            anthropic["messages"][0]["content"][1]["source"]["data"],
+            "AAAA"
+        );
+
+        let mut responses = json!({"input": []});
+        write_core_contents(WireKind::OpenAiResponses, &mut responses, contents);
+        assert_eq!(
+            responses["input"][1]["content"][0]["image_url"],
+            "data:image/png;base64,AAAA"
+        );
+    }
+
+    #[test]
+    fn text_only_chat_turns_keep_the_string_form() {
+        let turn = json!({"role": "user", "parts": [{"text": "a"}, {"text": "b"}]});
+        let mut chat = json!({"messages": []});
+        write_core_contents(WireKind::OpenAiChat, &mut chat, vec![turn]);
+        assert_eq!(chat["messages"][0]["content"], "a\n\nb");
+    }
+
+    #[test]
     fn the_graph_skill_joins_the_system_prompt_only_when_the_graph_is_up() {
         let dir = tempfile::tempdir().unwrap();
         let pins =
             PinnedPrompts::pin(&PromptStore::new(dir.path()), &PromptVars::default()).unwrap();
-        let without = prompt_text(&pins, false);
-        let with = prompt_text(&pins, true);
+        let without = prompt_text(&pins, false, "");
+        let with = prompt_text(&pins, true, "");
+        assert!(prompt_text(&pins, true, "- a: b").ends_with("\n\n- a: b"));
         assert!(!without.contains("Codebase memory"));
         assert!(with.starts_with(&without));
         assert_eq!(

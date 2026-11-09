@@ -1,1 +1,1 @@
-Read a file or a URL. `path` is resolved inside the Project root; an `http://`, `https://` or `www.` target is fetched as Markdown instead of read from disk. `offset` starts at line 1; `limit` caps the lines. Plain text only, 2 MiB cap, numbered lines.
+Read a file, a URL or a skill. `path` is resolved inside the Project root; an `http://`, `https://` or `www.` target is fetched as Markdown instead of read from disk; `el://skills/<name>` reads a skill (`el://skills` lists all). `offset` starts at line 1; `limit` caps the lines. Plain text only, 2 MiB cap, numbered lines.

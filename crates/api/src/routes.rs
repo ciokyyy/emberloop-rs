@@ -4,6 +4,7 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use emberloop_core::events::{EventKind, SessionEvent};
 use emberloop_core::id::generate_id;
+use emberloop_core::steer::{SteerImage, SteerKind};
 use prompts::PromptInfo;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -23,6 +24,7 @@ use crate::state::{AppState, Settings};
         create_project,
         update_project,
         delete_project,
+        get_project_design,
         list_sessions,
         create_session,
         update_session,
@@ -61,6 +63,7 @@ use crate::state::{AppState, Settings};
     components(
         schemas(
             ProjectDto,
+            ProjectDesignDto,
             CreateProjectRequest,
             UpdateProjectRequest,
             SessionDto,
@@ -100,6 +103,17 @@ pub struct ProjectDto {
     pub id: String,
     pub name: String,
     pub root: String,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ProjectDesignDto {
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    #[serde(rename = "filePath")]
+    pub file_path: String,
+    pub exists: bool,
+    #[serde(rename = "joinLink")]
+    pub join_link: String,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -165,6 +179,8 @@ pub struct PromptRequest {
 #[derive(Deserialize, ToSchema)]
 pub struct SteerRequest {
     pub text: String,
+    #[serde(default)]
+    pub images: Vec<PromptImageDto>,
 }
 
 #[derive(Deserialize)]
@@ -184,10 +200,13 @@ pub async fn list_projects(State(state): State<AppState>) -> Json<Vec<ProjectDto
     let list = state.projects.list().await;
     let dtos = list
         .into_iter()
-        .map(|p| ProjectDto {
-            id: p.id,
-            name: p.name,
-            root: p.root.to_string_lossy().to_string(),
+        .map(|p| {
+            let _ = tools::figcraft::ensure_design_file(&p.root);
+            ProjectDto {
+                id: p.id,
+                name: p.name,
+                root: p.root.to_string_lossy().to_string(),
+            }
         })
         .collect();
     Json(dtos)
@@ -216,6 +235,7 @@ pub async fn create_project(
         .insert(project)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = tools::figcraft::ensure_design_file(&saved.root);
     Ok((
         StatusCode::CREATED,
         Json(ProjectDto {
@@ -241,11 +261,15 @@ pub async fn update_project(
     Json(payload): Json<UpdateProjectRequest>,
 ) -> Result<Json<ProjectDto>, (StatusCode, String)> {
     let root = payload.root.map(PathBuf::from);
+    let previous = state.projects.get(&id).await;
     let updated = state
         .projects
         .update(&id, payload.name, root)
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    if let Some(previous) = previous.filter(|project| project.root != updated.root) {
+        state.designs.remove(&previous.root).await;
+    }
     Ok(Json(ProjectDto {
         id: updated.id,
         name: updated.name,
@@ -270,10 +294,44 @@ pub async fn delete_project(
         .delete(&id)
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    state.designs.remove(&deleted.root).await;
     Ok(Json(ProjectDto {
         id: deleted.id,
         name: deleted.name,
         root: deleted.root.to_string_lossy().to_string(),
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/projects/{id}/design",
+    responses(
+        (status = 200, description = "Get project FigCraft design document", body = ProjectDesignDto),
+        (status = 404, description = "Project not found"),
+        (status = 500, description = "Design load error")
+    )
+)]
+pub async fn get_project_design(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ProjectDesignDto>, (StatusCode, String)> {
+    let project = state
+        .projects
+        .get(&id)
+        .await
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Project {id} not found")))?;
+    let link = state.designs.link(&project.root).await.map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "FigCraft live server unavailable; check the daemon log and installation".to_string(),
+        )
+    })?;
+    let design_path = tools::figcraft::design_path(&project.root);
+    Ok(Json(ProjectDesignDto {
+        project_id: project.id,
+        file_path: design_path.to_string_lossy().to_string(),
+        exists: true,
+        join_link: link,
     }))
 }
 
@@ -438,7 +496,10 @@ pub async fn prompt_session(
     // A turn already running takes the message as a steer. The UI's own idea of
     // `working` is stale after a page reload; the queue's is not.
     if state.steers.queue(&id).is_turn_active() {
-        let steer = Json(SteerRequest { text: payload.text });
+        let steer = Json(SteerRequest {
+            text: payload.text,
+            images: payload.images,
+        });
         return steer_session(State(state), Path(id), steer).await;
     }
     let now = SystemTime::now()
@@ -511,9 +572,10 @@ pub async fn steer_session(
     Path(id): Path<String>,
     Json(payload): Json<SteerRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if state.sessions.get(&id).await.is_none() {
+    let Some(meta) = state.sessions.get(&id).await else {
         return Err((StatusCode::NOT_FOUND, "Session not found".into()));
-    }
+    };
+    crate::session_setup::validate_images(&state, &meta, &payload.images).await?;
 
     let log = state
         .get_event_log(&id)
@@ -521,8 +583,16 @@ pub async fn steer_session(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let queue = state.steers.queue(&id);
+    let images = payload
+        .images
+        .into_iter()
+        .map(|image| SteerImage {
+            mime_type: image.mime_type,
+            data_base64: image.data_base64,
+        })
+        .collect();
     let entry = queue
-        .enqueue(emberloop_core::steer::SteerKind::Steer, payload.text)
+        .enqueue_with_images(SteerKind::Steer, payload.text, images)
         .await;
     let event = SessionEvent::new(
         &id,
@@ -887,6 +957,8 @@ pub fn build_router(state: AppState) -> Router {
             "/api/projects/{id}",
             patch(update_project).delete(delete_project),
         )
+        .route("/api/projects/{id}/design", get(get_project_design))
+        .route("/api/figcraft/live/", get(crate::design::live))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route(
             "/api/sessions/{id}",
@@ -914,6 +986,9 @@ pub fn build_router(state: AppState) -> Router {
             "/api/sessions/{id}/usage",
             get(crate::usage::session_usage_handler),
         )
+        .route("/api/skills", get(crate::skills::list_agent_skills))
+        .route("/api/skills/{name}", get(crate::skills::skill_detail))
+        .route("/api/skills/{name}/history", get(crate::skills::skill_history))
         .route(
             "/api/version",
             get(|| async {
@@ -945,8 +1020,15 @@ struct DriverWaker<'a> {
 
 #[async_trait::async_trait]
 impl emberloop_core::steer::SteerWaker for DriverWaker<'_> {
-    async fn wake(&self, text: &str) -> Result<(), String> {
-        self.driver.wake(self.session_id, text).await
+    async fn wake(&self, text: &str, images: &[SteerImage]) -> Result<(), String> {
+        let images = images
+            .iter()
+            .map(|image| PromptImageDto {
+                mime_type: image.mime_type.clone(),
+                data_base64: image.data_base64.clone(),
+            })
+            .collect();
+        self.driver.wake(self.session_id, text, images).await
     }
 }
 
@@ -981,6 +1063,55 @@ mod prompt_routes_tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn figcraft_proxy_accepts_the_upstream_normalized_trailing_slash() {
+        let response = app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/api/figcraft/live/?file=test&token=test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn design_reports_unavailable_instead_of_a_detached_canvas() {
+        let app = app().await;
+        let root = tempdir().unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/projects")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"name":"Design", "root":root.path()}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let project = json(response).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/projects/{}/design",
+                        project["id"].as_str().unwrap()
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -1186,7 +1317,12 @@ mod prompt_routes_tests {
         async fn cancel(&self, _session_id: &str) -> Result<(), String> {
             Ok(())
         }
-        async fn wake(&self, _session_id: &str, text: &str) -> Result<(), String> {
+        async fn wake(
+            &self,
+            _session_id: &str,
+            text: &str,
+            _images: Vec<PromptImageDto>,
+        ) -> Result<(), String> {
             self.woken.lock().unwrap().push(text.to_string());
             Ok(())
         }

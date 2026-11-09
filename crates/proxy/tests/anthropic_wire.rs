@@ -78,7 +78,7 @@ fn shapes() -> Vec<Value> {
 fn round_trip(request: &mut Value) {
     let pins = pins();
     inject_tools_for_wire(WireKind::Anthropic, request, &pins);
-    inject_prompts_for_wire(WireKind::Anthropic, request, &pins, false);
+    inject_prompts_for_wire(WireKind::Anthropic, request, &pins, false, "");
     let contents = extract_core_contents(WireKind::Anthropic, request).unwrap();
     write_core_contents(WireKind::Anthropic, request, contents);
 }

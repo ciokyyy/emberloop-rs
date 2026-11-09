@@ -33,12 +33,22 @@ pub enum SteerState {
     Delivered,
 }
 
+/// An image attached to a steer. Same wire shape as the harness `PromptImage`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteerImage {
+    pub mime_type: String,
+    pub data_base64: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SteerEntry {
     pub id: String,
     pub kind: SteerKind,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<SteerImage>,
     pub state: SteerState,
     pub queued_at: u64,
     pub delivered_at: Option<u64>,
@@ -96,7 +106,17 @@ impl SteerQueue {
     }
 
     pub async fn enqueue(&self, kind: SteerKind, text: impl Into<String>) -> SteerEntry {
-        self.enqueue_with_id(generate_id("steer"), kind, text).await
+        self.enqueue_with_images(kind, text, Vec::new()).await
+    }
+
+    pub async fn enqueue_with_images(
+        &self,
+        kind: SteerKind,
+        text: impl Into<String>,
+        images: Vec<SteerImage>,
+    ) -> SteerEntry {
+        self.enqueue_with_id(generate_id("steer"), kind, text, images)
+            .await
     }
 
     pub async fn enqueue_with_id(
@@ -104,11 +124,13 @@ impl SteerQueue {
         id: impl Into<String>,
         kind: SteerKind,
         text: impl Into<String>,
+        images: Vec<SteerImage>,
     ) -> SteerEntry {
         let entry = SteerEntry {
             id: id.into(),
             kind,
             text: text.into(),
+            images,
             state: SteerState::Pending,
             queued_at: now_ms(),
             delivered_at: None,
@@ -247,7 +269,11 @@ impl SteerQueue {
             .map(|entry| entry.text.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
-        if let Err(error) = waker.wake(&text).await {
+        let images: Vec<SteerImage> = entries
+            .iter()
+            .flat_map(|entry| entry.images.clone())
+            .collect();
+        if let Err(error) = waker.wake(&text, &images).await {
             self.requeue(&ids).await;
             return Err(error);
         }
@@ -346,7 +372,7 @@ impl SteerQueues {
 
 #[async_trait]
 pub trait SteerWaker: Send + Sync {
-    async fn wake(&self, text: &str) -> Result<(), String>;
+    async fn wake(&self, text: &str, images: &[SteerImage]) -> Result<(), String>;
 }
 
 /// Route 2: no turn is running, so wake the harness once with every pending entry as a
@@ -372,7 +398,11 @@ pub async fn deliver_idle(
         .map(|entry| entry.text.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
-    if let Err(error) = waker.wake(&text).await {
+    let images: Vec<SteerImage> = entries
+        .iter()
+        .flat_map(|entry| entry.images.clone())
+        .collect();
+    if let Err(error) = waker.wake(&text, &images).await {
         queue.requeue(&ids).await;
         return Err(error);
     }
@@ -413,6 +443,7 @@ mod tests {
     struct FakeWaker {
         fail: AtomicBool,
         calls: Mutex<Vec<String>>,
+        images: Mutex<Vec<SteerImage>>,
     }
 
     impl FakeWaker {
@@ -420,6 +451,7 @@ mod tests {
             Self {
                 fail: AtomicBool::new(false),
                 calls: Mutex::new(Vec::new()),
+                images: Mutex::new(Vec::new()),
             }
         }
 
@@ -430,8 +462,9 @@ mod tests {
 
     #[async_trait]
     impl SteerWaker for FakeWaker {
-        async fn wake(&self, text: &str) -> Result<(), String> {
+        async fn wake(&self, text: &str, images: &[SteerImage]) -> Result<(), String> {
             self.calls.lock().unwrap().push(text.to_string());
+            self.images.lock().unwrap().extend_from_slice(images);
             if self.fail.load(Ordering::SeqCst) {
                 Err("wake failed".into())
             } else {
@@ -480,6 +513,24 @@ mod tests {
         let event = rx.try_recv().unwrap();
         assert_eq!(event.kind, EventKind::SteerDelivered);
         assert_eq!(event.data["route"], "sent at idle");
+    }
+
+    #[tokio::test]
+    async fn idle_wake_carries_steer_images() {
+        let queue = SteerQueue::new();
+        let image = SteerImage {
+            mime_type: "image/png".into(),
+            data_base64: "AAAA".into(),
+        };
+        queue
+            .enqueue_with_images(SteerKind::Steer, "look", vec![image.clone()])
+            .await;
+        let waker = FakeWaker::new();
+
+        deliver_idle(&queue, &waker, &EventBus::new(8), "ses_1")
+            .await
+            .unwrap();
+        assert_eq!(*waker.images.lock().unwrap(), vec![image]);
     }
 
     #[tokio::test]

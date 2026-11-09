@@ -27,16 +27,15 @@ describe('Composer attachments', () => {
     expect(screen.getByAltText('screen.png')).toBeTruthy();
   });
 
-  it('does not silently discard images when a working session accepts a steer', async () => {
+  it('sends images with a steer while a session is working', async () => {
     const onsubmit = vi.fn();
     const view = setup({ onsubmit });
     await fireEvent.change(view.container.querySelector('input[type=file]')!, { target: { files: [image()] } });
     await view.rerender({ working: true });
     await fireEvent.input(screen.getByRole('textbox'), { target: { value: 'look at this' } });
     await fireEvent.click(screen.getByRole('button', { name: 'Steer' }));
-    expect(onsubmit).not.toHaveBeenCalled();
-    expect(screen.getByAltText('screen.png')).toBeTruthy();
-    expect(screen.getByText(/images cannot be sent while/i)).toBeTruthy();
+    await waitFor(() => expect(onsubmit).toHaveBeenCalledWith('look at this', [expect.any(File)]));
+    await waitFor(() => expect(screen.queryByAltText('screen.png')).toBeNull());
   });
 
   it('rejects image attachments for a text-only model', async () => {

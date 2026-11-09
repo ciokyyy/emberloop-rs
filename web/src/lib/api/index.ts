@@ -4,6 +4,7 @@ import type {
   LoginView,
   Model,
   Project,
+  ProjectDesign,
   ProviderView,
   PromptImage,
   PromptInfo,
@@ -11,6 +12,9 @@ import type {
   Session,
   SessionEvent,
   Settings,
+  SkillDetail,
+  SkillHistory,
+  SkillSummary,
   ToolKey
 } from './types';
 
@@ -43,6 +47,8 @@ export const api = {
     }),
   deleteProject: (id: string) =>
     request<Project>(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getProjectDesign: (projectId: string) =>
+    request<ProjectDesign>(`/api/projects/${encodeURIComponent(projectId)}/design`),
 
   listSessions: (projectId?: string) =>
     request<Session[]>(
@@ -71,10 +77,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text, images })
     }),
-  steer: (id: string, text: string) =>
+  steer: (id: string, text: string, images: PromptImage[]) =>
     request<void>(`/api/sessions/${encodeURIComponent(id)}/steer`, {
       method: 'POST',
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text, images })
     }),
   cancel: (id: string) =>
     request<void>(`/api/sessions/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
@@ -102,6 +108,9 @@ export const api = {
 
   providerUsage: (provider: string, refresh = false): Promise<UsageView> =>
     request(`/api/providers/${encodeURIComponent(provider)}/usage?refresh=${refresh}`),
+  listSkills: () => request<SkillSummary[]>('/api/skills'),
+  skillDetail: (name: string) => request<SkillDetail>(`/api/skills/${encodeURIComponent(name)}`),
+  skillHistory: (name: string) => request<SkillHistory>(`/api/skills/${encodeURIComponent(name)}/history`),
   /** The newest `limit` model requests of a Session, oldest first; the server default is 200. */
   sessionUsage: (id: string, limit?: number) =>
     request<UsageRecord[]>(

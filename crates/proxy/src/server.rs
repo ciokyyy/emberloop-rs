@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use store::{DataRoot, ProjectsStore, SessionsStore};
 use tokio::time::timeout;
 
+use crate::carry;
 use crate::compressor::{
     foldable_runs, latest_user_turn, CompressCall, CompressPolicy, Compressor, DecompressCall,
     NativeCompressor,
@@ -29,6 +30,7 @@ use crate::ctx::CtxStore;
 use crate::marker;
 use crate::meter;
 use crate::nudge::{self, NudgeConfig, NudgeKind, NudgeState};
+use crate::review::{self, ReviewTools};
 use crate::splice::{turn_key, Splice, SpliceStore};
 use crate::token::{TokenError, TokenSigner};
 use crate::tokens::turns_tokens;
@@ -65,6 +67,8 @@ pub struct ProxyConfig {
     pub provider_origin: Option<String>,
     /// The `execute` tool can reach the code graph, so the skill is worth the tokens.
     pub codebase_memory: bool,
+    /// Runs the background skill review's tool calls; the daemon injects it.
+    pub review_tools: Option<Arc<dyn ReviewTools>>,
     /// How long one upstream round may take to answer or to produce its next chunk.
     pub round_timeout: Duration,
     /// The wait before the first retry of a failed send; the next waits twice as long.
@@ -80,6 +84,7 @@ impl ProxyConfig {
             claude_upstream: DEFAULT_CLAUDE_UPSTREAM.to_string(),
             provider_origin: None,
             codebase_memory: false,
+            review_tools: None,
             round_timeout: DEFAULT_ROUND_TIMEOUT,
             retry_backoff: DEFAULT_RETRY_BACKOFF,
         }
@@ -111,6 +116,12 @@ impl ProxyConfig {
 
     pub fn with_codebase_memory(mut self, codebase_memory: bool) -> Self {
         self.codebase_memory = codebase_memory;
+        self
+    }
+
+    /// The executor that runs the background skill review's tool calls. Without it no review runs.
+    pub fn with_review_tools(mut self, tools: Arc<dyn ReviewTools>) -> Self {
+        self.review_tools = Some(tools);
         self
     }
 
@@ -187,10 +198,22 @@ struct SessionRuntime {
     last_input_tokens: AtomicU64,
     nudge: Mutex<NudgeState>,
     nudge_file: std::path::PathBuf,
+    /// The Session's skill catalog, read once when the runtime starts; the daemon freezes the file.
+    catalog: String,
     /// Set by an emergency nudge; while set, every outgoing request truncates its older large
     /// results, so the truncated prefix stays byte-identical. Cleared by a fold or a reset.
     /// In memory only: a restarted proxy starts clear.
     emergency_truncated: AtomicBool,
+    review: Mutex<review::ReviewState>,
+    /// One line of usage per review round, so the cache behaviour of the fork can be audited.
+    review_log: std::path::PathBuf,
+    /// Core turns of the last request the model saw, so a new harness conversation can carry them.
+    last_history: Mutex<Vec<Value>>,
+    /// History carried from an earlier harness conversation; leads every request until the next
+    /// reset. In memory only: shortcut, a daemon restart between a switch and its first turn loses it.
+    carried: Mutex<Vec<Value>>,
+    /// The last miss reported, so an unchanged miss is not published on every request.
+    last_fold_miss: Mutex<Option<String>>,
 }
 
 impl SessionRuntime {
@@ -201,11 +224,15 @@ impl SessionRuntime {
     ) -> Result<Self, ProxyError> {
         let nudge_file = splices_file.with_file_name("nudge.json");
         let ctx_file = splices_file.with_file_name("ctx.jsonl");
+        let catalog = std::fs::read_to_string(splices_file.with_file_name("skill-catalog.md"))
+            .unwrap_or_default();
+        let review_log = splices_file.with_file_name("review.jsonl");
         let ctx = CtxStore::open(&spill_dir, ctx_file);
         Ok(Self {
             pins,
             nudge: Mutex::new(nudge::load(&nudge_file)),
             nudge_file,
+            catalog,
             splices: Mutex::new(SpliceStore::open(splices_file)),
             ctx: Mutex::new(ctx),
             compressor: Mutex::new(Box::new(
@@ -213,6 +240,11 @@ impl SessionRuntime {
             )),
             last_input_tokens: AtomicU64::new(0),
             emergency_truncated: AtomicBool::new(false),
+            review: Mutex::new(review::ReviewState::default()),
+            review_log,
+            last_history: Mutex::new(Vec::new()),
+            carried: Mutex::new(Vec::new()),
+            last_fold_miss: Mutex::new(None),
         })
     }
 
@@ -293,6 +325,10 @@ impl ProxyState {
         let mut compressor = lock(&runtime.compressor)?;
         NativeCompressor::archive_blocks(&spill)?;
         *compressor = Box::new(NativeCompressor::new(spill).map_err(ProxyError::Compression)?);
+        let last = std::mem::take(&mut *lock(&runtime.last_history)?);
+        if !last.is_empty() {
+            *lock(&runtime.carried)? = carry::sanitize(last);
+        }
         lock(&runtime.splices)?.reset()?;
         runtime.close_nudge_gate()?;
         Ok(())
@@ -526,6 +562,7 @@ async fn handle_generation(
         state.inner.config.codebase_memory,
     )?;
     let observed_gate = outcome.gate.clone();
+    let nudge_text = outcome.nudge.as_ref().map(|report| report.text.clone());
     publish_prepare_events(&state.inner.events, session_id, outcome);
     dump_request(session_id, "out", &request);
     let url = upstream_url(base, path, query);
@@ -566,7 +603,7 @@ async fn handle_generation(
         .as_deref()
         .is_some_and(|value| value.contains("text/event-stream"))
     {
-        return Ok(streaming_response(SseState::new(
+        let mut sse = SseState::new(
             state.clone(),
             runtime,
             session_id.to_string(),
@@ -577,7 +614,9 @@ async fn handle_generation(
             response,
             settings,
             window,
-        )));
+        );
+        sse.nudge_text = nudge_text;
+        return Ok(streaming_response(sse));
     }
     let first_bytes = response.bytes().await?;
     buffered_generation(
@@ -721,7 +760,13 @@ fn prepare_request(
     if settings.proxy_compression && settings.inject_tool {
         inject_tools_for_wire(wire, request, &runtime.pins);
     }
-    inject_prompts_for_wire(wire, request, &runtime.pins, codebase_memory);
+    inject_prompts_for_wire(
+        wire,
+        request,
+        &runtime.pins,
+        codebase_memory,
+        &runtime.catalog,
+    );
     let Some(mut contents) = extract_core_contents(wire, request) else {
         return Ok(PrepareOutcome {
             nudge: None,
@@ -730,6 +775,10 @@ fn prepare_request(
             unmatched: None,
         });
     };
+    let carried = lock(&runtime.carried)?.clone();
+    if !carried.is_empty() {
+        contents = carry::join(carried, contents);
+    }
     // Arrival replacement runs first: a fold stores the `ctx` handle, so a later request must
     // carry the handle again before the fold's stored turns can be matched.
     lock(&runtime.ctx)?.apply(&mut contents);
@@ -742,6 +791,16 @@ fn prepare_request(
         lock(&runtime.compressor)?.fold_report(&contents, &spliced)
     } else {
         None
+    };
+    // The same miss on every request is noise: report it once until the text changes.
+    let unmatched = {
+        let mut last = lock(&runtime.last_fold_miss)?;
+        if *last == unmatched {
+            None
+        } else {
+            *last = unmatched.clone();
+            unmatched
+        }
     };
     lock(&runtime.splices)?.apply(&mut contents)?;
     if wire == WireKind::Google {
@@ -756,6 +815,7 @@ fn prepare_request(
     if preflight.is_some() {
         runtime.emergency_truncated.store(false, Ordering::Relaxed);
     }
+    *lock(&runtime.last_history)? = contents.clone();
     // The nudge goes last, on the final contents, so its turn numbers match what compress sees.
     let (nudge, gate) = if settings.proxy_compression && settings.inject_nudge {
         inject_nudge(runtime, &mut contents, window, settings)?
@@ -907,6 +967,19 @@ fn outgoing_body<'a>(
     Cow::Owned(body)
 }
 
+/// Removes the nudge turn from a review fork body: the nudge speaks to the main conversation,
+/// and the fork must not see it. The wire holds it as a plain user turn, found by its text.
+fn drop_nudge(wire: WireKind, body: &mut Value, text: &str) {
+    let Some(mut contents) = extract_core_contents(wire, request_body_mut(body)) else {
+        return;
+    };
+    contents.retain(|turn| {
+        turn.get("role").and_then(Value::as_str) != Some("user")
+            || turn.pointer("/parts/0/text").and_then(Value::as_str) != Some(text)
+    });
+    write_core_contents(wire, request_body_mut(body), contents);
+}
+
 fn truncate_emergency(contents: &mut [Value]) {
     for turn in contents.iter_mut() {
         let is_summary = turn
@@ -980,6 +1053,7 @@ pub struct NudgeReport {
     pub kind: &'static str,
     pub tokens: u64,
     pub since_last: u64,
+    pub text: String,
 }
 
 async fn context_window(state: &ProxyState, session_id: &str) -> usize {
@@ -1076,6 +1150,7 @@ fn inject_nudge(
         min_pressure_benefit_tokens: u64::from(settings.min_pressure_benefit_tokens),
         tier2_trigger: u64::from(settings.tier2_trigger),
         tier3_trigger: u64::from(settings.tier3_trigger),
+        estimate: runtime.last_input_tokens.load(Ordering::Relaxed) == 0,
     };
     let mut gate = lock(&runtime.nudge)?.clone();
     let fired = gate.observe_with(
@@ -1109,6 +1184,7 @@ fn inject_nudge(
         kind: fired.kind.name(),
         tokens,
         since_last: fired.since_last,
+        text,
     };
     Ok((Some(report), Some(gate)))
 }
@@ -1145,16 +1221,26 @@ async fn inject_steer(
         queue.requeue(&ids).await;
         return Vec::new();
     };
+    // Images ride as inlineData parts in core format; the text part is left out when empty.
+    let mut parts: Vec<Value> = entries
+        .iter()
+        .flat_map(|entry| entry.images.iter())
+        .map(|image| json!({ "inlineData": { "mimeType": image.mime_type, "data": image.data_base64 } }))
+        .collect();
     let text = entries
         .iter()
         .map(|entry| entry.text.as_str())
+        .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
+    if !text.is_empty() {
+        parts.insert(0, json!({ "text": text }));
+    }
     let splice = Splice {
         id: format!("steer-{}", ids.join("-")),
         tool_result_id: turn_id,
         marker: String::new(),
-        turns: vec![json!({ "role": "user", "parts": [{ "text": text }] })],
+        turns: vec![json!({ "role": "user", "parts": parts })],
         append_parts: Vec::new(),
         after_turn: None,
     };
@@ -1202,7 +1288,7 @@ async fn settle_steer(
     queue.end_request().await;
 }
 
-fn request_body_mut(root: &mut Value) -> &mut Value {
+pub(crate) fn request_body_mut(root: &mut Value) -> &mut Value {
     if root.get("request").is_some_and(Value::is_object) {
         &mut root["request"]
     } else {
@@ -1454,6 +1540,7 @@ fn execute_tool(
     match call.name.as_str() {
         "compress" => {
             let calls = parse_compress_calls(&call.args)?;
+            refuse_cache_costly_folds(contents, &calls)?;
             let mut compressor = lock(&runtime.compressor).map_err(|error| error.to_string())?;
             let folded = compressor.compress_batch(contents, calls, &compress_policy(settings))?;
             // The next nudge must judge the folded history, not the usage from before the fold.
@@ -1545,6 +1632,29 @@ fn format_acp_status(
     render_text(ACP_STATUS_REPORT, template, &vars)
 }
 
+/// A fold rewrites the history from its first turn on, so the provider re-reads everything after
+/// it uncached. A small fold early in a big history costs far more than it frees: refuse it.
+fn refuse_cache_costly_folds(contents: &[Value], calls: &[CompressCall]) -> Result<(), String> {
+    let Some(first) = calls.iter().map(|call| call.start).min() else {
+        return Ok(());
+    };
+    let Some(tail) = contents.get(first..) else {
+        return Ok(());
+    };
+    let after = turns_tokens(tail);
+    let freed: u64 = calls
+        .iter()
+        .filter_map(|call| contents.get(call.start..call.end))
+        .map(turns_tokens)
+        .sum();
+    if after > 20_000 && freed * 4 < after {
+        return Err(format!(
+            "fold frees about {freed} tokens but rewrites {after}: the provider cache restarts at turn {first}. Fold a bigger or later range (the nudge lists them), or do not fold yet"
+        ));
+    }
+    Ok(())
+}
+
 /// `compress` takes `ranges: [{start, end, summary, topic?}, ...]`; the single-range form
 /// (`start`, `end`, `summary`, `topic` at the top level) is still accepted.
 fn parse_compress_calls(args: &Value) -> Result<Vec<CompressCall>, String> {
@@ -1567,10 +1677,19 @@ fn parse_compress_calls(args: &Value) -> Result<Vec<CompressCall>, String> {
 }
 
 fn parse_compress_range(args: &Value) -> Result<CompressCall, String> {
+    let (start, end) = (number_arg(args, "start")?, number_arg(args, "end")?);
+    let summary = string_arg(args, "summary")?;
+    // A tiny summary over a big range loses the work; the model then re-reads.
+    if end.saturating_sub(start) > 6 && summary.trim().len() < 300 {
+        return Err(format!(
+            "summary too short for {} turns: write at least 300 characters with paths, commands, decisions and open items",
+            end - start
+        ));
+    }
     Ok(CompressCall {
-        start: number_arg(args, "start")?,
-        end: number_arg(args, "end")?,
-        summary: string_arg(args, "summary")?,
+        start,
+        end,
+        summary,
         topic: args
             .get("topic")
             .and_then(Value::as_str)
@@ -1643,6 +1762,119 @@ async fn send_stream(
         }
         backoff(config.retry_backoff * 2u32.pow(attempt)).await;
         attempt += 1;
+    }
+}
+
+/// The background skill review: the fork conversation runs to its end or `MAX_ROUNDS`, its tool
+/// calls go through the daemon's executor, and nothing of it reaches the Session.
+async fn run_review(
+    proxy: ProxyState,
+    runtime: Arc<SessionRuntime>,
+    session_id: String,
+    wire: WireKind,
+    (url, headers): (String, HeaderMap),
+    mut body: Value,
+    tools: Arc<dyn ReviewTools>,
+) {
+    let mut changes = 0usize;
+    let mut skill_args: Vec<Value> = Vec::new();
+    for round in 1..=review::MAX_ROUNDS {
+        let sent = send_generation(
+            &proxy.inner.client,
+            &url,
+            &headers,
+            &body,
+            &proxy.inner.config,
+        )
+        .await;
+        let bytes = match sent {
+            Ok((status, _, bytes)) if status.is_success() => bytes,
+            Ok((status, _, bytes)) => {
+                let text = String::from_utf8_lossy(&bytes);
+                let text: String = text.chars().take(300).collect();
+                log_review(&runtime, round, None, 0, Some(format!("{status}: {text}")));
+                break;
+            }
+            Err(error) => {
+                log_review(&runtime, round, None, 0, Some(error.to_string()));
+                break;
+            }
+        };
+        let Ok(response) = serde_json::from_slice::<Value>(&bytes) else {
+            log_review(
+                &runtime,
+                round,
+                None,
+                0,
+                Some("response is not JSON".into()),
+            );
+            break;
+        };
+        let calls = review::calls(wire, &response);
+        log_review(
+            &runtime,
+            round,
+            meter::extract_usage(&bytes),
+            calls.len(),
+            None,
+        );
+        if calls.is_empty() {
+            break;
+        }
+        let mut results = Vec::new();
+        for call in calls {
+            let result = tools.call(&session_id, &call.name, &call.args).await;
+            if result.is_ok() && call.name.ends_with("skill_manage") {
+                changes += 1;
+                skill_args.extend(call.args["ops"].as_array().cloned().unwrap_or_default());
+            }
+            results.push((call, result.unwrap_or_else(|error| error)));
+        }
+        review::append_round(wire, &mut body, &response, &results);
+    }
+    if changes > 0 {
+        proxy.inner.events.publish(SessionEvent::new(
+            &session_id,
+            0,
+            EventKind::Compression,
+            json!({ "action": "skill-review", "text": format!("skill review: {changes} skill change(s)"), "ops": skill_args }),
+        ));
+    }
+    if let Ok(mut state) = lock(&runtime.review) {
+        state.finished();
+    }
+}
+
+/// Appends one line per review round to the Session's `review.jsonl`. Best effort: a log that
+/// cannot be written never stops the review.
+fn log_review(
+    runtime: &SessionRuntime,
+    round: usize,
+    usage: Option<meter::Usage>,
+    calls: usize,
+    error: Option<String>,
+) {
+    use std::io::Write;
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let usage = usage.unwrap_or_default();
+    let line = json!({
+        "at": at,
+        "round": round,
+        "input": usage.input_tokens,
+        "cached": usage.cached_tokens,
+        "created": usage.cache_creation_tokens,
+        "output": usage.output_tokens,
+        "calls": calls,
+        "error": error,
+    });
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&runtime.review_log)
+    {
+        let _ = writeln!(file, "{line}");
     }
 }
 
@@ -1822,6 +2054,8 @@ struct SseState {
     done: bool,
     harness_call_id: Option<String>,
     completed: Vec<CompletedCall>,
+    /// A Google reading waiting for the stream end; see `capture_usage`.
+    held: Option<meter::Usage>,
     /// The usage last published for this stream, so a chunk and its events do not publish twice.
     published: Option<meter::Usage>,
     /// The signature of the step being streamed: the model signs its first call.
@@ -1833,6 +2067,10 @@ struct SseState {
     proxy_round: bool,
     /// The response's content blocks as streamed, kept for an Anthropic follow-up.
     anthropic: AnthropicBlocks,
+    /// Names of the tool calls this round handed to the harness; the review counts rounds by them.
+    forwarded: Vec<String>,
+    /// The nudge text this request carried, so the review fork can leave it out.
+    nudge_text: Option<String>,
     settings: Settings,
     window: usize,
 }
@@ -1875,12 +2113,15 @@ impl SseState {
             harness_call_id: None,
             completed: Vec::new(),
             published: None,
+            held: None,
             step_signature: None,
             stream_calls: Vec::new(),
             stream_events: Vec::new(),
             stream_finish: Vec::new(),
             proxy_round: false,
             anthropic: AnthropicBlocks::default(),
+            forwarded: Vec::new(),
+            nudge_text: None,
             settings,
             window,
         }
@@ -1888,6 +2129,8 @@ impl SseState {
 
     /// Publish usage as soon as its bytes arrive: a harness may stop reading the stream
     /// right after the answer, and then a publish deferred to the stream end never runs.
+    /// Google streams repeat usage per chunk and an early reading lacks the cache fields, so
+    /// there the newest reading is held and published once at the stream end.
     async fn capture_usage(&mut self, bytes: &[u8]) {
         let Some(usage) = meter::extract_usage(bytes) else {
             return;
@@ -1899,6 +2142,16 @@ impl SseState {
         self.runtime
             .last_input_tokens
             .store(usage.input_tokens, Ordering::Relaxed);
+        self.held = Some(usage);
+        if self.wire != WireKind::Google {
+            self.flush_usage().await;
+        }
+    }
+
+    async fn flush_usage(&mut self) {
+        let Some(usage) = self.held.take() else {
+            return;
+        };
         publish_usage_event(
             &self.proxy,
             &self.session_id,
@@ -1929,6 +2182,7 @@ impl SseState {
         }
         self.stream = Some(response.bytes_stream().boxed());
         self.published = None;
+        self.forwarded.clear();
         self.step_signature = None;
         self.proxy_round = false;
         self.anthropic = AnthropicBlocks::default();
@@ -1937,9 +2191,52 @@ impl SseState {
         Ok(())
     }
 
+    /// A round ended without a proxy call: count it, and start the background skill review when due.
+    fn review_check(&mut self) {
+        let Some(tools) = self.proxy.inner.config.review_tools.clone() else {
+            return;
+        };
+        if !review::offers_skill_tool(&self.request) {
+            return;
+        }
+        let interval = self.settings.skills_review_interval;
+        let due = lock(&self.runtime.review)
+            .is_ok_and(|mut state| state.round_ended(&self.forwarded, interval));
+        if !due {
+            return;
+        }
+        let prompt = self
+            .proxy
+            .inner
+            .prompts
+            .render(prompts::REVIEW_SKILLS, &PromptVars::default());
+        let Ok(prompt) = prompt else {
+            if let Ok(mut state) = lock(&self.runtime.review) {
+                state.finished();
+            }
+            return;
+        };
+        let mut sent = outgoing_body(&self.runtime, self.wire, &self.request).into_owned();
+        if let Some(text) = &self.nudge_text {
+            drop_nudge(self.wire, &mut sent, text);
+        }
+        let (url, body) = review::fork_request(self.wire, &self.url, &sent, &prompt);
+        // The headers live only as long as the review task; they are never stored.
+        tokio::spawn(run_review(
+            self.proxy.clone(),
+            Arc::clone(&self.runtime),
+            self.session_id.clone(),
+            self.wire,
+            (url, self.headers.clone()),
+            body,
+            tools,
+        ));
+    }
+
     fn finish_round(&mut self) -> Result<(), ProxyError> {
         if self.completed.is_empty() {
             self.done = true;
+            self.review_check();
             return Ok(());
         }
         let first_id = self.completed[0].call.id.clone();
@@ -2170,6 +2467,8 @@ impl SseState {
             .iter()
             .any(|call| !PROXY_TOOLS.contains(&call.name.as_str()));
         if !proxy || harness {
+            self.forwarded
+                .extend(self.stream_calls.iter().map(|call| call.name.clone()));
             self.forward.extend(self.stream_events.drain(..));
             self.forward.extend(self.stream_finish.drain(..));
             self.stream_calls.clear();
@@ -2378,6 +2677,7 @@ fn rewrite_payload(
     let mut empty = true;
     let mut calls = Vec::new();
     let mut harness_id = None;
+    let mut harness_names: Vec<String> = Vec::new();
     for candidate in candidates.iter_mut() {
         let Some(parts) = candidate
             .get_mut("content")
@@ -2397,6 +2697,9 @@ fn rewrite_payload(
                 changed = true;
                 continue;
             }
+            if let Some(name) = part.pointer("/functionCall/name").and_then(Value::as_str) {
+                harness_names.push(name.to_string());
+            }
             if harness_id.is_none() {
                 harness_id = function_call_id(&part);
             }
@@ -2411,6 +2714,7 @@ fn rewrite_payload(
     if let Some(harness_id) = harness_id {
         state.harness_call_id = Some(harness_id);
     }
+    state.forwarded.extend(harness_names);
     for call in calls {
         state.record_call(call);
     }
@@ -2538,6 +2842,7 @@ async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error
                     state.pending.extend_from_slice(b"\n\n");
                     continue;
                 }
+                state.flush_usage().await;
                 if let Err(error) = state.finish_round() {
                     state.done = true;
                     let message = format!("{error}");
@@ -2616,7 +2921,13 @@ fn sse_error(message: &str) -> String {
 }
 
 fn error_event(error: &ProxyError) -> Bytes {
-    Bytes::from(sse_error(&error.to_string()))
+    let text = match error {
+        ProxyError::Upstream(err) if err.is_decode() || err.is_body() => {
+            format!("stream was interrupted: {error}")
+        }
+        _ => error.to_string(),
+    };
+    Bytes::from(sse_error(&text))
 }
 
 fn dump_request(session_id: &str, stage: &str, request: &Value) {

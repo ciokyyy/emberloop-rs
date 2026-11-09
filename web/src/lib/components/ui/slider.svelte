@@ -36,6 +36,7 @@
     type="single"
     {min}
     {max}
+    {step}
     value={shown}
     onValueChange={(next) => (dragging = next)}
     onValueCommit={(next) => {

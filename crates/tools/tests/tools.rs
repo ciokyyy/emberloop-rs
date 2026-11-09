@@ -161,6 +161,51 @@ fn read_ctx_forgives_a_dropped_or_added_c_prefix() {
 }
 
 #[test]
+fn read_skill_uri_catalog_and_item() {
+    let fixture = setup();
+    write(
+        &fixture,
+        ".agents/skills/my-skill/SKILL.md",
+        "---\nname: my-skill\ndescription: A helpful skill.\nmetadata:\n  origin: agent\n---\n\n## Instructions\nDo test.\n",
+    );
+    write(
+        &fixture,
+        ".agents/skills/my-skill/references/notes.txt",
+        "Subpath note content.\n",
+    );
+
+    // List catalog
+    let catalog = call(&fixture, "read", json!({"path": "el://skills"})).expect("catalog");
+    assert!(catalog.contains("my-skill"), "{catalog}");
+    assert!(catalog.contains("A helpful skill"), "{catalog}");
+
+    // Read skill directly via el://skills/<name>
+    let skill_out =
+        call(&fixture, "read", json!({"path": "el://skills/my-skill"})).expect("skill read");
+    assert!(skill_out.contains("Do test"), "{skill_out}");
+    assert!(skill_out.contains("my-skill/SKILL.md#"), "{skill_out}");
+
+    // Read skill via skills:// and skill:
+    let alt1 = call(&fixture, "read", json!({"path": "skills://my-skill"})).expect("skills://");
+    assert!(alt1.contains("Do test"), "{alt1}");
+    let alt2 = call(&fixture, "read", json!({"path": "skill:my-skill"})).expect("skill:");
+    assert!(alt2.contains("Do test"), "{alt2}");
+
+    // Read skill subpath
+    let sub = call(
+        &fixture,
+        "read",
+        json!({"path": "el://skills/my-skill/references/notes.txt"}),
+    )
+    .expect("subpath read");
+    assert!(sub.contains("Subpath note content"), "{sub}");
+
+    // Reading nonexistent skill returns error
+    let err = call(&fixture, "read", json!({"path": "el://skills/nonexistent"})).unwrap_err();
+    assert!(err.to_string().contains("not found"), "{err}");
+}
+
+#[test]
 fn jail_blocks_escapes_and_symlinks() {
     let fixture = setup();
     let outside = fixture._dir.path().join("outside.txt");
@@ -535,6 +580,8 @@ fn mcp_serves_tools_and_errors() {
             "todo",
             "websearch",
             "ctx_search",
+            "skill_search",
+            "skill_manage",
             "execute"
         ]
     );

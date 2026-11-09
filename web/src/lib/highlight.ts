@@ -112,7 +112,7 @@ export function highlightDiff(line: any) {
 // stripAnsi removes terminal escape sequences; ansiSegments keeps the basic
 // SGR colors so tools that print color still read in color.
 const ANSI = /\x1b\[([0-9;]*)m/g;
-export const stripAnsi = (s: any) => String(s ?? '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+const stripAnsi = (s: any) => String(s ?? '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
 const ANSI_CLS: Record<number, string> = { 31: 'tk-err', 32: 'tk-ok', 33: 'tk-warn', 34: 'tk-path', 35: 'tk-lit', 36: 'tk-hunk', 90: 'tk-dim', 91: 'tk-err', 92: 'tk-ok', 93: 'tk-warn', 94: 'tk-path', 95: 'tk-lit', 96: 'tk-hunk', 1: 'tk-bold' };
 
 export function hasAnsi(line: any) {

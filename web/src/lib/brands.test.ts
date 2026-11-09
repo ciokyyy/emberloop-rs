@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { brandSvg, brandTint, isColoured, PI_TINT } from './brands';
+import { brandSvg, brandTint, isColoured, modelIconId, PI_TINT } from './brands';
 
 describe('brand map', () => {
   it('returns SVG markup for every provider and harness we list', () => {
@@ -19,5 +19,10 @@ describe('brand map', () => {
 
   it('returns nothing for an unknown id so the caller can fall back to a letter', () => {
     expect(brandSvg('no-such-provider')).toBeUndefined();
+  });
+
+  it('uses the provider logo, else the harness logo, for a model', () => {
+    expect(modelIconId({ provider: 'openrouter', source: 'pi' })).toBe('openrouter');
+    expect(modelIconId({ provider: 'no-such-provider', source: 'claude' })).toBe('claude');
   });
 });

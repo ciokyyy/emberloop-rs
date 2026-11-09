@@ -17,7 +17,7 @@ const FEED_TAIL_LINES = 60;
 const FAMILIES = {
   bash: ['bash', 'sh', 'shell', 'terminal', 'execute_bash', 'killshell', 'kill_shell'],
   read: ['read', 'cat', 'view', 'ls', 'notebookread', 'notebook_read', 'glob', 'list_dir'],
-  edit: ['edit', 'multiedit', 'multi_edit', 'apply_patch', 'applypatch', 'patch', 'str_replace', 'strreplaceeditor'],
+  edit: ['edit', 'multiedit', 'multi_edit', 'apply_patch', 'applypatch', 'patch', 'str_replace', 'strreplaceeditor', 'skill_manage'],
   write: ['write', 'create', 'notebookedit', 'notebook_edit', 'create_file'],
   grep: ['grep', 'rg', 'search'],
   find: ['find', 'search_graph', 'trace_path', 'get_file_outline', 'get_architecture', 'get_code_snippet', 'outline'],

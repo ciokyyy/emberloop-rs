@@ -59,6 +59,10 @@ pub struct AcpSession {
     events: broadcast::Sender<HarnessEvent>,
 }
 
+/// How long `session/new` may take. agy makes three Google calls (token refresh, onboarding,
+/// model list) on a cold start, 7s each on a slow network, so 10s was never enough.
+const SESSION_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Spawn the agent, open one ACP session on it and return once it is ready.
 pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, HarnessError> {
     let label = launch.label;
@@ -278,7 +282,7 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
     });
 
     let (acp_session, config_options, resumed) =
-        tokio::time::timeout(std::time::Duration::from_secs(10), ready_rx.recv())
+        tokio::time::timeout(SESSION_READY_TIMEOUT, ready_rx.recv())
             .await
             .map_err(|_| {
                 HarnessError::Protocol(format!("{label} did not create session {session_id}"))
@@ -501,8 +505,8 @@ impl HarnessSession for AcpSession {
             .map_err(|_| HarnessError::Process("ACP connection closed".into()))
     }
 
-    async fn wake(&self, text: &str) -> Result<(), HarnessError> {
-        self.send(text, Vec::new()).await
+    async fn wake(&self, text: &str, images: Vec<PromptImage>) -> Result<(), HarnessError> {
+        self.send(text, images).await
     }
 
     async fn forget(&self, resume_token: &str) -> Result<(), HarnessError> {

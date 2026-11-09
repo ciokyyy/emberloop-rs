@@ -1,9 +1,11 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 pub mod background;
 pub mod bash;
+mod bm25;
 pub mod ctxsearch;
 pub mod edit;
 pub mod execute;
+pub mod figcraft;
 pub mod find;
 pub mod graph;
 pub mod grep;
@@ -15,6 +17,11 @@ pub mod overflow;
 pub mod read;
 pub mod readurl;
 pub mod seen;
+pub mod skillmanage;
+pub mod skills;
+pub mod skillsearch;
+mod skillstore;
+pub mod skillview;
 pub mod tag;
 pub mod todo;
 pub mod websearch;
@@ -66,6 +73,8 @@ pub struct ToolConfig {
     pub tool_keys_file: Option<PathBuf>,
     /// `<config root>/mcp.json`: the stdio MCP servers `execute` can reach.
     pub mcp_file: Option<PathBuf>,
+    /// The global skills root (`~/.agents/skills`), readable beyond the project root.
+    pub global_skills: Option<PathBuf>,
 }
 impl ToolConfig {
     pub fn new(root: impl Into<PathBuf>, spill_dir: impl Into<PathBuf>) -> Self {
@@ -78,6 +87,7 @@ impl ToolConfig {
             env_file: default_env_file(),
             tool_keys_file: None,
             mcp_file: None,
+            global_skills: None,
         }
     }
 }
@@ -112,7 +122,10 @@ impl Toolbox {
             spill_dir.clone(),
             config.overflow_threshold,
         ));
-        let jail = ProjectJail::new(&config.root)?;
+        let mut jail = ProjectJail::new(&config.root)?;
+        if let Some(global) = &config.global_skills {
+            jail = jail.with_extra_root(global);
+        }
         let background = Arc::new(background::BackgroundManager::new(spill_dir, &config.root));
         let mcp = Arc::new(mcpclient::McpRegistry::load(
             &config.root,
@@ -156,6 +169,10 @@ impl Toolbox {
         self.jail.root()
     }
 
+    pub fn global_skills(&self) -> Option<&Path> {
+        self.config.global_skills.as_deref()
+    }
+
     pub fn spill_dir(&self) -> &Path {
         &self.config.spill_dir
     }
@@ -191,6 +208,17 @@ impl Toolbox {
     /// The MCP tools `execute` exposes; connects the servers on first use.
     pub async fn mcp_tools(&self) -> ToolResult<Vec<McpTool>> {
         self.mcp.tools().await
+    }
+
+    /// Like `mcp_tools`, but gives up waiting after a few seconds so a slow
+    /// server start (cold `npx`) never stalls a script; the start goes on in the background.
+    pub async fn mcp_tools_soon(&self) -> Vec<McpTool> {
+        let mcp = Arc::clone(&self.mcp);
+        let start = tokio::spawn(async move { mcp.tools().await });
+        match tokio::time::timeout(std::time::Duration::from_millis(1500), start).await {
+            Ok(Ok(Ok(tools))) => tools,
+            _ => Vec::new(),
+        }
     }
 
     /// The shell prelude that loads the runtime env file; empty when there is none.
@@ -229,6 +257,8 @@ impl Toolbox {
             "todo" => todo::run(self, args),
             "grep" => grep::run(self, args),
             "ctx_search" => ctxsearch::run(self, args),
+            "skill_search" => skillsearch::run(self, args),
+            "skill_manage" => skillmanage::run(self, args),
             "find" => find::run(self, args),
             "edit" => edit::run(self, args),
             "write" => write::run(self, args),

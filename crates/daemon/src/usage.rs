@@ -70,9 +70,21 @@ pub(crate) async fn fetch(
             let access = token["access_token"]
                 .as_str()
                 .ok_or("Antigravity did not return an access token.")?;
-            response(client.post("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary")
-                .bearer_auth(access).header("User-Agent", "antigravity/cli/1.0 (aidev_client; os_type=linux; arch=amd64; auth_method=consumer)")
-                .json(&serde_json::json!({"project": credentials["project_id"]}))).await?
+            let summary_fut = client
+                .post("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary")
+                .bearer_auth(access)
+                .header("User-Agent", "antigravity/cli/1.0 (aidev_client; os_type=linux; arch=amd64; auth_method=consumer)")
+                .json(&serde_json::json!({"project": credentials["project_id"]}));
+            let quota_fut = client
+                .post("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota")
+                .bearer_auth(access)
+                .header("User-Agent", "antigravity/cli/1.0 (aidev_client; os_type=linux; arch=amd64; auth_method=consumer)")
+                .json(&serde_json::json!({"project": credentials["project_id"]}));
+            let (summary, quota) = tokio::join!(response(summary_fut), response(quota_fut));
+            serde_json::json!({
+                "summary": summary.ok(),
+                "quota": quota.ok(),
+            })
         }
         "openai-codex" => {
             let credentials = read(auth).await?;
@@ -151,6 +163,71 @@ fn window(label: String, percent: &Value, resets_at: &Value) -> Result<UsageWind
     })
 }
 
+fn parse_agy(data: &Value, view: &mut UsageView) -> Result<(), String> {
+    let summary_groups = data
+        .get("summary")
+        .and_then(|s| s.get("groups"))
+        .or_else(|| data.get("groups"));
+    if let Some(groups) = summary_groups.and_then(Value::as_array) {
+        for group in groups {
+            let group_name = group["displayName"].as_str().unwrap_or("Claude & GPT");
+            if let Some(buckets) = group["buckets"].as_array() {
+                for bucket in buckets {
+                    if let Ok(rem) = number(&bucket["remainingFraction"]) {
+                        let used = ((1.0 - rem) * 100.0 * 100.0).round() / 100.0;
+                        let window_label = match bucket["window"].as_str() {
+                            Some("5h") => "5-hour",
+                            Some("weekly") => "Weekly",
+                            Some(other) => other,
+                            None => "Quota",
+                        };
+                        let label = format!("{group_name} · {window_label}");
+                        view.windows.push(window(
+                            label,
+                            &serde_json::json!(used),
+                            &bucket["resetTime"],
+                        )?);
+                    }
+                }
+            }
+        }
+    }
+    let quota_buckets = data
+        .get("quota")
+        .and_then(|q| q.get("buckets"))
+        .or_else(|| data.get("buckets"));
+    if let Some(buckets) = quota_buckets.and_then(Value::as_array) {
+        let mut gemini_added = false;
+        let mut argon_added = false;
+        for bucket in buckets {
+            let model_id = bucket["modelId"].as_str().unwrap_or_default();
+            if !gemini_added && (model_id.starts_with("gemini") || model_id.contains("flash")) {
+                if let Ok(rem) = number(&bucket["remainingFraction"]) {
+                    let used = ((1.0 - rem) * 100.0 * 100.0).round() / 100.0;
+                    view.windows.push(window(
+                        "Gemini · 5-hour".into(),
+                        &serde_json::json!(used),
+                        &bucket["resetTime"],
+                    )?);
+                    gemini_added = true;
+                }
+            } else if !argon_added && (model_id.starts_with("chat_") || model_id.contains("argon"))
+            {
+                if let Ok(rem) = number(&bucket["remainingFraction"]) {
+                    let used = ((1.0 - rem) * 100.0 * 100.0).round() / 100.0;
+                    view.windows.push(window(
+                        "Argon · Quota".into(),
+                        &serde_json::json!(used),
+                        &bucket["resetTime"],
+                    )?);
+                    argon_added = true;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn parse(provider: &str, data: &Value) -> Result<UsageView, String> {
     let mut view = UsageView::default();
     match provider {
@@ -177,28 +254,7 @@ fn parse(provider: &str, data: &Value) -> Result<UsageView, String> {
                 }
             }
         }
-        "agy" => {
-            for group in data["groups"]
-                .as_array()
-                .ok_or("Antigravity returned no quota groups.")?
-            {
-                for bucket in group["buckets"]
-                    .as_array()
-                    .ok_or("Antigravity returned no quota buckets.")?
-                {
-                    let used = (1.0 - number(&bucket["remainingFraction"])?) * 100.0;
-                    view.windows.push(window(
-                        format!(
-                            "{} · {}",
-                            bucket["bucketId"].as_str().unwrap_or("Models"),
-                            bucket["window"].as_str().unwrap_or("Quota")
-                        ),
-                        &serde_json::json!(used),
-                        &bucket["resetTime"],
-                    )?);
-                }
-            }
-        }
+        "agy" => parse_agy(data, &mut view)?,
         "openrouter" => {
             let total = number(&data["data"]["total_credits"])?;
             let used = number(&data["data"]["total_usage"])?;
@@ -266,5 +322,51 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.balance.unwrap().remaining, 0.0);
         assert!(parse("openrouter", &json!({"data": {}})).is_err());
+    }
+
+    #[test]
+    fn agy_parses_all_three_pools() {
+        let data = json!({
+            "summary": {
+                "groups": [
+                    {
+                        "displayName": "Claude and GPT models",
+                        "buckets": [
+                            {
+                                "window": "5h",
+                                "remainingFraction": 1.0,
+                                "resetTime": "2026-11-09T05:00:00Z"
+                            },
+                            {
+                                "window": "weekly",
+                                "remainingFraction": 0.5,
+                                "resetTime": "2026-11-12T00:00:00Z"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "quota": {
+                "buckets": [
+                    {
+                        "modelId": "gemini-2.5-pro",
+                        "remainingFraction": 0.7,
+                        "resetTime": "2026-11-09T02:00:00Z"
+                    },
+                    {
+                        "modelId": "chat_20706",
+                        "remainingFraction": 1.0
+                    }
+                ]
+            }
+        });
+        let parsed = parse("agy", &data).unwrap();
+        assert_eq!(parsed.windows.len(), 4);
+        assert_eq!(parsed.windows[0].label, "Claude and GPT models · 5-hour");
+        assert_eq!(parsed.windows[1].label, "Claude and GPT models · Weekly");
+        assert_eq!(parsed.windows[2].label, "Gemini · 5-hour");
+        assert_eq!(parsed.windows[2].used_percent, 30.0);
+        assert_eq!(parsed.windows[3].label, "Argon · Quota");
+        assert_eq!(parsed.windows[3].used_percent, 0.0);
     }
 }

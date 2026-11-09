@@ -695,7 +695,7 @@ fn loopback_url(raw: &str) -> Result<reqwest::Url, LoginError> {
         _ => {
             return Err(LoginError::bad_request(
                 "the pasted address must point at 127.0.0.1",
-            ))
+            ));
         }
     }
     if url.port().is_none() || url.username() != "" || url.password().is_some() {

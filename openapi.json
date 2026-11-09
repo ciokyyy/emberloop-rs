@@ -175,6 +175,40 @@
         }
       }
     },
+    "/api/projects/{id}/design": {
+      "get": {
+        "tags": [],
+        "operationId": "get_project_design",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Get project FigCraft design document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDesignDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found"
+          },
+          "500": {
+            "description": "Design load error"
+          }
+        }
+      }
+    },
     "/api/prompts": {
       "get": {
         "tags": [],
@@ -1410,6 +1444,29 @@
           }
         }
       },
+      "ProjectDesignDto": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "filePath",
+          "exists",
+          "joinLink"
+        ],
+        "properties": {
+          "exists": {
+            "type": "boolean"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "joinLink": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          }
+        }
+      },
       "ProjectDto": {
         "type": "object",
         "required": [
@@ -1654,6 +1711,13 @@
             "type": "boolean",
             "default": true
           },
+          "skills_review_interval": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Background skill review starts after this many tool-calling rounds since the last `skill_manage`; 0 turns it off.",
+            "default": 5,
+            "minimum": 0
+          },
           "tier2_trigger": {
             "type": "integer",
             "format": "int32",
@@ -1702,6 +1766,12 @@
           "text"
         ],
         "properties": {
+          "images": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PromptImageDto"
+            }
+          },
           "text": {
             "type": "string"
           }

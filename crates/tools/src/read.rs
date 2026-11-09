@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::tag::{content_hash, lines_of};
-use crate::{ToolError, ToolResult, Toolbox};
+use crate::{skills, skillstore, ToolError, ToolResult, Toolbox};
 
 #[derive(Deserialize)]
 struct ReadArgs {
@@ -47,11 +47,16 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     if let Some((handle, range)) = parse_ctx(&args.path) {
         return read_ctx(toolbox, handle, range, args.offset, args.limit);
     }
+    if let Some(target) = parse_skill_target(&args.path) {
+        return read_skill(toolbox, target, args.offset, args.limit);
+    }
     let path = toolbox_jail(toolbox).resolve(&args.path)?;
     let rendered = if path.is_dir() {
         render_dir(&path, args.offset, args.limit)?
     } else {
-        render_file(toolbox, &path, args.offset, args.limit)?
+        let rendered = render_file(toolbox, &path, args.offset, args.limit)?;
+        skillstore::log_view(toolbox, &args.path);
+        rendered
     };
     toolbox.maybe_spill(rendered, &format!("read {}", args.path))
 }
@@ -89,6 +94,117 @@ fn read_ctx(
         end,
         false,
     ))
+}
+#[derive(Debug, PartialEq, Eq)]
+enum SkillTarget<'a> {
+    Catalog,
+    Item {
+        name: &'a str,
+        subpath: Option<&'a str>,
+    },
+}
+
+fn parse_skill_target(raw: &str) -> Option<SkillTarget<'_>> {
+    let raw = raw.trim();
+    let rest = if let Some(rest) = raw.strip_prefix("el://skills") {
+        rest
+    } else if let Some(rest) = raw.strip_prefix("skills://") {
+        rest
+    } else {
+        let rest = raw.strip_prefix("skill:")?;
+        rest.strip_prefix("//").unwrap_or(rest)
+    };
+    let rest = rest.strip_prefix('/').unwrap_or(rest).trim_matches('/');
+    if rest.is_empty() {
+        return Some(SkillTarget::Catalog);
+    }
+    let (name, subpath) = match rest.split_once('/') {
+        Some((name, sub)) => {
+            let sub = sub.trim_matches('/');
+            let sub = if sub.is_empty() || sub == "SKILL.md" {
+                None
+            } else {
+                Some(sub)
+            };
+            (name, sub)
+        }
+        None => (rest, None),
+    };
+    Some(SkillTarget::Item { name, subpath })
+}
+
+fn safe_skill_subpath(dir: &Path, rel: &str) -> ToolResult<PathBuf> {
+    let mut target = dir.to_path_buf();
+    for comp in Path::new(rel).components() {
+        match comp {
+            std::path::Component::Normal(part) => {
+                target.push(part);
+                if target
+                    .symlink_metadata()
+                    .is_ok_and(|m| m.file_type().is_symlink())
+                {
+                    return Err(ToolError::msg(format!(
+                        "{} is a symlink; skill files must stay inside the skill",
+                        target.display()
+                    )));
+                }
+            }
+            _ => {
+                return Err(ToolError::msg(format!(
+                    "path {rel:?} must be relative, with no .. and no leading /"
+                )));
+            }
+        }
+    }
+    Ok(target)
+}
+
+fn read_skill(
+    toolbox: &Toolbox,
+    target: SkillTarget<'_>,
+    offset: usize,
+    limit: usize,
+) -> ToolResult<String> {
+    match target {
+        SkillTarget::Catalog => {
+            let skills = skills::discover(toolbox.global_skills(), toolbox.root());
+            if skills.is_empty() {
+                return toolbox.maybe_spill("No skills found.\n".to_string(), "read el://skills");
+            }
+            let mut out = String::from("Available skills:\n\n");
+            for skill in skills {
+                let scope = if skill.project { "project" } else { "global" };
+                out.push_str(&format!(
+                    "- {} [{}] [{}]: {}\n",
+                    skill.name, skill.origin, scope, skill.description
+                ));
+            }
+            toolbox.maybe_spill(out, "read el://skills")
+        }
+        SkillTarget::Item { name, subpath } => {
+            let skill = skills::locate(toolbox.global_skills(), toolbox.root(), name)
+                .ok_or_else(|| ToolError::msg(format!("skill {name:?} was not found")))?;
+            let skill_dir = skill.path.parent().ok_or_else(|| {
+                ToolError::msg(format!("invalid skill path {}", skill.path.display()))
+            })?;
+            let target_path = match subpath {
+                Some(sub) => safe_skill_subpath(skill_dir, sub)?,
+                None => skill.path.clone(),
+            };
+            let rendered = if target_path.is_dir() {
+                render_dir(&target_path, offset, limit)?
+            } else {
+                let rendered = render_file(toolbox, &target_path, offset, limit)?;
+                skillstore::log_view(toolbox, &target_path.display().to_string());
+                rendered
+            };
+            let label = match subpath {
+                Some(sub) => format!("read el://skills/{name}/{sub}"),
+                None => format!("read el://skills/{name}"),
+            };
+            toolbox.maybe_spill(rendered, &label)
+        }
+    }
 }
 
 fn render_file(toolbox: &Toolbox, path: &Path, offset: usize, limit: usize) -> ToolResult<String> {

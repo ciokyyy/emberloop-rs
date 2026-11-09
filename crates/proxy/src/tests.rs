@@ -18,6 +18,34 @@ use store::{DataRoot, Project, ProjectsStore, SessionMeta, SessionsStore};
 use tempfile::tempdir;
 use tower::ServiceExt;
 
+#[test]
+fn the_skill_catalog_is_read_once_so_a_later_skill_never_changes_the_prompt() {
+    let dir = tempdir().unwrap();
+    let pins = PinnedPrompts::pin(
+        &PromptStore::new(dir.path().join("prompts")),
+        &PromptVars::default(),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("skill-catalog.md"), "- first: one\n").unwrap();
+    let runtime = SessionRuntime::new(
+        pins,
+        dir.path().join("spill"),
+        dir.path().join("splices.json"),
+    )
+    .unwrap();
+    let before = crate::wire::prompt_text(&runtime.pins, false, &runtime.catalog);
+    std::fs::write(
+        dir.path().join("skill-catalog.md"),
+        "- first: one\n- second: two\n",
+    )
+    .unwrap();
+    assert!(before.contains("- first: one"), "{before}");
+    assert_eq!(
+        crate::wire::prompt_text(&runtime.pins, false, &runtime.catalog),
+        before
+    );
+}
+
 #[derive(Clone)]
 struct FakeUpstream {
     calls: Arc<AtomicUsize>,
@@ -824,6 +852,15 @@ async fn a_silent_upstream_round_times_out_with_an_error_event() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(String::from_utf8_lossy(&response).contains("timed out"));
+}
+
+#[test]
+fn error_event_marks_decode_interruptions_for_retry() {
+    // An upstream body decode or chunk decode failure produces "stream was interrupted"
+    // so harnesses with retry policies (e.g. pi-rs) retry the generation.
+    let sse = String::from_utf8(error_event(&ProxyError::Timeout).to_vec()).unwrap();
+    assert!(sse.contains("upstream round timed out"));
+    assert!(!sse.contains("stream was interrupted"));
 }
 
 /// `tool_conversation` plus a later user prompt: the latest user message is protected, so a fold
@@ -2632,6 +2669,26 @@ fn compress_args_accept_a_ranges_array_or_the_single_form() {
         parse_compress_calls(&json!({"start": 2, "end": 5, "summary": "s", "topic": "t"})).unwrap();
     assert_eq!(single.len(), 1);
     assert_eq!((single[0].start, single[0].end), (2, 5));
+    let short = parse_compress_calls(&json!({"start": 1, "end": 20, "summary": "tiny"}));
+    assert!(short.unwrap_err().contains("summary too short"));
+}
+#[test]
+fn a_small_early_fold_in_a_big_history_is_refused() {
+    let big = "x".repeat(400_000);
+    let contents = vec![
+        json!({"role": "user", "parts": [{"text": "a"}]}),
+        json!({"role": "model", "parts": [{"text": "b"}]}),
+        json!({"role": "user", "parts": [{"text": big}]}),
+    ];
+    let call = |start, end| CompressCall {
+        start,
+        end,
+        summary: String::new(),
+        topic: None,
+    };
+    let error = refuse_cache_costly_folds(&contents, &[call(0, 2)]).unwrap_err();
+    assert!(error.contains("cache restarts"), "{error}");
+    assert!(refuse_cache_costly_folds(&contents, &[call(0, 3)]).is_ok());
 }
 
 #[test]
@@ -2922,10 +2979,29 @@ fn the_compressible_range_is_not_cut_when_the_only_user_message_is_the_first_tur
     assert!(view.ranges.contains("start 1, end 3"), "{}", view.ranges);
 }
 
+#[test]
+fn a_fold_summary_turn_is_not_the_latest_user_message() {
+    // After the first fold of a single-prompt run the summary (a user-role turn) sits at index 1.
+    // It is the proxy's own text, so it must not end the compressible range at 1.
+    let summary = crate::marker::summary(1, 60, "b1", None, "what happened");
+    let turns = vec![
+        json!({"role": "user", "parts": [{"text": "start the task"}]}),
+        json!({"role": "user", "parts": [{"text": summary}]}),
+        json!({"role": "model", "parts": [{"text": "a".repeat(40_000)}]}),
+        json!({"role": "model", "parts": [{"text": "b".repeat(40_000)}]}),
+        json!({"role": "model", "parts": [{"text": "tail"}]}),
+    ];
+    assert_eq!(latest_user_turn(&turns), Some(0));
+    let view = compressible_view(&turns, 1);
+    assert_eq!(view.tokens, turns_tokens(&turns[1..4]));
+    assert!(view.ranges.contains("start 1, end 4"), "{}", view.ranges);
+}
+
 #[tokio::test]
 async fn a_nudge_is_silent_when_the_latest_user_message_blocks_the_only_mass() {
     let fixture = fixture().await;
     let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
     let settings = api::state::Settings {
         preserve_recent_messages: 2,
         ..Default::default()
@@ -3595,7 +3671,7 @@ async fn prefix_is_stable_after_a_compress_folds_the_pairs_anchor() {
             fixture.fake.script.lock().unwrap().extend([
                 json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
                     "functionCall": {"id": "call_c", "name": "compress",
-                        "args": {"start": 1, "end": 8, "summary": "folded the anchor"}},
+                        "args": {"start": 1, "end": 8, "summary": "folded the anchor ".repeat(20)}},
                     "thoughtSignature": "SIG-C"
                 }]}}]}}),
                 json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{ "text": "done" }]}}]}}),
@@ -3635,6 +3711,8 @@ async fn prefix_is_stable_after_a_compress_folds_the_pairs_anchor() {
 #[tokio::test]
 async fn prefix_is_stable_after_emergency_truncation_stops() {
     let fixture = fixture_with(echoed_usage_fake()).await;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
     // Four steps are already in the history (about 12000 tokens), so the first request is in
     // emergency at a 1 percent band: older results are truncated from the start and no request
     // sees the untruncated history.
@@ -3666,7 +3744,7 @@ async fn prefix_is_stable_after_emergency_truncation_stops() {
 }
 
 #[tokio::test]
-async fn prefix_breaks_at_a_reset_restart_the_conversation() {
+async fn prefix_breaks_at_a_reset_but_the_history_is_carried() {
     let fixture = fixture_with(echoed_usage_fake()).await;
     let requests = drive_growing(&fixture, 0, 6, |index, _| {
         (index == 3).then_some(Break::Reset)
@@ -3674,8 +3752,8 @@ async fn prefix_breaks_at_a_reset_restart_the_conversation() {
     .await;
     assert!(
         requests[3].0["contents"].as_array().unwrap().len()
-            < requests[2].0["contents"].as_array().unwrap().len(),
-        "the reset restarted the harness conversation"
+            >= requests[2].0["contents"].as_array().unwrap().len(),
+        "the reset kept the history for the new harness conversation"
     );
     assert_run_is_prefix_stable("reset", &requests);
 }
@@ -3771,6 +3849,9 @@ fn result_text(body: &Value, call_id: &str) -> Option<String> {
 #[tokio::test]
 async fn a_compress_during_an_emergency_restores_the_full_results() {
     let fixture = fixture_with(echoed_usage_fake()).await;
+    // A billed reading exists, so the phantom-pressure guard does not hold the emergency.
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
     {
         let mut settings = fixture.settings.try_write().unwrap();
         settings.emergency_threshold_percent = 1;
@@ -3782,7 +3863,7 @@ async fn a_compress_during_an_emergency_restores_the_full_results() {
     fixture.fake.script.lock().unwrap().extend([
         json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
             "functionCall": {"id": "call_c", "name": "compress",
-                "args": {"start": 1, "end": end, "summary": "old steps"}},
+                "args": {"start": 1, "end": end, "summary": "old steps ".repeat(40)}},
             "thoughtSignature": "SIG-C"
         }]}}]}}),
         json!({"response": {"candidates": [{"content": {"role": "model", "parts": [{
@@ -4092,4 +4173,326 @@ async fn an_all_protected_conversation_folds_nothing_on_the_claude_route() {
 #[tokio::test]
 async fn an_all_protected_conversation_folds_nothing_on_the_pi_anthropic_route() {
     an_all_protected_conversation_folds_nothing_and_stops(AnthropicRoute::Pi).await;
+}
+
+/// Records the review's tool calls; `bash` is refused the way the daemon's whitelist refuses it.
+#[derive(Debug, Default)]
+struct FakeReview {
+    calls: Mutex<Vec<(String, String, Value)>>,
+}
+
+#[async_trait::async_trait]
+impl crate::review::ReviewTools for FakeReview {
+    async fn call(&self, session_id: &str, name: &str, args: &Value) -> Result<String, String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((session_id.into(), name.into(), args.clone()));
+        if name == "bash" {
+            Err("denied".into())
+        } else {
+            Ok("saved".into())
+        }
+    }
+}
+
+fn review_text_stream(text: &str) -> String {
+    anthropic_stream(vec![
+        json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": text}}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
+        json!({"type": "message_stop"}),
+    ])
+}
+
+fn review_bash_stream() -> String {
+    anthropic_stream(vec![
+        json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "tool_use", "id": "toolu_h1", "name": "bash", "input": {}}}),
+        json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"command\":\"ls\"}"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
+        json!({"type": "message_stop"}),
+    ])
+}
+
+/// A request whose history ends in the result of a `bash` call, as the harness sends it.
+fn review_request(tools: Value) -> Value {
+    let mut request = anthropic_request();
+    request["tools"] = tools;
+    request
+}
+
+async fn wait_for_upstream(upstream: &AnthropicUpstream, count: usize) {
+    for _ in 0..200_000 {
+        if upstream.seen.lock().unwrap().len() >= count {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("the upstream got fewer than {count} requests");
+}
+
+#[tokio::test]
+async fn a_final_answer_after_the_interval_runs_a_background_review_on_the_same_prefix() {
+    let fork_call = json!({
+        "content": [{"type": "tool_use", "id": "toolu_r1", "name": "mcp__emberloop__skill_manage",
+            "input": {"ops": [{"op": "patch", "name": "deploy"}]}}, {"type": "tool_use", "id": "toolu_r2", "name": "bash",
+            "input": {"command": "rm -rf /"}}],
+        "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 0}
+    });
+    let fork_end = json!({"content": [{"type": "text", "text": "Nothing to save."}]});
+    let (fixture, upstream) = anthropic_fixture(vec![
+        ("text/event-stream", review_bash_stream()),
+        ("text/event-stream", review_text_stream("final answer")),
+        ("application/json", fork_call.to_string()),
+        ("application/json", fork_end.to_string()),
+    ])
+    .await;
+    let review = Arc::new(FakeReview::default());
+    let mut config = fixture.state.inner.config.clone();
+    config.review_tools = Some(review.clone());
+    let state = ProxyState::new(
+        config,
+        fixture.sessions.clone(),
+        ProjectsStore::load(fixture.data_root.projects_file())
+            .await
+            .unwrap(),
+        fixture.data_root.clone(),
+        fixture.prompts.clone(),
+        fixture.models.clone(),
+        fixture.events.clone(),
+        fixture.steers.clone(),
+        fixture.settings.clone(),
+    );
+    fixture.settings.write().await.skills_review_interval = 1;
+    let fixture = Fixture { state, ..fixture };
+    let mut events = fixture.events.subscribe();
+    let tools = json!([{"name": "mcp__emberloop__skill_manage", "input_schema": {}}]);
+
+    post_anthropic(&fixture, review_request(tools.clone())).await;
+    post_anthropic(&fixture, review_request(tools)).await;
+    wait_for_upstream(&upstream, 4).await;
+
+    let seen = upstream.seen.lock().unwrap().clone();
+    let (main, fork, fork_next) = (&seen[1], &seen[2], &seen[3]);
+    assert_eq!(fork["stream"], false, "{fork}");
+    let main_messages = main["messages"].as_array().unwrap();
+    let fork_messages = fork["messages"].as_array().unwrap();
+    assert_eq!(
+        &fork_messages[..main_messages.len()],
+        main_messages.as_slice()
+    );
+    assert_eq!(fork_messages.len(), main_messages.len() + 1);
+    assert_eq!(fork_messages.last().unwrap()["role"], "user");
+    assert_eq!(fork["tools"], main["tools"]);
+    assert_eq!(fork["system"], main["system"]);
+    // The fork's next request carries the tool results, the refused call included.
+    let results = fork_next["messages"].as_array().unwrap().last().unwrap()["content"].to_string();
+    assert!(
+        results.contains("saved") && results.contains("denied"),
+        "{results}"
+    );
+
+    let calls = review.calls.lock().unwrap().clone();
+    let names: Vec<&str> = calls.iter().map(|call| call.1.as_str()).collect();
+    assert_eq!(names, ["mcp__emberloop__skill_manage", "bash"]);
+    assert_eq!(calls[0].0, "ses_1");
+    // The feed reads a flat op list: `{op, name}` entries, not the call's `{ops}` wrapper.
+    let event = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .expect("a skill-review event")
+            .unwrap();
+        if event.kind == EventKind::Compression {
+            break event;
+        }
+    };
+    assert_eq!(
+        event.data["ops"],
+        json!([{"op": "patch", "name": "deploy"}])
+    );
+}
+
+#[tokio::test]
+async fn a_new_harness_conversation_carries_the_old_history_without_wire_leftovers() {
+    let (fixture, upstream) = anthropic_fixture(vec![
+        ("text/event-stream", review_text_stream("ok")),
+        ("text/event-stream", review_text_stream("ok")),
+    ])
+    .await;
+    post_anthropic(
+        &fixture,
+        json!({"model": "claude-sonnet", "stream": true, "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private", "signature": "sig"},
+                {"type": "text", "text": "hi"}]},
+            {"role": "user", "content": "latest"}]}),
+    )
+    .await;
+    fixture.state.reset_history("ses_1").await.unwrap();
+    post_anthropic(
+        &fixture,
+        json!({"model": "claude-sonnet", "stream": true,
+            "messages": [{"role": "user", "content": "fresh"}]}),
+    )
+    .await;
+    let seen = upstream.seen.lock().unwrap().clone();
+    let messages = seen[1]["messages"].to_string();
+    let at = |needle: &str| {
+        messages
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle}: {messages}"))
+    };
+    assert!(at("hello") < at("hi") && at("hi") < at("latest") && at("latest") < at("fresh"));
+    assert!(
+        !messages.contains("private") && !messages.contains("sig"),
+        "{messages}"
+    );
+    let roles: Vec<&str> = seen[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, ["user", "assistant", "user"], "same roles merge");
+}
+
+#[tokio::test]
+async fn a_request_without_the_skill_tool_never_starts_a_review() {
+    let (fixture, upstream) = anthropic_fixture(vec![
+        ("text/event-stream", review_bash_stream()),
+        ("text/event-stream", review_text_stream("final answer")),
+    ])
+    .await;
+    let review = Arc::new(FakeReview::default());
+    let mut config = fixture.state.inner.config.clone();
+    config.review_tools = Some(review.clone());
+    let state = ProxyState::new(
+        config,
+        fixture.sessions.clone(),
+        ProjectsStore::load(fixture.data_root.projects_file())
+            .await
+            .unwrap(),
+        fixture.data_root.clone(),
+        fixture.prompts.clone(),
+        fixture.models.clone(),
+        fixture.events.clone(),
+        fixture.steers.clone(),
+        fixture.settings.clone(),
+    );
+    fixture.settings.write().await.skills_review_interval = 1;
+    let fixture = Fixture { state, ..fixture };
+
+    post_anthropic(&fixture, review_request(json!([{"name": "bash"}]))).await;
+    post_anthropic(&fixture, review_request(json!([{"name": "bash"}]))).await;
+    for _ in 0..2000 {
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(upstream.seen.lock().unwrap().len(), 2);
+    assert!(review.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_background_review_does_not_see_the_nudge() {
+    let fork_end = json!({"content": [{"type": "text", "text": "Nothing to save."}]});
+    let (fixture, upstream) = anthropic_fixture(vec![
+        ("text/event-stream", review_bash_stream()),
+        ("text/event-stream", review_text_stream("final answer")),
+        ("application/json", fork_end.to_string()),
+    ])
+    .await;
+    let mut config = fixture.state.inner.config.clone();
+    config.review_tools = Some(Arc::new(FakeReview::default()));
+    let state = ProxyState::new(
+        config,
+        fixture.sessions.clone(),
+        ProjectsStore::load(fixture.data_root.projects_file())
+            .await
+            .unwrap(),
+        fixture.data_root.clone(),
+        fixture.prompts.clone(),
+        fixture.models.clone(),
+        fixture.events.clone(),
+        fixture.steers.clone(),
+        fixture.settings.clone(),
+    );
+    fixture.settings.write().await.skills_review_interval = 1;
+    let fixture = Fixture { state, ..fixture };
+    let tools = json!([{"name": "mcp__emberloop__skill_manage", "input_schema": {}}]);
+    let mut heavy = review_request(tools.clone());
+    // Results under the spill threshold, together over the nudge's minimum compressible range.
+    let mut messages = vec![json!({"role": "user", "content": "run it"})];
+    for index in 0..4 {
+        let id = format!("toolu_{index}");
+        messages.push(json!({"role": "assistant", "content": [
+            {"type": "tool_use", "id": id, "name": "bash", "input": {}}]}));
+        messages.push(json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": id, "content": "x".repeat(12_000)}]}));
+    }
+    messages.extend([
+        json!({"role": "assistant", "content": "ok"}),
+        json!({"role": "user", "content": "next"}),
+        json!({"role": "assistant", "content": "fine"}),
+        json!({"role": "user", "content": "continue"}),
+    ]);
+    heavy["messages"] = json!(messages);
+
+    post_anthropic(&fixture, review_request(tools)).await;
+    // The provider reported a big context, so the first-nudge gate opens on this request.
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    runtime.last_input_tokens.store(80_000, Ordering::Relaxed);
+    post_anthropic(&fixture, heavy).await;
+    wait_for_upstream(&upstream, 3).await;
+
+    let seen = upstream.seen.lock().unwrap().clone();
+    let (main, fork) = (&seen[1], &seen[2]);
+    assert!(
+        main["messages"].to_string().contains("efficiency nudge"),
+        "the main request must carry the nudge"
+    );
+    assert!(
+        !fork["messages"].to_string().contains("efficiency nudge"),
+        "the review fork must not carry it"
+    );
+}
+
+#[tokio::test]
+async fn a_google_stream_publishes_one_usage_event_not_its_cache_less_early_reading() {
+    let reading = |input: u64, cached: u64| {
+        let mut usage = json!({"promptTokenCount": input, "candidatesTokenCount": 5});
+        if cached > 0 {
+            usage["cachedContentTokenCount"] = json!(cached);
+        }
+        format!(
+            "data: {}\n\n",
+            json!({"response": {
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]}}],
+                "usageMetadata": usage
+            }})
+        )
+    };
+    let fixture = fixture_sse(vec![format!("{}{}", reading(100, 0), reading(120, 90))]).await;
+    let mut events = fixture.events.subscribe();
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mut cached = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if event.kind == EventKind::Usage {
+            cached.push(event.data["cachedTokens"].as_u64());
+        }
+    }
+    assert_eq!(cached, vec![Some(90)]);
 }

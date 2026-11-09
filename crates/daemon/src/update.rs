@@ -466,8 +466,9 @@ pub fn queue_local(
     Ok(version)
 }
 
-/// due is the queued request the daemon may apply now: none while a turn is running, so the
-/// restart never cuts a model off.
+/// due is the queued request the daemon may apply now: none while `turn_active`. The caller passes
+/// whether the requesting Session (or any Session, if none is named) has a turn running; other
+/// Sessions are resumed after the restart.
 pub fn due(data_root: &Path, turn_active: bool) -> Option<InstallRequest> {
     if turn_active {
         return None;
@@ -478,7 +479,11 @@ pub fn due(data_root: &Path, turn_active: bool) -> Option<InstallRequest> {
 /// apply_request installs the requested release, switches `current` to it and leaves the marker
 /// the next daemon start announces. The request is consumed either way, so a bad download is
 /// reported once instead of being retried at every turn end.
-pub async fn apply_request(root: &Path, data_root: &Path) -> anyhow::Result<Option<PendingUpdate>> {
+pub async fn apply_request(
+    root: &Path,
+    data_root: &Path,
+    also: Vec<String>,
+) -> anyhow::Result<Option<PendingUpdate>> {
     let Some(request) = read_request(data_root) else {
         return Ok(None);
     };
@@ -494,6 +499,7 @@ pub async fn apply_request(root: &Path, data_root: &Path) -> anyhow::Result<Opti
         from: VERSION.to_string(),
         to: request.to,
         session: request.session,
+        also,
     };
     write_pending(data_root, &pending)?;
     Ok(Some(pending))
@@ -516,6 +522,9 @@ pub struct PendingUpdate {
     pub to: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// Other Sessions that were mid-turn when the swap cut them off; the new daemon resumes them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<String>,
 }
 
 impl PendingUpdate {
@@ -694,6 +703,7 @@ mod tests {
             from: "0.0.3".into(),
             to: "0.0.4".into(),
             session: Some("ses_1".into()),
+            also: vec!["ses_2".into()],
         };
         write_pending(dir.path(), &pending).unwrap();
         assert_eq!(take_pending(dir.path()), Some(pending));
@@ -876,11 +886,12 @@ mod tests {
             },
         )
         .unwrap();
-        let applied = apply_request(root.path(), data.path())
+        let applied = apply_request(root.path(), data.path(), vec!["ses_2".into()])
             .await
             .unwrap()
             .unwrap();
         assert_eq!(applied.to, "0.0.8");
+        assert_eq!(applied.also, vec!["ses_2".to_string()]);
         assert_eq!(
             std::fs::read(current_binary(root.path())).unwrap(),
             b"local"
@@ -894,7 +905,7 @@ mod tests {
         let sum = format!("{:x}", Sha256::digest(b"nine"));
         let url = serve_bytes(b"nine").await;
         write_request(data.path(), &request_for(url, sum)).unwrap();
-        let applied = apply_request(root.path(), data.path())
+        let applied = apply_request(root.path(), data.path(), vec![])
             .await
             .unwrap()
             .unwrap();
@@ -914,7 +925,9 @@ mod tests {
         activate(root.path(), "0.0.3").unwrap();
         let url = serve_bytes(b"tampered").await;
         write_request(data.path(), &request_for(url, "00".repeat(32))).unwrap();
-        assert!(apply_request(root.path(), data.path()).await.is_err());
+        assert!(apply_request(root.path(), data.path(), vec![])
+            .await
+            .is_err());
         assert_eq!(current_version(root.path()).as_deref(), Some("0.0.3"));
         assert!(!release_binary(root.path(), "0.0.9").exists());
         assert!(take_pending(data.path()).is_none());
@@ -926,6 +939,7 @@ mod tests {
             from: "0.0.3".into(),
             to: "0.0.4".into(),
             session: None,
+            also: vec![],
         };
         let text = resume_prompt(&pending);
         assert!(text.contains("0.0.3") && text.contains("0.0.4"), "{text}");

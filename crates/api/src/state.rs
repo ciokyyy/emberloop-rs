@@ -42,6 +42,8 @@ pub struct Settings {
     pub tier2_trigger: u32,
     /// Reference `compress.tiers.tier3Trigger`.
     pub tier3_trigger: u32,
+    /// Background skill review starts after this many tool-calling rounds since the last `skill_manage`; 0 turns it off.
+    pub skills_review_interval: u32,
 }
 
 impl Default for Settings {
@@ -65,6 +67,7 @@ impl Default for Settings {
             inject_nudge: true,
             tier2_trigger: 1000,
             tier3_trigger: 2000,
+            skills_review_interval: 5,
         }
     }
 }
@@ -86,6 +89,9 @@ pub struct AppState {
     pub provider_login: Option<Arc<dyn ProviderLogin>>,
     /// The file Settings writes tool keys into; `None` disables that screen.
     pub tool_keys_file: Option<PathBuf>,
+    /// The global skills root the skill pages read; `None` lists no global skills.
+    pub global_skills: Option<PathBuf>,
+    pub designs: Arc<crate::design::Designs>,
 }
 
 impl AppState {
@@ -124,8 +130,20 @@ impl AppState {
             driver: Arc::new(NoopDriver),
             provider_login: None,
             tool_keys_file: None,
+            global_skills: None,
             groq: None,
+            designs: Arc::new(crate::design::Designs::default()),
         }
+    }
+
+    pub fn with_figcraft(mut self, config: PathBuf) -> Self {
+        self.designs = Arc::new(crate::design::Designs::new(config));
+        self
+    }
+
+    pub fn with_global_skills(mut self, root: impl Into<PathBuf>) -> Self {
+        self.global_skills = Some(root.into());
+        self
     }
 
     pub fn with_groq_keys(mut self, keys_file: impl Into<PathBuf>, url: impl Into<String>) -> Self {

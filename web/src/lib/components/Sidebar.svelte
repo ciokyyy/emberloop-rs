@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { Model, Project, Session, SessionStatus } from '$lib/api/types';
-  import { timeAgo } from '$lib/time';
   import { fade } from 'svelte/transition';
   import { flip, flipAnimation, flipReady, motionParams, rowEnter, slide } from '$lib/motion';
   import { marqueeShift } from '$lib/marquee';
@@ -22,6 +21,7 @@
     settingsActive = false,
     providersActive = false,
     usageActive = false,
+    skillsActive = false,
     onselect,
     ondraft = () => {},
     onselectproject,
@@ -31,7 +31,8 @@
     ondelete,
     onsettings,
     onproviders,
-    onusage
+    onusage,
+    onskills = () => {}
   }: {
     projects: Project[];
     /** The URL's Project: its Sessions are the list, and the select shows its name. */
@@ -44,6 +45,7 @@
     settingsActive?: boolean;
     providersActive?: boolean;
     usageActive?: boolean;
+    skillsActive?: boolean;
     onselect: (id: string) => void;
     ondraft?: () => void;
     onselectproject: (id: string) => void;
@@ -54,6 +56,7 @@
     onsettings: () => void;
     onproviders: () => void;
     onusage: () => void;
+    onskills?: () => void;
   } = $props();
 
   const statusWord: Record<SessionStatus, string> = {
@@ -71,10 +74,38 @@
     harness === 'claude' ? 'Claude' : harness === 'pi' ? 'pi-rs' : 'Antigravity';
   const harnessColor = (harness: string) =>
     harness === 'claude' ? '#d6a87b' : harness === 'pi' ? '#8b7cf6' : '#5b9ac6';
-  const listed = $derived(
-    (projectId ? sessions.filter((session) => session.projectId === projectId) : sessions)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-  );
+  type ProjectGroup = {
+    project: Project;
+    hasWorking: boolean;
+    sessions: Session[];
+  };
+
+  const projectGroups = $derived.by(() => {
+    const groups: ProjectGroup[] = [];
+    for (const project of projects) {
+      const projSessions = sessions
+        .filter((session) => session.projectId === project.id)
+        .sort((a, b) => {
+          const aWorking = statusOf(a.id) === 'working';
+          const bWorking = statusOf(b.id) === 'working';
+          if (aWorking !== bWorking) return aWorking ? -1 : 1;
+          return b.updatedAt - a.updatedAt;
+        });
+      if (projSessions.length > 0) {
+        groups.push({
+          project,
+          hasWorking: projSessions.some((session) => statusOf(session.id) === 'working'),
+          sessions: projSessions
+        });
+      }
+    }
+    return groups.sort((a, b) => {
+      if (a.hasWorking !== b.hasWorking) return a.hasWorking ? -1 : 1;
+      if (projectId && a.project.id === projectId) return -1;
+      if (projectId && b.project.id === projectId) return 1;
+      return a.project.name.localeCompare(b.project.name);
+    });
+  });
 
   function pick(value: string) {
     if (value === ADD) onnewproject();
@@ -199,68 +230,79 @@
         </button>
       </div>
     {/if}
-    {#each listed as session (session.id)}
-      {@const status = statusOf(session.id)}
-      {@const harness = harnessOf(session.model)}
-      <div
-        class={cn(
-          'row group flex items-center gap-1 px-1',
-          selectedId === session.id && 'sel',
-          holding === session.id && 'holding',
-          dragging?.id === session.id && 'lifted'
-        )}
-        use:flipReady
-        animate:flip={flipAnimation()}
-        in:slide={rowEnter}
-        out:fade={motionParams()}
-      >
-        {#if editing === session.id}
-          <span class="h-5 w-[3px] shrink-0 rounded-full" style:background={harnessColor(harness)}></span>
-          <input
-            class="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-[13px] outline-none"
-            aria-label="Session title"
-            bind:value={draft}
-            use:focusAll
-            onkeydown={(event) => {
-              if (event.key === 'Enter') commitRename(session);
-              else if (event.key === 'Escape') cancelRename();
-            }}
-            onblur={() => commitRename(session)}
-          />
-        {:else}
-          <button
-            class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
-            aria-current={selectedId === session.id ? 'true' : undefined}
-            onpointerdown={(event) => holdStart(event, session)}
-            onclick={(event) => {
-              onselect(session.id);
-              // A double-tap (or double-click) edits the title in place.
-              if (event.detail === 2) startRename(session);
-            }}
-            onkeydown={(event) => onRowKey(event, session)}
-          >
-            <span
-              class={cn('h-5 w-[3px] shrink-0 rounded-full', status === 'working' && 'pulse')}
-              style:background={harnessColor(harness)}
-              title={`${harnessName(harness)} · ${statusWord[status]}`}
-            ></span>
-            <span class="min-w-0 flex-1 overflow-hidden whitespace-nowrap">
-              <span class="inline-block text-[13px]" use:marquee>{session.title}</span>
-            </span>
-            <span class="text-[11px] text-fg-2">{timeAgo(session.updatedAt)}</span>
-          </button>
-        {/if}
+    {#each projectGroups as group (group.project.id)}
+      <div data-testid="project-header" class="px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-3">
+        {group.project.name}
       </div>
+      {#each group.sessions as session (session.id)}
+        {@const status = statusOf(session.id)}
+        {@const harness = harnessOf(session.model)}
+        <div
+          class={cn(
+            'row group flex items-center gap-1 px-1',
+            selectedId === session.id && 'sel',
+            holding === session.id && 'holding',
+            dragging?.id === session.id && 'lifted'
+          )}
+          use:flipReady
+          animate:flip={flipAnimation()}
+          in:slide={rowEnter}
+          out:fade={motionParams()}
+        >
+          {#if editing === session.id}
+            <span class="h-5 w-[3px] shrink-0 rounded-full" style:background={harnessColor(harness)}></span>
+            <input
+              class="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-[13px] outline-none"
+              aria-label="Session title"
+              bind:value={draft}
+              use:focusAll
+              onkeydown={(event) => {
+                if (event.key === 'Enter') commitRename(session);
+                else if (event.key === 'Escape') cancelRename();
+              }}
+              onblur={() => commitRename(session)}
+            />
+          {:else}
+            <button
+              class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+              aria-current={selectedId === session.id ? 'true' : undefined}
+              onpointerdown={(event) => holdStart(event, session)}
+              onclick={(event) => {
+                onselect(session.id);
+                // A double-tap (or double-click) edits the title in place.
+                if (event.detail === 2) startRename(session);
+              }}
+              onkeydown={(event) => onRowKey(event, session)}
+            >
+              <span
+                class={cn('h-5 w-[3px] shrink-0 rounded-full', status === 'working' && 'pulse')}
+                style:background={harnessColor(harness)}
+                title={`${harnessName(harness)} · ${statusWord[status]}`}
+              ></span>
+              <span class="min-w-0 flex-1 overflow-hidden whitespace-nowrap">
+                <span class="inline-block text-[13px]" use:marquee>{session.title}</span>
+              </span>
+              {#if status === 'working'}
+                <span class="running-dot h-2 w-2 rounded-full bg-[var(--status-working)] shrink-0" aria-label="Working"></span>
+              {/if}
+            </button>
+          {/if}
+        </div>
+      {/each}
     {/each}
     {#if projects.length === 0}
       <p class="px-3 py-2 text-[13px] text-fg-3">No Projects yet. Add one from the Project select.</p>
     {/if}
   </nav>
 
-  <div class="grid grid-cols-3 gap-1 border-t border-border p-2">
+  <div class="grid grid-cols-4 gap-1 border-t border-border p-2">
     <button class={cn('row flex flex-col items-center gap-1 px-1 py-2 text-[12px]', usageActive && 'sel')} aria-label="Usage" onclick={onusage}>
       <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></svg>
       Usage
+    </button>
+    <button class={cn('row flex flex-col items-center gap-1 px-1 py-2 text-[12px]', skillsActive && 'sel')} aria-label="Skills" onclick={onskills}>
+      <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Z" /><path d="M8 7h6" /><path d="M8 11h4" /></svg>
+      Skills
     </button>
     <button class={cn('row flex flex-col items-center gap-1 px-1 py-2 text-[12px]', providersActive && 'sel')} aria-label="Providers" onclick={onproviders}>
       <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z" /><path d="m2 22 3-3" /><path d="M7.5 13.5 10 11" /><path d="M10.5 16.5 13 14" /><path d="m18 3-4 4h6l-4 4" /></svg>

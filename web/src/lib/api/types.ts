@@ -1,9 +1,53 @@
 import type { components } from './schema';
 
+/** An agent-managed skill as the skill list shows it. */
+export interface SkillSummary {
+  name: string;
+  description: string;
+  /** Found under a project root rather than the global root. */
+  project: boolean;
+  path: string;
+}
+
+export interface SkillFile {
+  path: string;
+  /** `null` when the file is too large or not text. */
+  text: string | null;
+}
+
+export interface SkillDetail extends SkillSummary {
+  /** The full SKILL.md text, frontmatter included. */
+  text: string;
+  files: SkillFile[];
+}
+
+export interface SkillBackup {
+  /** Unix seconds when the change was made. */
+  at: number;
+  file: string;
+  /** The file text before that change. */
+  text: string;
+}
+
+export interface SkillHistory {
+  /** Newest first. */
+  backups: SkillBackup[];
+  /** `.usage.jsonl` lines for this skill. */
+  usage: { time: number; name: string; op: string; result: string }[];
+}
+
 export interface Project {
   id: string;
   name: string;
   root: string;
+}
+
+
+export interface ProjectDesign {
+  projectId: string;
+  filePath: string;
+  exists: boolean;
+  joinLink: string;
 }
 
 export interface Session {
@@ -48,6 +92,7 @@ export interface Settings {
   inject_nudge: boolean;
   tier2_trigger: number;
   tier3_trigger: number;
+  skills_review_interval: number;
 }
 
 export interface PromptInfo {

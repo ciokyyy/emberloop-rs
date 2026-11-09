@@ -2,7 +2,7 @@
   import { Combobox } from 'bits-ui';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
   import { get } from 'svelte/store';
-  import { brandSvg } from '$lib/brands';
+  import { modelIconId } from '$lib/brands';
   import type { Model } from '$lib/api/types';
   import { slideDown } from '$lib/motion';
   import Brand from './Brand.svelte';
@@ -46,8 +46,6 @@
     get(virtualizer).setOptions({ count: rows.length });
   });
 
-  // Harnesses without a provider logo (e.g. an unlisted provider) fall back to the harness logo.
-  const iconId = (model: Model) => (brandSvg(model.provider) ? model.provider : model.source);
   // Bits-ui moves the highlight over rows the window has not rendered; scroll the window to the row it lands on.
   function viewportAction(node: HTMLElement) {
     viewport = node;
@@ -93,7 +91,7 @@
                         {#if entry?.model}
                           <Combobox.Item value={entry.model.id} label={entry.model.label}
                             class="flex h-full cursor-pointer items-center gap-2 rounded-lg px-2 text-[13px] text-fg-1 outline-none data-highlighted:bg-surface-3 data-selected:bg-surface-3">
-                            <Brand id={iconId(entry.model)} size={16} />
+                            <Brand id={modelIconId(entry.model)} size={16} />
                             <span class="min-w-0 truncate">{entry.model.label} · {windowLabel(entry.model)}{entry.model.stale ? ' · stale' : ''}</span>
                           </Combobox.Item>
                         {:else if entry}

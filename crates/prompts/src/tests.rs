@@ -47,6 +47,8 @@ const OFFERED_TOOLS: &[&str] = &[
     "todo",
     "websearch",
     "ctx_search",
+    "skill_search",
+    "skill_manage",
     "execute",
 ];
 /// Tools the proxy injects into every request.

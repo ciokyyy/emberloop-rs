@@ -68,6 +68,22 @@ export interface paths {
         patch: operations["update_project"];
         trace?: never;
     };
+    "/api/projects/{id}/design": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_project_design"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/prompts": {
         parameters: {
             query?: never;
@@ -493,6 +509,12 @@ export interface components {
             /** Format: int64 */
             updated_at: number;
         };
+        ProjectDesignDto: {
+            exists: boolean;
+            filePath: string;
+            joinLink: string;
+            projectId: string;
+        };
         ProjectDto: {
             id: string;
             name: string;
@@ -588,6 +610,12 @@ export interface components {
             proxy_compression: boolean;
             /**
              * Format: int32
+             * @description Background skill review starts after this many tool-calling rounds since the last `skill_manage`; 0 turns it off.
+             * @default 5
+             */
+            skills_review_interval: number;
+            /**
+             * Format: int32
              * @description Reference `compress.tiers.tier2Trigger`.
              * @default 1000
              */
@@ -615,6 +643,7 @@ export interface components {
             todo_reminders_max: number;
         };
         SteerRequest: {
+            images?: components["schemas"]["PromptImageDto"][];
             text: string;
         };
         ToolKeyDto: {
@@ -846,6 +875,42 @@ export interface operations {
             };
             /** @description Project not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_project_design: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Get project FigCraft design document */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectDesignDto"];
+                };
+            };
+            /** @description Project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Design load error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

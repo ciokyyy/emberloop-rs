@@ -7,6 +7,7 @@
   import { collapse, fadeAt, flip, flipAnimation, flipReady, rise, slideDown } from '$lib/motion';
   import { cn } from '$lib/utils';
   import ContextRing from './ContextRing.svelte';
+  import Brand from './Brand.svelte';
   import Icon from './Icon.svelte';
 
   let {
@@ -16,7 +17,7 @@
     contextUsed = null,
     contextSize = 0,
     model = '',
-    thoughtLevel = '',
+    providerIcon = '',
     imageInput = true,
     ondetails,
     onsubmit,
@@ -28,7 +29,7 @@
     contextUsed?: number | null;
     contextSize?: number;
     model?: string;
-    thoughtLevel?: string;
+    providerIcon?: string;
     imageInput?: boolean;
     ondetails?: (tab: 'model' | 'context') => void;
     onsubmit: (text: string, files: File[]) => Promise<void> | void;
@@ -63,7 +64,7 @@
   let chunks: Blob[] = [];
 
   const action = $derived(resolveComposerAction(working));
-  const canSend = $derived(!disabled && !busy && (!!text.trim() || (!working && attachments.length > 0)));
+  const canSend = $derived(!disabled && !busy && (!!text.trim() || attachments.length > 0));
 
   $effect(() => {
     void text;
@@ -85,8 +86,8 @@
   });
 
   function addFiles(files: Iterable<File>) {
-    if (!imageInput || working) {
-      errors = [working ? 'Images cannot be sent while the Session is working. Send them after the turn finishes.' : 'This model does not support images. Choose an image-capable model.'];
+    if (!imageInput) {
+      errors = ['This model does not support images. Choose an image-capable model.'];
       return;
     }
     const result = pickImages(attachments, files);
@@ -110,8 +111,8 @@
 
   async function submit() {
     if (!canSend) return;
-    if (attachments.length && (working || !imageInput)) {
-      errors = [working ? 'Images cannot be sent while the Session is working. Send them after the turn finishes.' : 'This model does not support images. Remove attachments or choose another model.'];
+    if (attachments.length && !imageInput) {
+      errors = ['This model does not support images. Remove attachments or choose another model.'];
       return;
     }
     busy = true;
@@ -282,11 +283,11 @@
       ></textarea>
 
       <div class="flex min-w-0 flex-wrap items-center gap-1.5 px-1 pt-1">
+        <button type="button" class="inline-flex min-w-0 items-center gap-1.5 rounded-full px-1 py-1 text-[12px] text-fg-3 hover:bg-surface-3" aria-label="Choose model and reasoning effort" onclick={() => ondetails?.('model')}>
+          {#if providerIcon}<Brand id={providerIcon} size={16} />{:else}<span class="max-w-[160px] truncate">{model || 'Model'}</span>{/if}
+        </button>
         <button type="button" class="inline-flex min-w-0 items-center gap-1 rounded-full hover:bg-surface-3" aria-label="Open context details" onclick={() => ondetails?.('context')}>
           <ContextRing used={contextUsed} size={contextSize} />
-        </button>
-        <button type="button" class="max-w-[220px] truncate rounded-full px-2 py-1 text-[12px] text-fg-3 hover:bg-surface-3" aria-label="Choose model and reasoning effort" onclick={() => ondetails?.('model')}>
-          {model || 'Model'}{thoughtLevel ? ` · ${thoughtLevel}` : ''}
         </button>
         <span class="flex-1"></span>
         <input
@@ -308,16 +309,14 @@
           disabled={disabled || busy}
           onclick={() => void toggleVoice()}
         ><Icon name="mic" size={16} /></button>
-        {#if !working}
-          <button
-            type="button"
-            class="icon-btn"
-            aria-label="Attach image"
-            title={imageInput ? "Attach image · 10 MB each · 5 per prompt" : "This model does not support images"}
-            disabled={disabled || !imageInput}
-            onclick={() => picker?.click()}
-          ><Icon name="paperclip" size={16} /></button>
-        {/if}
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label="Attach image"
+          title={imageInput ? "Attach image · 10 MB each · 5 per prompt" : "This model does not support images"}
+          disabled={disabled || !imageInput}
+          onclick={() => picker?.click()}
+        ><Icon name="paperclip" size={16} /></button>
         {#if working}
           <button
             type="button"

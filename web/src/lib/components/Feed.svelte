@@ -56,7 +56,7 @@
   const pinned = $derived(feed.items.filter(pendingSteer));
   const segs = $derived(segments(feed.items.filter((item) => !pendingSteer(item))));
 
-  // Fold, Restore, Nudge and Context rows open in place, like the tool rows around them.
+  // Fold, Restore, Skill review and Context rows open in place, like the tool rows around them.
   let opened = $state<Set<string>>(new Set());
   const toggle = (id: string) =>
     (opened = new Set(opened.has(id) ? [...opened].filter((key) => key !== id) : [...opened, id]));
@@ -73,6 +73,8 @@
       return seg ? (seg.type === 'item' ? seg.item.id : seg.id) : index;
     }
   });
+  const rows = $derived($virtualizer.getVirtualItems());
+  const total = $derived($virtualizer.getTotalSize());
 
   // setOptions writes the virtualizer store, so it is read unsubscribed here: subscribing in the
   // same effect would re-run it on its own write.
@@ -140,16 +142,16 @@
     data-testid="feed-scroller"
     class="h-full overflow-y-auto px-4 py-4"
   >
-    <div class="relative mx-auto max-w-[760px]" style="height:{$virtualizer.getTotalSize()}px">
-      {#each $virtualizer.getVirtualItems() as row (row.key)}
+    <!-- Rows stay in normal flow between two spacers. Absolute placement overlapped rows whenever a
+         measured height lagged the DOM, so a window of real rows never stacks on another row. -->
+    <div
+      class="mx-auto max-w-[760px]"
+      style="padding-top:{rows[0]?.start ?? 0}px;padding-bottom:{total - (rows.at(-1)?.end ?? 0)}px"
+    >
+      {#each rows as row (row.key)}
         {@const seg = segs[row.index]}
         {#if seg}
-          <div
-            class="flex flex-col pb-0.5"
-            data-index={row.index}
-            use:measureRow
-            style="position:absolute;top:0;left:0;width:100%;transform:translateY({row.start}px)"
-          >
+          <div class="flex min-w-0 flex-col pb-0.5" data-index={row.index} use:measureRow>
             {@render segRow(seg)}
           </div>
         {/if}
@@ -181,7 +183,7 @@
 
 {#snippet segRow(seg: ReturnType<typeof segments>[number])}
   {#if seg.type === 'tools'}
-    <div in:rise|global={{ skip: !arrived.has(seg.id) }}>
+    <div class="min-w-0" in:rise|global={{ skip: !arrived.has(seg.id) }}>
       <ToolFeed runs={seg.runs} />
     </div>
   {:else}
@@ -208,14 +210,7 @@
         {#if item.live}<span class="pulse text-fg-3">▍</span>{/if}
       </div>
     {:else if item.kind === 'compression'}
-      {@const label =
-        item.action === 'compress'
-          ? 'Fold'
-          : item.action === 'decompress'
-            ? 'Restore'
-            : item.action === 'nudge'
-              ? 'Nudge'
-              : 'Context'}
+      {@const label = item.action === 'skill-review' ? 'Skill review' : 'Context'}
       <div class="my-0.5" in:rise|global={{ skip: !arrived.has(item.id) }}>
         <button
           type="button"
@@ -223,14 +218,10 @@
           aria-expanded={opened.has(item.id)}
           onclick={() => toggle(item.id)}
         >
-          {#if item.action === 'decompress'}
-            <span class="text-[var(--tool-read)] shrink-0"><Icon name="file-text" size={13} /></span>
-          {:else}
-            <span
-              class="h-[7px] w-[7px] rounded-full bg-[var(--tool-compress)] shrink-0"
-              aria-hidden="true"
-            ></span>
-          {/if}
+          <span
+            class="h-[7px] w-[7px] rounded-full bg-[var(--tool-compress)] shrink-0"
+            aria-hidden="true"
+          ></span>
           <span class="font-medium text-[var(--fg-3)] shrink-0">{label}</span>
           <span class="font-mono text-[12.5px] text-[var(--fg-2)] truncate flex-1">{item.text}</span>
           {#if item.meta}

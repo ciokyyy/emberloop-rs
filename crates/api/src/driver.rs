@@ -13,7 +13,12 @@ pub trait SessionDriver: Send + Sync {
         images: Vec<PromptImageDto>,
     ) -> Result<(), String>;
     async fn cancel(&self, session_id: &str) -> Result<(), String>;
-    async fn wake(&self, session_id: &str, text: &str) -> Result<(), String>;
+    async fn wake(
+        &self,
+        session_id: &str,
+        text: &str,
+        images: Vec<PromptImageDto>,
+    ) -> Result<(), String>;
     /// Start the Session without sending a prompt, so it can take a steer.
     async fn connect(&self, session_id: &str) -> Result<(), String>;
     /// Apply a model and effort on an idle conversation. Failures must reach the caller.
@@ -49,7 +54,12 @@ impl SessionDriver for NoopDriver {
         Err("no session driver attached".into())
     }
 
-    async fn wake(&self, _session_id: &str, _text: &str) -> Result<(), String> {
+    async fn wake(
+        &self,
+        _session_id: &str,
+        _text: &str,
+        _images: Vec<PromptImageDto>,
+    ) -> Result<(), String> {
         Err("no session driver attached".into())
     }
 

@@ -63,7 +63,7 @@ pub trait HarnessSession: Send + Sync {
     fn events(&self) -> EventStream;
     async fn cancel(&self) -> Result<(), HarnessError>;
     async fn resume(&self, token: &str) -> Result<(), HarnessError>;
-    async fn wake(&self, text: &str) -> Result<(), HarnessError>;
+    async fn wake(&self, text: &str, images: Vec<PromptImage>) -> Result<(), HarnessError>;
     /// The id to store so a later run can load this conversation again.
     fn resume_token(&self) -> Option<String> {
         None

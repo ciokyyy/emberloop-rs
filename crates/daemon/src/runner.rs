@@ -7,7 +7,9 @@ use api::driver::SessionDriver;
 use api::routes::PromptImageDto;
 use api::state::Settings;
 use emberloop_core::events::{EventBus, EventKind, SessionEvent};
-use emberloop_core::steer::{deliver_idle, SteerKind, SteerQueue, SteerQueues, SteerWaker};
+use emberloop_core::steer::{
+    deliver_idle, SteerImage, SteerKind, SteerQueue, SteerQueues, SteerWaker,
+};
 use futures::StreamExt;
 use harness::{Harness, HarnessEvent, HarnessSession, HarnessWiring, PromptImage};
 use prompts::PromptStore;
@@ -33,6 +35,8 @@ pub struct SessionRunner {
     reminders: Arc<Mutex<HashMap<String, Cycle>>>,
     titles: Option<crate::titles::Titles>,
     config_root: Option<std::path::PathBuf>,
+    global_skills: Option<std::path::PathBuf>,
+    prompts: Option<Arc<PromptStore>>,
 }
 
 fn log_failure(error: Option<impl std::fmt::Display>, what: &str) {
@@ -44,6 +48,8 @@ fn log_failure(error: Option<impl std::fmt::Display>, what: &str) {
 struct Handle {
     session: Arc<dyn HarnessSession>,
     queue: Arc<SteerQueue>,
+    /// Wakes the pump to drop the harness when the Session moves to another one.
+    stop: tokio::sync::Notify,
 }
 
 impl SessionRunner {
@@ -77,7 +83,19 @@ impl SessionRunner {
             reminders: Arc::new(Mutex::new(HashMap::new())),
             titles: None,
             config_root: None,
+            global_skills: None,
+            prompts: None,
         }
+    }
+
+    pub fn with_global_skills(mut self, root: std::path::PathBuf) -> Self {
+        self.global_skills = Some(root);
+        self
+    }
+
+    pub fn with_prompts(mut self, prompts: Arc<PromptStore>) -> Self {
+        self.prompts = Some(prompts);
+        self
     }
 
     pub(crate) fn with_config_root(mut self, root: std::path::PathBuf) -> Self {
@@ -120,6 +138,10 @@ impl SessionRunner {
                 "--spill".to_string(),
                 spill.display().to_string(),
             ]);
+            if let Some(global) = &self.global_skills {
+                argv.push("--global-skills".to_string());
+                argv.push(global.display().to_string());
+            }
             argv
         });
         HarnessWiring {
@@ -173,6 +195,27 @@ impl SessionRunner {
         log_failure(saved.err(), "could not store the resume token");
     }
 
+    /// Writes the Session's skill catalog once, before its harness starts. A skill made later
+    /// reaches the next Session, never this one.
+    fn freeze_catalog(&self, session_id: &str, project_root: &std::path::Path) {
+        let dir = self.data_root.session_dir(session_id);
+        let path = dir.join("skill-catalog.md");
+        if path.exists() {
+            return;
+        }
+        let intro = self
+            .prompts
+            .as_ref()
+            .and_then(|store| store.text(prompts::SKILL_CATALOG))
+            .unwrap_or_default();
+        let global = self.global_skills.as_deref();
+        let text = tools::skills::catalog(&intro, global, project_root);
+        let written = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, text));
+        if let Err(error) = written {
+            tracing::warn!(%error, %session_id, "could not write the skill catalog");
+        }
+    }
+
     async fn ensure(&self, session_id: &str) -> Result<Arc<Handle>, String> {
         if let Some(handle) = self.handles.lock().await.get(session_id).cloned() {
             return Ok(handle);
@@ -188,6 +231,7 @@ impl SessionRunner {
             .await
             .ok_or_else(|| "Project not found".to_string())?;
         let wiring = self.wiring(session_id, &project.root, &meta);
+        self.freeze_catalog(session_id, &project.root);
         let session = Arc::<dyn HarnessSession>::from(
             self.harness
                 .spawn(session_id, wiring)
@@ -199,6 +243,7 @@ impl SessionRunner {
         let handle = Arc::new(Handle {
             session,
             queue: self.steers.queue(session_id),
+            stop: tokio::sync::Notify::new(),
         });
 
         let mut handles = self.handles.lock().await;
@@ -312,10 +357,22 @@ impl SessionDriver for SessionRunner {
         }
     }
 
-    async fn wake(&self, session_id: &str, text: &str) -> Result<(), String> {
+    async fn wake(
+        &self,
+        session_id: &str,
+        text: &str,
+        images: Vec<PromptImageDto>,
+    ) -> Result<(), String> {
         let handle = self.ensure(session_id).await?;
         handle.queue.set_turn_active(true);
-        let woken = handle.session.wake(text).await;
+        let images = images
+            .into_iter()
+            .map(|image| PromptImage {
+                mime_type: image.mime_type,
+                data_base64: image.data_base64,
+            })
+            .collect();
+        let woken = handle.session.wake(text, images).await;
         if woken.is_err() {
             handle.queue.set_turn_active(false);
         } else {
@@ -348,13 +405,15 @@ impl SessionDriver for SessionRunner {
             .get(session_id)
             .await
             .ok_or("Session not found")?;
-        if crate::harness_kind(Some(&meta.model)) != crate::harness_kind(Some(model)) {
-            return Err(
-                "This model uses a different harness. Create a new Session to use it.".into(),
-            );
-        }
         if self.steers.queue(session_id).is_turn_active() {
             return Err("Wait for the current turn to finish".into());
+        }
+        if crate::harness_kind(Some(&meta.model)) != crate::harness_kind(Some(model)) {
+            // The next prompt spawns the new harness; the proxy carries the history over.
+            if let Some(handle) = self.handles.lock().await.remove(session_id) {
+                handle.stop.notify_one();
+            }
+            return Ok(());
         }
         if let Some(handle) = self.handle(session_id).await {
             if let Err(error) = handle.session.configure_model(model, effort).await {
@@ -400,7 +459,12 @@ async fn pump(
 ) {
     let mut stream = handle.session.events();
     let mut tracker = ToolTracker::default();
-    while let Some(event) = stream.next().await {
+    loop {
+        let next = tokio::select! {
+            next = stream.next() => next,
+            () = handle.stop.notified() => None,
+        };
+        let Some(event) = next else { break };
         let turn_over = matches!(event, HarnessEvent::TurnFinished { .. });
         if turn_over || matches!(event, HarnessEvent::Error(_)) {
             handle.queue.set_turn_active(false);
@@ -587,12 +651,19 @@ struct SessionWaker {
 
 #[async_trait::async_trait]
 impl SteerWaker for SessionWaker {
-    async fn wake(&self, text: &str) -> Result<(), String> {
+    async fn wake(&self, text: &str, images: &[SteerImage]) -> Result<(), String> {
         self.handle.queue.set_turn_active(true);
+        let images = images
+            .iter()
+            .map(|image| PromptImage {
+                mime_type: image.mime_type.clone(),
+                data_base64: image.data_base64.clone(),
+            })
+            .collect();
         let res = self
             .handle
             .session
-            .wake(text)
+            .wake(text, images)
             .await
             .map_err(|error| error.to_string());
         if res.is_err() {
@@ -714,16 +785,31 @@ async fn apply_pending_update(
     events: &EventBus,
     session_id: Option<&str>,
 ) {
-    let active = handles
+    let active: Vec<String> = handles
         .lock()
         .await
-        .values()
-        .any(|handle| handle.queue.is_turn_active());
-    if crate::update::due(data_root.root(), active).is_none() {
+        .iter()
+        .filter(|(_, handle)| handle.queue.is_turn_active())
+        .map(|(id, _)| id.clone())
+        .collect();
+    let Some(request) = crate::update::read_request(data_root.root()) else {
+        return;
+    };
+    // Only the requester has to be idle; other running Sessions are cut off by the restart and
+    // resumed by the new daemon. A request with no requester still waits for everyone.
+    let busy = match &request.session {
+        Some(requester) => active.contains(requester),
+        None => !active.is_empty(),
+    };
+    if crate::update::due(data_root.root(), busy).is_none() {
         return;
     }
+    let also: Vec<String> = active
+        .into_iter()
+        .filter(|id| Some(id) != request.session.as_ref())
+        .collect();
     let root = crate::update::install_root();
-    match crate::update::apply_request(&root, data_root.root()).await {
+    match crate::update::apply_request(&root, data_root.root(), also).await {
         Ok(Some(_)) => restart_into(&root),
         Ok(None) => {}
         Err(error) => {

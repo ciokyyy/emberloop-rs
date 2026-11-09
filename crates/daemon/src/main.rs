@@ -4,15 +4,22 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // stderr: the `mcp` subcommand speaks JSON-RPC on stdout.
     let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
         .with_env_filter(EnvFilter::from_default_env())
         .try_init();
     let cli = Cli::parse();
     let command = cli.command.clone();
     let config = Config::from_cli(&cli);
     match command {
-        Some(Command::Mcp { root, spill }) => {
-            emberloop_daemon::run_mcp(root, spill, config.config_root.clone()).await
+        Some(Command::Mcp {
+            root,
+            spill,
+            global_skills,
+        }) => {
+            emberloop_daemon::run_mcp(root, spill, config.config_root.clone(), global_skills).await
         }
         Some(Command::Update {
             manifest,

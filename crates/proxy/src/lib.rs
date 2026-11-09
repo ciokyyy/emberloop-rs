@@ -2,6 +2,7 @@
 //! Model proxy: routing by Session token, usage metering, Ponytail and policy
 //! injection, stored splices, and the native billion-context backend.
 
+mod carry;
 pub mod compressor;
 pub mod context;
 pub mod ctx;
@@ -10,6 +11,7 @@ mod marker;
 pub mod meter;
 pub mod nudge;
 mod protect;
+pub mod review;
 pub mod server;
 pub mod splice;
 pub mod token;

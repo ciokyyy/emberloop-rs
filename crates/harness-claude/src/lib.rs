@@ -719,8 +719,8 @@ impl HarnessSession for ClaudeSession {
     }
 
     /// The same stdin write as `send`: the CLI queues it into the running turn.
-    async fn wake(&self, text: &str) -> Result<(), HarnessError> {
-        self.write(user_message(text, &[])).await
+    async fn wake(&self, text: &str, images: Vec<PromptImage>) -> Result<(), HarnessError> {
+        self.write(user_message(text, &images)).await
     }
 
     fn resume_token(&self) -> Option<String> {

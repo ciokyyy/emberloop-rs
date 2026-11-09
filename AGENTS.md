@@ -51,7 +51,7 @@ Only after the User picks does implementation start, test-first. This does not a
 
 - A harness is one implementation of the harness trait. It never composes model-facing text; the proxy and the one policy text own it. A new capability is declared once and read by every harness, never added as a per-harness branch.
 - Plugins are compiled-in workspace crates on a Cordis-style Context tree. No dylib, WASM or runtime plugin loading until a second plugin author exists.
-- Tools reach a harness over MCP only. The proxy never executes a workspace tool; it runs only its own pure tools (compress, decompress, search_context).
+- Tools reach a harness over MCP only. The proxy never executes a workspace tool for a harness; it runs only its own pure tools (compress, decompress, search_context). One exception: the background skill review fork runs its tool calls through an executor the daemon injects (`ReviewTools`); the proxy crate has no tools dependency.
 - A third-party stdio MCP server listed in `<config root>/mcp.json` is reachable only from the `execute` tool, never declared to a harness, and the proxy only adds its skill text when the daemon reports the code graph usable.
 - Pre-0.1 releases are 0.0.x. Until v0.1, an update may drop Sessions and data-root layout without migration; that is not a defect and needs no compatibility code.
 - No auth, loopback bind only. A non-loopback bind needs an explicit flag.

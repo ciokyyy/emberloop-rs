@@ -81,6 +81,11 @@ export function brandTint(id: string): string | undefined {
   return id === 'pi' ? PI_TINT : undefined;
 }
 
+/** Logo id for a model: its provider logo, or the harness logo when the provider has none. */
+export function modelIconId(model: { provider: string; source: string }): string {
+  return brandSvg(model.provider) ? model.provider : model.source;
+}
+
 /** Whether the brand keeps its own colours (harness) instead of following the text colour. */
 export function isColoured(id: string): boolean {
   return COLOURED.has(id);

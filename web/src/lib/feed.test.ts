@@ -112,7 +112,7 @@ describe('feed reducer', () => {
     expect(state.items[2].text).toBe('daemon lost');
   });
 
-  it('renders folds and nudges as tool rows', () => {
+  it('renders folds as tool rows and hides nudges', () => {
     const state = run(
       ev('compression', {
         action: 'compress',
@@ -121,12 +121,8 @@ describe('feed reducer', () => {
       }),
       ev('compression', { action: 'nudge', kind: 'first', text: 'nudge: first', tokens: 210_000 }, 2)
     );
-    expect(state.items[0]).toMatchObject({
-      action: 'compress',
-      text: 'turns 1–39',
-      body: 'Folded 39 turns.'
-    });
-    expect(state.items[1]).toMatchObject({ action: 'nudge', text: 'first', meta: '210000 tokens' });
+    expect(state.items[0]).toMatchObject({ kind: 'tool', tool: 'compress', output: 'Folded 39 turns.' });
+    expect(state.items).toHaveLength(1);
   });
 
   it('merges repeated tool_started events and reads agy output objects', () => {

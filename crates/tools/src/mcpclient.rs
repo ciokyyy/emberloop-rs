@@ -16,8 +16,11 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::sync::RwLock;
 
+use crate::figcraft;
 use crate::graph;
 use crate::{ToolError, ToolResult};
+
+mod design;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -101,6 +104,12 @@ impl McpRegistry {
             if let Err(error) = registry.read(file) {
                 registry.error = Some(error);
             }
+        } else if let Ok(entry) = serde_json::from_value::<Entry>(figcraft::default_entry()) {
+            registry.servers.push(Server {
+                name: figcraft::SERVER.to_string(),
+                entry,
+                error: None,
+            });
         }
         registry
     }
@@ -174,16 +183,34 @@ impl McpRegistry {
         }
         let connected = self.ensure(server_name).await?;
         let args = self.arguments(server, tool, args).await?;
-        raw_call(server, &connected, tool, args).await
+        if server_name == figcraft::SERVER {
+            design::sync(server, &connected).await?;
+        }
+        let result = raw_call(server, &connected, tool, args).await;
+        if server_name == figcraft::SERVER {
+            design::sync(server, &connected).await?;
+        }
+        result
     }
 
     async fn arguments(&self, server: &Server, tool: &str, args: &Value) -> ToolResult<Value> {
-        let Some(project) = self.project(server, tool).await else {
-            return Ok(args.clone());
-        };
         let mut args = args.clone();
-        if let Value::Object(map) = &mut args {
-            map.entry("project").or_insert(Value::String(project));
+        if server.name == figcraft::SERVER {
+            let _ = figcraft::ensure_design_file(&self.root);
+            if let Value::Object(map) = &mut args {
+                if matches!(tool, "open_file" | "save_file") && !map.contains_key("path") {
+                    let path = figcraft::design_path(&self.root);
+                    map.insert(
+                        "path".to_string(),
+                        Value::String(path.to_string_lossy().into_owned()),
+                    );
+                }
+            }
+        }
+        if let Some(project) = self.project(server, tool).await {
+            if let Value::Object(map) = &mut args {
+                map.entry("project").or_insert(Value::String(project));
+            }
         }
         Ok(args)
     }
@@ -235,6 +262,9 @@ impl McpRegistry {
             return Err(ToolError::msg(error.clone()));
         }
         let ready = Arc::new(connect(&self.root, server).await?);
+        if name == figcraft::SERVER {
+            self.connect_design(server, &ready).await?;
+        }
         connected.insert(name.to_string(), Arc::clone(&ready));
         Ok(ready)
     }

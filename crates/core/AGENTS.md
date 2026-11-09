@@ -15,7 +15,7 @@ in-flight entries as pending. An entry is delivered when the upstream returns a
 2xx response head; a non-2xx or a connection failure before the head requeues it.
 `begin_request`/`end_request` hold a per-Session in-flight flag, so `wake_if_idle`
 fires a waker only when no request is in flight and the queue is not empty. One
-wake drains the whole queue as a single `"\n\n"`-joined prompt.
+wake drains the whole queue as a single `"\n\n"`-joined prompt, with every queued image attached in order.
 
 ## Child DOX Index
 

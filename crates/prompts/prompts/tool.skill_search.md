@@ -1,0 +1,1 @@
+Search skills by words. Ranks each skill's name, description, headings and opening text with BM25 over every global and project skill. Each hit gives the name, origin, description and the absolute SKILL.md path; read that path to load the skill. Use it when the catalog lists no skill that fits. `query` is one or more words; `limit` caps the hits (default 5, max 20).

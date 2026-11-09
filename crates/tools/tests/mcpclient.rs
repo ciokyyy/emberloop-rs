@@ -55,6 +55,20 @@ fn fake_tools(tools: &[(&str, &str)]) -> String {
 }
 
 #[tokio::test]
+async fn figcraft_refuses_a_detached_document_without_a_live_server() {
+    let fixture = setup();
+    let toolbox = toolbox_with(&fixture, fake("figcraft", json!({})));
+    let error = toolbox
+        .call("figcraft.inspect_document", &json!({}))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("FigCraft live server"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn a_server_starts_in_the_project_root() {
     let fixture = setup();
     let toolbox = toolbox_with(
@@ -256,6 +270,31 @@ async fn execute_sees_mcp_tools_and_can_call_them() {
     );
     assert!(out.contains("graph.search_graph"), "search finds it: {out}");
     assert!(!out.contains("detect_changes"), "excluded: {out}");
+}
+
+#[tokio::test]
+async fn execute_does_not_wait_for_a_slow_server_to_start() {
+    let fixture = setup();
+    let toolbox = toolbox_with(
+        &fixture,
+        fake("slow", json!({"env": {"FAKE_MCP_DELAY_MS": "2500"}})),
+    );
+
+    let started = std::time::Instant::now();
+    let out = toolbox
+        .call("execute", &json!({"code": "print(1 + 1)"}))
+        .await
+        .expect("execute");
+    assert!(out.contains('2'), "script ran: {out}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(2400),
+        "execute waited {:?} for the server",
+        started.elapsed()
+    );
+    toolbox
+        .call("slow.echo", &json!({}))
+        .await
+        .expect("the server keeps starting in the background");
 }
 
 #[tokio::test]

@@ -1,4 +1,5 @@
 import { readBreakdown } from './contextBreakdown';
+import { skillDiffText } from './skilldiff';
 import type { ContextBreakdown, SessionEvent, SessionStatus, SteerRoute } from './api/types';
 
 export type ToolStatus = 'running' | 'completed' | 'failed';
@@ -366,6 +367,8 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
 
     case 'compression': {
       const action = text(data.action);
+      // Nudges are model-facing pressure hints; the UI shows only folds and restores.
+      if (action === 'nudge') return state;
       const args = displayOf(data.args);
       const ranges = Array.isArray(args?.ranges) ? (args.ranges as Record<string, unknown>[]) : [];
       const first = ranges[0];
@@ -378,18 +381,20 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
               : text(data.text)
           : action === 'decompress'
             ? text(args?.blockId)
-            : action === 'nudge'
-              ? text(data.kind) || text(data.text).replace(/^nudge:\s*/, '')
-              : text(data.text);
-      const meta = action === 'nudge' && number(data.tokens) ? `${number(data.tokens)} tokens` : '';
-      const body = text(data.result) || (args ? JSON.stringify(args, null, 2) : text(data.text));
-      return {
-        ...state,
-        items: [
-          ...state.items,
-          { id: nextId('compression'), kind: 'compression', action, text: target, meta, body }
-        ]
-      };
+            : text(data.text);
+      const body = action === 'skill-review' ? skillDiffText(data.ops) : text(data.result) || (args ? JSON.stringify(args, null, 2) : text(data.text));
+      // Folds and restores join the tool block like the ACP rows, so they share one look.
+      if (action === 'compress' || action === 'decompress') {
+        const input = JSON.stringify(action === 'compress' ? { range: target } : { blockId: target });
+        return {
+          ...state,
+          items: [
+            ...state.items,
+            { id: nextId('compression'), kind: 'tool', tool: action, input, output: body, status: 'completed', finished: true }
+          ]
+        };
+      }
+      return { ...state, items: [...state.items, { id: nextId('compression'), kind: 'compression', action, text: target, body }] };
     }
 
     case 'usage':

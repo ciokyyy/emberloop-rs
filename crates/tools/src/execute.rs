@@ -287,8 +287,8 @@ pub async fn run(toolbox: Arc<Toolbox>, args: &Value) -> ToolResult<String> {
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
     let tmp_dir = create_bridge_dir()?;
-    // An MCP failure costs the MCP tools only: the builtin ones stay.
-    let mcp = toolbox.mcp_tools().await.unwrap_or_default();
+    // An MCP failure or a slow start costs the MCP stubs only: the builtin ones stay.
+    let mcp = toolbox.mcp_tools_soon().await;
     let result = run_in_bridge(
         Arc::clone(&toolbox),
         &tmp_dir,

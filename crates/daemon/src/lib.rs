@@ -28,9 +28,11 @@ use store::{DataRoot, ProjectsStore, SessionsStore};
 use tools::{McpServer, ToolConfig, Toolbox};
 
 pub mod claude_login;
-mod codegraph;
+pub mod codegraph;
 pub mod codex;
+pub mod figcraft;
 pub mod login;
+mod review;
 pub mod runner;
 mod titles;
 pub mod todo_reminder;
@@ -187,6 +189,8 @@ pub struct Config {
     pub host: String,
     pub data_root: PathBuf,
     pub config_root: PathBuf,
+    /// Global skills root (`~/.agents/skills`); every Session's tools may read it.
+    pub global_skills: PathBuf,
     pub upstream: Option<String>,
     pub allow_remote: bool,
 }
@@ -198,6 +202,7 @@ impl Default for Config {
             host: "127.0.0.1".to_string(),
             data_root: default_data_root(),
             config_root: default_config_root(),
+            global_skills: default_global_skills(),
             upstream: None,
             allow_remote: false,
         }
@@ -244,6 +249,10 @@ pub fn default_config_root() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".config"))
         .join("emberloop-rs")
+}
+
+pub fn default_global_skills() -> PathBuf {
+    home().join(".agents/skills")
 }
 
 fn home() -> PathBuf {
@@ -304,6 +313,9 @@ pub enum Command {
         root: PathBuf,
         #[arg(long)]
         spill: PathBuf,
+        /// Global skills root, readable beyond the project root; omit for none.
+        #[arg(long)]
+        global_skills: Option<PathBuf>,
     },
     /// Install the newest release under `releases/` and switch `current` to it.
     Update {
@@ -342,8 +354,8 @@ pub struct Daemon {
     pub proxy_state: ProxyState,
     harness: Arc<dyn harness::Harness>,
     _watcher: PromptWatcher,
-    /// The Session to prompt once the listener is up after an update.
-    resume: Option<(Arc<runner::SessionRunner>, String, String)>,
+    /// The Sessions to prompt once the listener is up after an update.
+    resume: Vec<(Arc<runner::SessionRunner>, String, String)>,
 }
 
 impl Daemon {
@@ -406,13 +418,22 @@ impl Daemon {
         )
         .with_models(models)
         .with_tool_keys_file(config.config_root.join("tool-keys.json"))
+        .with_figcraft(config.config_root.join("mcp.json"))
+        .with_global_skills(config.global_skills.clone())
         .with_groq_keys(keys_file.clone(), api::transcribe::GROQ_URL);
         app_state.models.spawn_refresher();
 
         let updated = announce_update(&app_state, &events, &data_root).await;
         let codebase_memory = codegraph::ensure(&config.config_root);
-        let mut proxy_config =
-            ProxyConfig::new(random_secret()).with_codebase_memory(codebase_memory);
+        let _ = figcraft::ensure(&config.config_root);
+        let mut proxy_config = ProxyConfig::new(random_secret())
+            .with_codebase_memory(codebase_memory)
+            .with_review_tools(Arc::new(review::ReviewExecutor {
+                sessions: sessions.clone(),
+                projects: projects.clone(),
+                data_root: data_root.clone(),
+                global_skills: config.global_skills.clone(),
+            }));
         if let Some(upstream) = &config.upstream {
             proxy_config = proxy_config.with_upstream(upstream.clone());
         }
@@ -468,16 +489,26 @@ impl Daemon {
                 keys_file,
                 pi_auth,
             ))
-            .with_config_root(config.config_root.clone()),
+            .with_config_root(config.config_root.clone())
+            .with_global_skills(config.global_skills.clone())
+            .with_prompts(Arc::clone(&prompts)),
         );
         runner.watch_updates();
-        let resume = updated.and_then(|pending| {
-            let session = pending.session.clone()?;
-            Some((
-                Arc::clone(&runner),
-                session,
-                update::resume_prompt(&pending),
-            ))
+        let resume = updated.map_or_else(Vec::new, |pending| {
+            let mut resume = Vec::new();
+            if let Some(session) = pending.session.clone() {
+                resume.push((
+                    Arc::clone(&runner),
+                    session,
+                    update::resume_prompt(&pending),
+                ));
+            }
+            // A Session the swap cut off mid-turn gets a bare `continue`, no update notice, so
+            // its history gains only one short turn after the cached prefix.
+            for session in &pending.also {
+                resume.push((Arc::clone(&runner), session.clone(), "continue".to_string()));
+            }
+            resume
         });
         app_state = app_state.with_driver(runner).with_provider_login(login);
         api::persist::spawn_persister(app_state.clone());
@@ -522,6 +553,10 @@ impl Daemon {
 
     pub fn router(&self) -> Router {
         api::build_router(self.app_state.clone())
+            .nest_service(
+                "/figcraft",
+                tower_http::services::ServeDir::new("/usr/local/share/figcraft"),
+            )
             .merge(proxy::router(self.proxy_state.clone()))
             .fallback(static_asset)
     }
@@ -535,6 +570,7 @@ impl Daemon {
         };
         let toolbox = Toolbox::new(ToolConfig {
             mcp_file: Some(self.config.config_root.join("mcp.json")),
+            global_skills: Some(self.config.global_skills.clone()),
             ..ToolConfig::new(project.root, self.data_root.session_spill_dir(session_id))
         })?;
         toolbox.flush_notices().await?;
@@ -573,6 +609,8 @@ impl Daemon {
                 project.root.display().to_string(),
                 "--spill".to_string(),
                 spill.display().to_string(),
+                "--global-skills".to_string(),
+                self.config.global_skills.display().to_string(),
             ]
         });
         Ok(Some(HarnessWiring {
@@ -588,13 +626,20 @@ impl Daemon {
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
+        let _figcraft = match figcraft::start(&self.config.config_root).await {
+            Ok(child) => Some(child),
+            Err(error) => {
+                tracing::warn!(%error, "FigCraft unavailable");
+                None
+            }
+        };
         let app = self.router();
         let listener = listen(&self.config).await?;
         warn_if_remote(&self.config);
-        if let Some((runner, session, prompt)) = self.resume.clone() {
+        for (runner, session, prompt) in self.resume.clone() {
             tokio::spawn(async move {
                 use api::driver::SessionDriver;
-                if let Err(error) = runner.wake(&session, &prompt).await {
+                if let Err(error) = runner.wake(&session, &prompt, Vec::new()).await {
                     tracing::warn!(%error, %session, "could not re-prompt the Session after the update");
                 }
             });
@@ -667,22 +712,36 @@ pub fn tool_descriptions(prompts: &PromptStore) -> HashMap<String, String> {
         .collect()
 }
 
-pub async fn run_mcp(root: PathBuf, spill: PathBuf, config_root: PathBuf) -> anyhow::Result<()> {
+pub async fn run_mcp(
+    root: PathBuf,
+    spill: PathBuf,
+    config_root: PathBuf,
+    global_skills: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let descriptions = tool_descriptions(&PromptStore::new(config_root.join("prompts")));
-    // The Session's HOME is a harness pi-home, so the runtime env file and the tool keys hang off
-    // the config root instead.
-    let config = ToolConfig {
-        env_file: Some(config_root.join("env")),
-        tool_keys_file: Some(config_root.join("tool-keys.json")),
-        mcp_file: Some(config_root.join("mcp.json")),
-        ..ToolConfig::new(root, spill)
-    };
-    let toolbox = Toolbox::new(config)?;
+    let toolbox = Toolbox::new(mcp_tool_config(root, spill, &config_root, global_skills))?;
     toolbox.flush_notices().await?;
     Arc::new(McpServer::new(Arc::new(toolbox)).with_descriptions(descriptions))
         .serve_stdio()
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+/// The tool config of an MCP process. The Session's HOME is a harness pi-home, so the runtime env
+/// file and the tool keys hang off the config root instead.
+pub fn mcp_tool_config(
+    root: PathBuf,
+    spill: PathBuf,
+    config_root: &std::path::Path,
+    global_skills: Option<PathBuf>,
+) -> ToolConfig {
+    ToolConfig {
+        env_file: Some(config_root.join("env")),
+        tool_keys_file: Some(config_root.join("tool-keys.json")),
+        mcp_file: Some(config_root.join("mcp.json")),
+        global_skills,
+        ..ToolConfig::new(root, spill)
+    }
 }
 
 async fn shutdown_signal() {

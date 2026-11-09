@@ -208,7 +208,7 @@
 
 <!-- Failed row with tint -->
 {#snippet ranFailed(item: any, idx: number)}
-  <div class="failed-card rounded-lg bg-[var(--tool-failed-tint)] p-2 my-1 border border-transparent hover:border-[var(--status-failed)]/20" data-testid="failed-row">
+  <div class="failed-card min-w-0 max-w-full rounded-lg bg-[var(--tool-failed-tint)] p-2 my-1 border border-transparent hover:border-[var(--status-failed)]/20" data-testid="failed-row">
     <button
       type="button"
       class="flex w-full items-center gap-2 text-left select-none focus-visible:outline-none min-h-[44px] sm:min-h-[28px]"
@@ -222,7 +222,7 @@
     </button>
 
     {#if item.errorTail}
-      <div class="error-tail mt-1.5 ml-4 font-mono text-[11.5px] text-[var(--fg-3)] whitespace-pre-wrap select-text">
+      <div class="error-tail mt-1.5 ml-4 min-w-0 font-mono text-[11.5px] text-[var(--fg-3)] whitespace-pre-wrap [overflow-wrap:anywhere] select-text">
         {item.errorTail}
       </div>
     {/if}

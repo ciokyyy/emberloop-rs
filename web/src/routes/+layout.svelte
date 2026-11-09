@@ -1,6 +1,6 @@
 <script lang="ts">
   import '../app.css';
-  import { goto } from '$app/navigation';
+  import { beforeNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
   import { api, eventsUrl } from '$lib/api';
@@ -22,13 +22,19 @@
   import PlanCard from '$lib/components/PlanCard.svelte';
   import Providers from '$lib/components/Providers.svelte';
   import Usage from '$lib/components/Usage.svelte';
+  import Skills from '$lib/components/Skills.svelte';
   import Settings from '$lib/components/Settings.svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import WorkingIndicator from '$lib/components/WorkingIndicator.svelte';
+  import ProjectDrawer from '$lib/components/ProjectDrawer.svelte';
+  import FigcraftView from '$lib/components/FigcraftView.svelte';
+  import Button from '$lib/components/ui/button.svelte';
+  import { PanelsTopLeft } from '@lucide/svelte';
   import { applyEvent, applySnapshot, emptyFeedState, type FeedState } from '$lib/feed';
   import { chosenWindow } from '$lib/contextMeter';
   import { toPromptImage } from '$lib/images';
-  import { cachePath, newPath, newSessionProjects, sessionPath, viewOf, viewPath, type Page, type View } from '$lib/route';
+  import { modelIconId } from '$lib/brands';
+  import { cachePath, designPath, newPath, newSessionProjects, sessionPath, viewOf, viewPath, type Page, type View } from '$lib/route';
 
   let { children } = $props();
   let projects = $state<Project[]>([]);
@@ -54,7 +60,8 @@
     inject_tool: true,
     inject_nudge: true,
     tier2_trigger: 1000,
-    tier3_trigger: 2000
+    tier3_trigger: 2000,
+    skills_review_interval: 5
   });
   // The window of events in hand: the tail on open, one page older per click. `feed` is folded from
   // it, so a page prepended at the front rebuilds through the same reducer as the live tail.
@@ -73,6 +80,7 @@
   let draftModel = $state('');
   let draftProject: string | null = null;
   let drawer = $state(false);
+  let projectDrawerOpen = $state(false);
   let settingsSaving = $state(false);
 
   let source: EventSource | null = null;
@@ -90,8 +98,17 @@
   // The URL's Project scopes the sidebar: one Project and its Sessions.
   const scope = $derived(page.params.project ?? null);
   const listed = $derived(newSessionProjects(scope, projects));
+
+  // Upstream owns its WASM runner; a full navigation releases its GPU and input handlers.
+  beforeNavigate((navigation) => {
+    if (view === 'design' && navigation.to && !navigation.willUnload && navigation.to.url.pathname !== page.url.pathname) {
+      navigation.cancel();
+      window.location.assign(navigation.to.url.href);
+    }
+  });
   const projectOf = $derived(projects.find((project) => project.id === current?.projectId) ?? null);
   const scopeProject = $derived(projects.find((project) => project.id === scope) ?? null);
+  const activeProject = $derived(scopeProject ?? projectOf ?? projects[0] ?? null);
   const draftOf = $derived(models.find((model) => model.id === draftModel) ?? null);
   const working = $derived(feed.status === 'working');
   // activeTool names the call the trailing run of the feed is making right now.
@@ -348,8 +365,7 @@
   async function sendPrompt(text: string, files: File[]) {
     if (!selected) throw new Error('Select a Session first.');
     if (working) {
-      if (files.length) throw new Error('Images cannot be sent while the Session is working.');
-      await api.steer(selected, text);
+      await api.steer(selected, text, await Promise.all(files.map(toPromptImage)));
       return;
     }
     const images = await Promise.all(files.map(toPromptImage));
@@ -413,6 +429,7 @@
       settingsActive={view === 'settings'}
       providersActive={view === 'providers'}
       usageActive={view === 'usage'}
+      skillsActive={view === 'skills'}
       onselect={select}
       onselectproject={selectProject}
       onnew={startSession}
@@ -425,6 +442,7 @@
       onsettings={() => openView('settings')}
       onproviders={() => openView('providers')}
       onusage={() => openView('usage')}
+      onskills={() => openView('skills')}
     />
   </aside>
 
@@ -439,16 +457,33 @@
               ? 'Settings'
             : view === 'providers'
               ? 'Providers'
+              : view === 'skills'
+                ? 'Skills'
               : view === 'usage'
                 ? 'Usage'
+              : view === 'design'
+                ? 'Design Canvas · FigCraft'
                 : (current?.title ?? 'Emberloop')}
         </h1>
         <div class="truncate text-[12px] text-fg-3">
           {view === 'new'
             ? scopeProject ? `${scopeProject.name} · ${scopeProject.root}` : ''
-            : view === 'session' && projectOf ? `${projectOf.name} · ${projectOf.root}` : ''}
+            : view === 'design' && activeProject
+              ? `${activeProject.name} · ${activeProject.root}`
+              : view === 'session' && projectOf ? `${projectOf.name} · ${projectOf.root}` : ''}
         </div>
       </div>
+
+      {#if activeProject}
+        <Button
+          class="rounded-md text-fg-2"
+          aria-label="Project tools"
+          title="Project tools"
+          onclick={() => (projectDrawerOpen = true)}
+        >
+          <PanelsTopLeft class="size-4" />
+        </Button>
+      {/if}
 
     </header>
 
@@ -472,8 +507,17 @@
       />
     {:else if view === 'providers'}
       <Providers onmodels={(list) => (models = list)} />
+    {:else if view === 'skills'}
+      <Skills />
     {:else if view === 'usage'}
       <Usage />
+    {:else if view === 'design' && activeProject}
+      <FigcraftView
+        project={activeProject}
+        {sessions}
+        currentSessionId={selected}
+        onbacktofeed={(sid) => window.location.assign(sessionPath(activeProject.id, sid))}
+      />
     {:else if loading}
       <div class="grid flex-1 place-items-center text-[13px] text-fg-3">Loading…</div>
     {:else if view === 'cache' && current}
@@ -503,8 +547,8 @@
           contextUsed={feed.usage?.used ?? null}
           {contextSize}
           model={currentModel?.label ?? current.model}
+          providerIcon={currentModel ? modelIconId(currentModel) : ''}
           imageInput={currentModel?.image_input ?? false}
-          thoughtLevel={current.thoughtLevel ?? ''}
           ondetails={(tab) => { detailsTab = tab; detailsOpen = true; }}
           onsubmit={sendPrompt}
           oncancel={cancel}
@@ -535,3 +579,14 @@
   defaultModel={settings.default_model}
   oncreate={createSession}
 />
+
+{#if activeProject}
+  <ProjectDrawer
+    project={activeProject}
+    open={projectDrawerOpen}
+    onclose={() => (projectDrawerOpen = false)}
+    onopendesign={() => {
+      window.location.assign(designPath(activeProject.id));
+    }}
+  />
+{/if}

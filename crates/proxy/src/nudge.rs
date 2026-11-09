@@ -26,6 +26,9 @@ pub const MIN_COMPRESS_RANGE: u64 = 5_000;
 /// `nudgeGrowthTokens`).
 pub const NUDGE_GROWTH_TOKENS: u64 = 50_000;
 
+/// Rounds in a row a band nudge waits on an estimate reading (reference `maxEstimateHoldRounds`).
+pub const MAX_ESTIMATE_HOLD_ROUNDS: u64 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NudgeConfig {
     pub max_context_limit_pct: u64,
@@ -34,6 +37,8 @@ pub struct NudgeConfig {
     pub min_pressure_benefit_tokens: u64,
     pub tier2_trigger: u64,
     pub tier3_trigger: u64,
+    /// The token count is a local estimate, not a billed reading.
+    pub estimate: bool,
 }
 
 impl Default for NudgeConfig {
@@ -44,6 +49,7 @@ impl Default for NudgeConfig {
             min_pressure_benefit_tokens: 0,
             tier2_trigger: 1_000,
             tier3_trigger: 2_000,
+            estimate: false,
         }
     }
 }
@@ -92,6 +98,8 @@ pub struct NudgeState {
     tier2_fired: bool,
     #[serde(default)]
     tier3_fired: bool,
+    #[serde(default)]
+    estimate_streak: u64,
 }
 
 impl NudgeState {
@@ -122,6 +130,20 @@ impl NudgeState {
         let floor = pressure_floor(window, config.min_pressure_benefit_tokens);
         // Usage over a band wins over the gentle first nudge, so a Session already at
         // 97 percent after a compress gets the emergency, not the first.
+        // Phantom-pressure guard (reference a7cbfd12f, #5865): an estimate-grade reading runs
+        // ~3x the billed size, so a band hit on it waits for a billed reading, at most
+        // `MAX_ESTIMATE_HOLD_ROUNDS` in a row.
+        if config.estimate {
+            if (emergency || over_limit)
+                && compressible >= floor
+                && self.estimate_streak < MAX_ESTIMATE_HOLD_ROUNDS
+            {
+                self.estimate_streak += 1;
+                return None;
+            }
+        } else {
+            self.estimate_streak = 0;
+        }
         let kind = if emergency && compressible >= floor {
             NudgeKind::Emergency
         } else if over_limit && compressible >= floor {
@@ -203,4 +225,31 @@ pub fn save(path: &Path, state: &NudgeState) -> std::io::Result<()> {
     let text = serde_json::to_string(state).map_err(std::io::Error::other)?;
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn estimate_reading_holds_band_nudge_then_fires() {
+        let config = NudgeConfig {
+            estimate: true,
+            ..NudgeConfig::default()
+        };
+        let mut state = NudgeState::default();
+        for _ in 0..MAX_ESTIMATE_HOLD_ROUNDS {
+            assert!(state
+                .observe_with(160_000, 200_000, 100_000, 0, &config)
+                .is_none());
+        }
+        let nudge = state
+            .observe_with(160_000, 200_000, 100_000, 0, &config)
+            .unwrap();
+        assert_eq!(nudge.kind, NudgeKind::Pressure);
+        let billed = NudgeConfig::default();
+        assert!(NudgeState::default()
+            .observe_with(160_000, 200_000, 100_000, 0, &billed)
+            .is_some());
+    }
 }

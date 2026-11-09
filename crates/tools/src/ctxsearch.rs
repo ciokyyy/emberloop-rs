@@ -6,7 +6,7 @@ use std::fs;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{ToolError, ToolResult, Toolbox};
+use crate::{bm25, ToolError, ToolResult, Toolbox};
 
 const MAX_BYTES: usize = 4 << 10;
 const CHUNK_LINES: usize = 20;
@@ -93,23 +93,32 @@ fn blobs(toolbox: &Toolbox, only: Option<&str>) -> Vec<(String, String)> {
     blobs
 }
 
-// shortcut: no Porter stemming or persistent index; use FTS5 when per-call spill scans become too slow.
-fn tokens(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(str::to_lowercase)
-        .collect()
-}
-
-/// BM25 over spill chunks, with OR semantics for query terms, as in Go's FTS5 search.
+/// BM25 over spill chunks: each chunk is one document, scored by `bm25::scores`.
 fn search(blobs: &[(String, String)], query: &str, limit: usize) -> Vec<Hit> {
-    let mut terms = tokens(query);
-    terms.sort();
-    terms.dedup();
+    let terms = bm25::query_terms(query);
     if terms.is_empty() {
         return Vec::new();
     }
-    let mut chunks = Vec::new();
+    let (hits, docs) = chunks(blobs, &terms);
+    let scores = bm25::scores(&docs, &terms);
+    let mut hits: Vec<Hit> = hits
+        .into_iter()
+        .zip(scores)
+        .filter_map(|(mut hit, score)| {
+            hit.score = score;
+            (score > 0.0).then_some(hit)
+        })
+        .collect();
+    hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+    hits.truncate(limit);
+    hits
+}
+
+/// Every chunk of every blob as a snippet hit plus its tokens. A chunk's snippet centres on the
+/// line with the most query terms.
+fn chunks(blobs: &[(String, String)], terms: &[String]) -> (Vec<Hit>, Vec<Vec<String>>) {
+    let mut hits = Vec::new();
+    let mut docs = Vec::new();
     for (handle, text) in blobs {
         let lines: Vec<&str> = text.lines().collect();
         for (chunk, group) in lines.chunks(CHUNK_LINES).enumerate() {
@@ -118,7 +127,7 @@ fn search(blobs: &[(String, String)], query: &str, limit: usize) -> Vec<Hit> {
                 .iter()
                 .enumerate()
                 .max_by_key(|(i, line)| {
-                    let words = tokens(line);
+                    let words = bm25::tokens(line);
                     (
                         terms.iter().filter(|term| words.contains(term)).count(),
                         usize::MAX - i,
@@ -128,54 +137,17 @@ fn search(blobs: &[(String, String)], query: &str, limit: usize) -> Vec<Hit> {
                 + base;
             let start = best.saturating_sub(CONTEXT_LINES);
             let end = (best + CONTEXT_LINES + 1).min(lines.len());
-            chunks.push((
-                Hit {
-                    handle: handle.clone(),
-                    start: start + 1,
-                    end,
-                    score: 0.0,
-                    snippet: lines[start..end].join(" ⏎ "),
-                },
-                tokens(&group.join("\n")),
-            ));
+            hits.push(Hit {
+                handle: handle.clone(),
+                start: start + 1,
+                end,
+                score: 0.0,
+                snippet: lines[start..end].join(" ⏎ "),
+            });
+            docs.push(bm25::tokens(&group.join("\n")));
         }
     }
-    let count = chunks.len() as f64;
-    if count == 0.0 {
-        return Vec::new();
-    }
-    let average =
-        (chunks.iter().map(|(_, words)| words.len()).sum::<usize>() as f64 / count).max(1.0);
-    let weights: Vec<f64> = terms
-        .iter()
-        .map(|term| {
-            let frequency = chunks
-                .iter()
-                .filter(|(_, words)| words.contains(term))
-                .count() as f64;
-            ((count - frequency + 0.5) / (frequency + 0.5))
-                .ln()
-                .max(1e-6)
-        })
-        .collect();
-    let mut hits: Vec<Hit> = chunks
-        .into_iter()
-        .filter_map(|(mut hit, words)| {
-            let normalization = 1.2 * (0.25 + 0.75 * words.len() as f64 / average);
-            hit.score = terms
-                .iter()
-                .zip(&weights)
-                .map(|(term, weight)| {
-                    let frequency = words.iter().filter(|word| *word == term).count() as f64;
-                    weight * frequency * 2.2 / (frequency + normalization)
-                })
-                .sum();
-            (hit.score > 0.0).then_some(hit)
-        })
-        .collect();
-    hits.sort_by(|a, b| b.score.total_cmp(&a.score));
-    hits.truncate(limit);
-    hits
+    (hits, docs)
 }
 
 #[cfg(test)]
