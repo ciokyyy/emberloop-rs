@@ -1,3 +1,11 @@
 [profile.default]
 slow-timeout = { period = "4s", terminate-after = 1 }
 fail-fast = false
+
+# These tests spawn the pi binary and one of them sets a process environment variable, which is
+# racy against a concurrently running test in the same binary. One at a time, on a machine that is
+# doing nothing else: under load the spawn alone outran the 4s slow-timeout above.
+[[profile.default.overrides]]
+filter = "binary(pi)"
+threads-required = "num-cpus"
+slow-timeout = { period = "20s", terminate-after = 1 }
