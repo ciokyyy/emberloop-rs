@@ -32,6 +32,9 @@ pub struct UsageRecord {
     pub output_tokens: u64,
     /// `cachedTokens` as a percentage of the prompt (`cached + creation + fresh`); null when the prompt is empty.
     pub hit_percent: Option<f64>,
+    /// A `compress` landed after the previous request and before this one, so the conversation
+    /// head changed and the provider's cached prompt restarted: the low hit is this request's cause.
+    pub fold: bool,
 }
 
 /// The record a usage event stands for, or None for any other kind of event.
@@ -57,7 +60,20 @@ pub fn record_from(event: &SessionEvent) -> Option<UsageRecord> {
         cache_creation_tokens,
         output_tokens: count("outputTokens"),
         hit_percent,
+        fold: false,
     })
+}
+
+/// Marks each record where a fold landed after the previous request, so the page can say why the
+/// cache restarted. `folds` are the `compress` event sequence numbers.
+fn mark_folds(records: &mut [UsageRecord], folds: &[u64]) {
+    let mut previous = 0;
+    for record in records.iter_mut() {
+        record.fold = folds
+            .iter()
+            .any(|seq| *seq > previous && *seq <= record.seq);
+        previous = record.seq;
+    }
 }
 
 #[utoipa::path(
@@ -81,5 +97,15 @@ pub async fn session_usage_handler(
     let Ok(events) = log.kind_tail(&EventKind::Usage, limit).await else {
         return Json(Vec::new());
     };
-    Json(events.iter().filter_map(record_from).collect())
+    let mut records: Vec<UsageRecord> = events.iter().filter_map(record_from).collect();
+    let folds: Vec<u64> = log
+        .kind_tail(&EventKind::Compression, MAX_LIMIT)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|event| event.data.get("action").and_then(Value::as_str) == Some("compress"))
+        .map(|event| event.seq)
+        .collect();
+    mark_folds(&mut records, &folds);
+    Json(records)
 }

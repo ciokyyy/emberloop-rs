@@ -388,6 +388,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{id}/subagents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["action"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{id}/usage": {
         parameters: {
             query?: never;
@@ -548,12 +564,20 @@ export interface components {
             name: string;
             signedIn: boolean;
         };
+        ReviewerSettings: {
+            /** @default gemini-3.8-flash */
+            model: string;
+            /** @default null */
+            reasoning_effort: string | null;
+        };
         SessionDto: {
             /** Format: int64 */
             createdAt: number;
             id: string;
             model: string;
+            parentId?: string | null;
             projectId: string;
+            reviewerRole?: string | null;
             thoughtLevel?: string | null;
             title: string;
             /** Format: int64 */
@@ -615,6 +639,20 @@ export interface components {
              */
             skills_review_interval: number;
             /**
+             * @default {
+             *       "model": "gemini-3.8-flash",
+             *       "reasoning_effort": null
+             *     }
+             */
+            spec_reviewer: components["schemas"]["ReviewerSettings"];
+            /**
+             * @default {
+             *       "model": "gemini-3.8-flash",
+             *       "reasoning_effort": null
+             *     }
+             */
+            standards_reviewer: components["schemas"]["ReviewerSettings"];
+            /**
              * Format: int32
              * @description Reference `compress.tiers.tier2Trigger`.
              * @default 1000
@@ -645,6 +683,35 @@ export interface components {
         SteerRequest: {
             images?: components["schemas"]["PromptImageDto"][];
             text: string;
+        };
+        SubagentRequest: {
+            /** @enum {string} */
+            action: "spawn";
+            role: string;
+            starting_point: string;
+            text?: string;
+            ticket_path: string;
+        } | {
+            /** @enum {string} */
+            action: "steer";
+            id: string;
+            starting_point: string;
+            text: string;
+            ticket_path: string;
+        } | {
+            /** @enum {string} */
+            action: "stop";
+            id: string;
+        } | {
+            /** @enum {string} */
+            action: "result";
+            id: string;
+        } | {
+            /** @enum {string} */
+            action: "submit";
+            report?: string;
+            status: string;
+            summary?: string;
         };
         ToolKeyDto: {
             /** @description Settings key name: `brave`, `exa` or `jina`. */
@@ -687,6 +754,11 @@ export interface components {
             cacheCreationTokens: number;
             /** Format: int64 */
             cachedTokens: number;
+            /**
+             * @description A `compress` landed after the previous request and before this one, so the conversation
+             *     head changed and the provider's cached prompt restarted: the low hit is this request's cause.
+             */
+            fold: boolean;
             /** Format: int64 */
             freshInputTokens: number;
             /**
@@ -1744,6 +1816,46 @@ export interface operations {
         responses: {
             /** @description Steer queued */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    action: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubagentRequest"];
+            };
+        };
+        responses: {
+            /** @description Reviewer action accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

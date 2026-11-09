@@ -1075,6 +1075,52 @@
         }
       }
     },
+    "/api/sessions/{id}/subagents": {
+      "post": {
+        "tags": [
+          "crate::subagents"
+        ],
+        "operationId": "action",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubagentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Reviewer action accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "404": {
+            "description": "Session not found"
+          }
+        }
+      }
+    },
     "/api/sessions/{id}/usage": {
       "get": {
         "tags": [
@@ -1598,6 +1644,22 @@
           }
         }
       },
+      "ReviewerSettings": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "default": "gemini-3.8-flash"
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      },
       "SessionDto": {
         "type": "object",
         "required": [
@@ -1620,8 +1682,20 @@
           "model": {
             "type": "string"
           },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "projectId": {
             "type": "string"
+          },
+          "reviewerRole": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "thoughtLevel": {
             "type": [
@@ -1718,6 +1792,20 @@
             "default": 5,
             "minimum": 0
           },
+          "spec_reviewer": {
+            "$ref": "#/components/schemas/ReviewerSettings",
+            "default": {
+              "model": "gemini-3.8-flash",
+              "reasoning_effort": null
+            }
+          },
+          "standards_reviewer": {
+            "$ref": "#/components/schemas/ReviewerSettings",
+            "default": {
+              "model": "gemini-3.8-flash",
+              "reasoning_effort": null
+            }
+          },
           "tier2_trigger": {
             "type": "integer",
             "format": "int32",
@@ -1776,6 +1864,129 @@
             "type": "string"
           }
         }
+      },
+      "SubagentRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "role",
+              "ticket_path",
+              "starting_point",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "spawn"
+                ]
+              },
+              "role": {
+                "type": "string"
+              },
+              "starting_point": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "ticket_path": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "ticket_path",
+              "starting_point",
+              "text",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "steer"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "starting_point": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "ticket_path": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "stop"
+                ]
+              },
+              "id": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "result"
+                ]
+              },
+              "id": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "status",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "submit"
+                ]
+              },
+              "report": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            }
+          }
+        ]
       },
       "ToolKeyDto": {
         "type": "object",
@@ -1886,7 +2097,8 @@
           "freshInputTokens",
           "cachedTokens",
           "cacheCreationTokens",
-          "outputTokens"
+          "outputTokens",
+          "fold"
         ],
         "properties": {
           "at": {
@@ -1904,6 +2116,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "fold": {
+            "type": "boolean",
+            "description": "A `compress` landed after the previous request and before this one, so the conversation\nhead changed and the provider's cached prompt restarted: the low hit is this request's cause."
           },
           "freshInputTokens": {
             "type": "integer",

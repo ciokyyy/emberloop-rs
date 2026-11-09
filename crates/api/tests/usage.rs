@@ -128,3 +128,43 @@ async fn limit_keeps_the_newest_requests_in_order() {
         .collect();
     assert_eq!(inputs, vec![200, 300]);
 }
+
+// A fold between two requests restarts the provider cache, so the page can put the dip on the
+// fold instead of the provider.
+#[tokio::test]
+async fn a_request_after_a_fold_is_marked_and_the_requests_before_it_are_not() {
+    let dir = tempdir().unwrap();
+    let state = state(&dir).await;
+    let usage = serde_json::json!({"inputTokens": 90000, "cachedTokens": 80000});
+    record(&state, EventKind::Usage, usage.clone()).await;
+    record(
+        &state,
+        EventKind::Compression,
+        serde_json::json!({"action": "nudge", "kind": "first"}),
+    )
+    .await;
+    record(&state, EventKind::Usage, usage.clone()).await;
+    record(
+        &state,
+        EventKind::Compression,
+        serde_json::json!({"action": "compress", "ranges": []}),
+    )
+    .await;
+    record(&state, EventKind::Usage, usage).await;
+    record(
+        &state,
+        EventKind::Compression,
+        serde_json::json!({"action": "compress", "ranges": []}),
+    )
+    .await;
+
+    let (_, body) = get_usage(&state, "").await;
+    let folds: Vec<_> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["fold"].as_bool().unwrap())
+        .collect();
+    // A nudge alone does not restart the cache; the extra fold after the last request marks none.
+    assert_eq!(folds, vec![false, false, true]);
+}

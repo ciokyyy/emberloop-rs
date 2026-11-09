@@ -4,11 +4,12 @@ import { api } from '$lib/api';
 import type { UsageRecord } from '$lib/api/types';
 import CacheView from './CacheView.svelte';
 
-const row = (seq: number, cached: number, creation: number, fresh: number): UsageRecord => {
+const row = (seq: number, cached: number, creation: number, fresh: number, fold = false): UsageRecord => {
   const prompt = cached + creation + fresh;
   return {
     seq, at: seq * 1000, inputTokens: prompt, freshInputTokens: fresh, cachedTokens: cached,
-    cacheCreationTokens: creation, outputTokens: 20, hitPercent: prompt ? (cached / prompt) * 100 : null
+    cacheCreationTokens: creation, outputTokens: 20, hitPercent: prompt ? (cached / prompt) * 100 : null,
+    fold
   };
 };
 
@@ -50,6 +51,16 @@ describe('cache page', () => {
     const table = await screen.findByRole('table');
     expect(within(table).getByRole('cell', { name: '–' })).toBeTruthy();
     expect(within(table).queryByRole('cell', { name: '0%' })).toBeNull();
+  });
+
+  it('marks the request a fold restarted the cache before', async () => {
+    vi.spyOn(api, 'sessionUsage').mockResolvedValue([row(1, 900, 0, 100), row(2, 0, 0, 73422, true)]);
+    render(CacheView, { sessionId: 's1' });
+    const table = await screen.findByRole('table');
+    const badges = within(table).getAllByTestId('fold-badge');
+    expect(badges).toHaveLength(1);
+    expect(badges[0].closest('td')?.textContent).toContain('#2');
+    expect(screen.getByText(/rewrote the head of the conversation/i)).toBeTruthy();
   });
 
   it('words the cold-start note about the oldest request shown, since a long history is cut', async () => {

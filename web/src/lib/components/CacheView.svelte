@@ -104,7 +104,16 @@
         <Table.Body>
           {#each recent as row (row.seq)}
             <Table.Row>
-              <Table.Cell>#{row.seq}</Table.Cell>
+              <Table.Cell>
+                #{row.seq}
+                {#if row.fold}
+                  <span
+                    class="ml-2 rounded border border-border px-1 text-[10px] text-fg-3"
+                    data-testid="fold-badge"
+                    title="A compression rewrote the head of the conversation before this request, so the provider cache restarted."
+                  >fold</span>
+                {/if}
+              </Table.Cell>
               <Table.Cell class="text-right tabular-nums">{count(row.cachedTokens)}</Table.Cell>
               <Table.Cell class="text-right tabular-nums">{count(row.cacheCreationTokens)}</Table.Cell>
               <Table.Cell class="text-right tabular-nums">{count(row.freshInputTokens)}</Table.Cell>
@@ -113,7 +122,7 @@
           {/each}
         </Table.Body>
       </Table.Root>
-      <p class="text-[11px] text-fg-3">Tokens. Written: the provider wrote this part of the prompt to its cache. Fresh: the rest of the prompt, neither read nor written.</p>
+      <p class="text-[11px] text-fg-3">Tokens. Written: the provider wrote this part of the prompt to its cache. Fresh: the rest of the prompt, neither read nor written. fold: a compression rewrote the head of the conversation before this request, so the provider cache restarted from the first turn and this request paid full price.</p>
     </section>
   </div>
 {/if}

@@ -10,7 +10,8 @@ const row = (seq: number, cached: number, creation: number, fresh: number, hitPe
   cachedTokens: cached,
   cacheCreationTokens: creation,
   outputTokens: 10,
-  hitPercent
+  hitPercent,
+  fold: false
 });
 
 // Oldest first, as the endpoint returns them: a cold first request, then warm ones.
