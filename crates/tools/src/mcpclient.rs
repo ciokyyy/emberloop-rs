@@ -184,7 +184,7 @@ impl McpRegistry {
         let connected = self.ensure(server_name).await?;
         let args = self.arguments(server, tool, args).await?;
         if server_name == figcraft::SERVER {
-            design::sync(server, &connected).await?;
+            self.resync(server, &connected).await?;
         }
         let result = raw_call(server, &connected, tool, args).await;
         if server_name == figcraft::SERVER {

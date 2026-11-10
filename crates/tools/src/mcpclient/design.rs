@@ -138,6 +138,20 @@ async fn command(
     serde_json::from_str(&output).map_err(Into::into)
 }
 
+impl McpRegistry {
+    /// A live session that dropped (the server restarted, the link was lost) never comes back by
+    /// itself, so every later call fails. Join the stored link again once, then sync.
+    pub(super) async fn resync(&self, server: &Server, ready: &Connected) -> ToolResult<()> {
+        match sync(server, ready).await {
+            Err(e) if e.to_string().starts_with("FigCraft live session failed") => {
+                self.connect_design(server, ready).await?;
+                sync(server, ready).await
+            }
+            other => other,
+        }
+    }
+}
+
 // Inspect and pointer tools do not pump upstream collaboration themselves.
 pub(super) async fn sync(server: &Server, ready: &Connected) -> ToolResult<()> {
     wait_live(server, ready).await.map(|_| ())

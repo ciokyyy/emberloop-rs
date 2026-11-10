@@ -209,6 +209,15 @@ impl ClaudeHarness {
         // The owned config dir is the login; nothing of the User's home is read.
         env.push(("HOME".into(), config_dir.display().to_string()));
         env.push(("CLAUDE_CONFIG_DIR".into(), config_dir.display().to_string()));
+        // A long-lived `claude setup-token` token never refreshes, so sessions cannot race each other
+        // on the rotating refresh token (the cause of cascading logouts). Absent: the login file.
+        if let Ok(token) =
+            std::fs::read_to_string(self.homes.join(ACCOUNT_HOME).join("oauth-token"))
+        {
+            if !token.trim().is_empty() {
+                env.push(("CLAUDE_CODE_OAUTH_TOKEN".into(), token.trim().into()));
+            }
+        }
         // The proxy's `claude` route forwards the CLI's own Authorization header upstream.
         env.push((
             "ANTHROPIC_BASE_URL".into(),
@@ -271,7 +280,7 @@ const CLAUDE_JSON: &str = ".claude.json";
 /// Keeps the Account's credential and this Session's in step. The CLI rotates OAuth refresh
 /// tokens, so the copy that expires later is the live one and is copied over the other.
 /// `.claude.json` is only seeded. Best effort: a failure leaves the files as they were.
-fn sync_account(account_home: &Path, config_dir: &Path) {
+pub fn sync_account(account_home: &Path, config_dir: &Path) {
     sync_credentials(
         &account_home.join(CREDENTIALS),
         &config_dir.join(CREDENTIALS),
