@@ -84,9 +84,14 @@ impl Harness for AgyHarness {
                 temp_dir.keep()
             }
         };
-        Ok(Box::new(
-            start(self.launch(&wiring, cwd), session_id).await?,
-        ))
+        // agy session/new can stall on slow Google calls; one retry beats a dropped first prompt.
+        let session = match start(self.launch(&wiring, cwd.clone()), session_id).await {
+            Err(HarnessError::Protocol(m)) if m.contains("did not create session") => {
+                start(self.launch(&wiring, cwd), session_id).await?
+            }
+            other => other?,
+        };
+        Ok(Box::new(session))
     }
 }
 

@@ -447,7 +447,10 @@ async fn serve_conn(toolbox: Arc<Toolbox>, state: Arc<BridgeState>, stream: Unix
                 error: Some("execute cannot be called recursively".to_string()),
             }
         } else {
-            match toolbox.call_inner(&req.tool, &req.args).await {
+            match crate::IN_SCRIPT
+                .scope((), toolbox.call_inner(&req.tool, &req.args))
+                .await
+            {
                 Ok(res) => BridgeResponse {
                     id: req.id,
                     result: Some(res),

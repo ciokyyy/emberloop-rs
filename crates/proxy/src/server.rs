@@ -198,8 +198,9 @@ struct SessionRuntime {
     last_input_tokens: AtomicU64,
     nudge: Mutex<NudgeState>,
     nudge_file: std::path::PathBuf,
-    /// The Session's skill catalog, read once when the runtime starts; the daemon freezes the file.
+    /// Frozen skill catalog and pinned reviewer instructions, read once per Session runtime.
     catalog: String,
+    reviewer: bool,
     /// Set by an emergency nudge; while set, every outgoing request truncates its older large
     /// results, so the truncated prefix stays byte-identical. Cleared by a fold or a reset.
     /// In memory only: a restarted proxy starts clear.
@@ -233,6 +234,7 @@ impl SessionRuntime {
             nudge: Mutex::new(nudge::load(&nudge_file)),
             nudge_file,
             catalog,
+            reviewer: false,
             splices: Mutex::new(SpliceStore::open(splices_file)),
             ctx: Mutex::new(ctx),
             compressor: Mutex::new(Box::new(
@@ -378,7 +380,20 @@ impl ProxyState {
         }
         let spill = self.inner.data_root.session_spill_dir(session_id);
         let splices = self.inner.data_root.session_splices_file(session_id);
-        let runtime = Arc::new(SessionRuntime::new(pins, spill, splices)?);
+        let mut runtime = SessionRuntime::new(pins, spill, splices)?;
+        if let Some(reviewer) = &meta.reviewer {
+            runtime.reviewer = true;
+            let id = if reviewer.role == "spec" {
+                prompts::REVIEWER_SPEC
+            } else {
+                prompts::REVIEWER_STANDARDS
+            };
+            runtime.catalog.push_str("\n\n");
+            runtime
+                .catalog
+                .push_str(runtime.pins.text(id).unwrap_or_default());
+        }
+        let runtime = Arc::new(runtime);
 
         let mut runtimes = self.inner.runtimes.write().map_err(|_| ProxyError::Lock)?;
         Ok(runtimes
@@ -758,6 +773,9 @@ fn prepare_request(
 ) -> Result<PrepareOutcome, ProxyError> {
     let request = request_body_mut(request);
 
+    if runtime.reviewer {
+        crate::wire::remove_edit_tool(request);
+    }
     if settings.proxy_compression && settings.inject_tool {
         inject_tools_for_wire(wire, request, &runtime.pins);
     }
@@ -803,7 +821,8 @@ fn prepare_request(
             unmatched
         }
     };
-    lock(&runtime.splices)?.apply(&mut contents)?;
+    let folded_call_ids = lock(&runtime.compressor)?.folded_call_ids();
+    lock(&runtime.splices)?.apply_skipping(&mut contents, &folded_call_ids)?;
     if wire == WireKind::Google {
         crate::splice::sign_unsigned_calls(&mut contents);
     }
@@ -1541,6 +1560,7 @@ fn execute_tool(
     match call.name.as_str() {
         "compress" => {
             let calls = parse_compress_calls(&call.args)?;
+            refuse_block_folds(contents, &calls)?;
             refuse_cache_costly_folds(contents, &calls)?;
             let mut compressor = lock(&runtime.compressor).map_err(|error| error.to_string())?;
             let folded = compressor.compress_batch(contents, calls, &compress_policy(settings))?;
@@ -1631,6 +1651,22 @@ fn format_acp_status(
         ..PromptVars::default()
     };
     render_text(ACP_STATUS_REPORT, template, &vars)
+}
+
+/// A block never folds again: it stays as written and only the turns added after it fold.
+fn refuse_block_folds(contents: &[Value], calls: &[CompressCall]) -> Result<(), String> {
+    for call in calls {
+        if contents
+            .get(call.start..call.end)
+            .is_some_and(|turns| turns.iter().any(crate::compressor::is_summary_turn))
+        {
+            return Err(format!(
+                "range {}..{} includes a block summary; blocks never fold again, fold only turns added after them (the nudge lists them)",
+                call.start, call.end
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A fold rewrites the history from its first turn on, so the provider re-reads everything after

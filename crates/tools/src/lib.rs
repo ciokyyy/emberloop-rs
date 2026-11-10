@@ -33,6 +33,11 @@ use std::sync::Arc;
 use serde_json::Value;
 
 pub use jail::ProjectJail;
+tokio::task_local! {
+    /// Set while a tool call runs for an `execute` script.
+    pub(crate) static IN_SCRIPT: ();
+}
+
 pub use mcp::McpServer;
 pub use mcpclient::McpTool;
 pub use overflow::OverflowStore;
@@ -274,3 +279,7 @@ impl Toolbox {
         Ok(self.overflow.maybe_spill(content, origin)?)
     }
 }
+        // A script inside `execute` filters its own data; a spill stub would hide the content.
+        if IN_SCRIPT.try_with(|_| ()).is_ok() {
+            return Ok(content);
+        }

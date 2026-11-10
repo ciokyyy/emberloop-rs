@@ -61,7 +61,7 @@ pub struct AcpSession {
 
 /// How long `session/new` may take. agy makes three Google calls (token refresh, onboarding,
 /// model list) on a cold start, 7s each on a slow network, so 10s was never enough.
-const SESSION_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const SESSION_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// Spawn the agent, open one ACP session on it and return once it is ready.
 pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, HarnessError> {
@@ -88,7 +88,7 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
     // history the feed already has, not news.
     let replaying = Arc::new(AtomicBool::new(false));
 
-    tokio::spawn(async move {
+    let driver = tokio::spawn(async move {
         let result = Client
             .v1()
             .name("emberloop")
@@ -285,6 +285,8 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
         tokio::time::timeout(SESSION_READY_TIMEOUT, ready_rx.recv())
             .await
             .map_err(|_| {
+                // A stalled start must not keep its agent process alive.
+                driver.abort();
                 HarnessError::Protocol(format!("{label} did not create session {session_id}"))
             })?
             .ok_or_else(|| HarnessError::Protocol(format!("{label} connection closed")))?

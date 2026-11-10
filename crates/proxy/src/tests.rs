@@ -2340,6 +2340,85 @@ async fn a_fold_over_a_spliced_steer_still_applies_to_the_resent_history() {
     assert!(wire.contains("next"), "{wire}");
 }
 
+#[tokio::test]
+async fn a_folded_proxy_exchange_does_not_replay_on_the_next_request() {
+    let fixture = fixture_sse(vec![
+        sse_event(json!([{"functionCall": {
+            "id": "old_status", "name": "acp_status", "args": {}
+        }}])),
+        sse_event(json!([{"text": "done"}])),
+        sse_event(json!([{"functionCall": {
+            "id": "new_fold", "name": "compress",
+            "args": {"start": 0, "end": 8, "summary": "work saved ".repeat(30)}
+        }}])),
+        sse_event(json!([{"text": "done"}])),
+    ])
+    .await;
+    fixture.settings.write().await.preserve_recent_messages = 0;
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(tool_conversation_with_later_prompt()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mut next = tool_conversation_with_later_prompt()
+        .as_array()
+        .unwrap()
+        .clone();
+    next.push(json!({"role": "user", "parts": [{"text": "new task"}]}));
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(Value::Array(next.clone())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    assert_eq!(lock(&runtime.compressor).unwrap().status().active_blocks, 1);
+    let folded = extract_core_contents(
+        WireKind::Google,
+        &fixture.fake.body(fixture.fake.calls() - 1),
+    )
+    .unwrap();
+    let rebuilt = ProxyState::new(
+        fixture.config.clone(),
+        fixture.sessions.clone(),
+        fixture.projects.clone(),
+        fixture.data_root.clone(),
+        fixture.prompts.clone(),
+        fixture.models.clone(),
+        fixture.events.clone(),
+        fixture.steers.clone(),
+        fixture.settings.clone(),
+    );
+    for (state, history) in [
+        (&fixture.state, next.clone()),
+        (&rebuilt, next),
+        (&rebuilt, folded),
+    ] {
+        let before = fixture.fake.calls();
+        let (status, _) = send(
+            state,
+            &fixture.token,
+            "v1internal:generateContent",
+            body(Value::Array(history)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let sent = fixture.fake.body(before);
+        let wire = sent["contents"].to_string();
+        assert!(wire.contains("work saved"), "{wire}");
+        assert!(
+            !wire.contains("old_status"),
+            "folded exchange replayed: {wire}"
+        );
+        assert!(wire.contains("new_fold"), "unfolded exchange lost: {wire}");
+    }
+}
+
 /// A six-turn conversation whose tool result is large enough (about 80000 tokens at
 /// chars / 4) to pass the 75000-token first-nudge gate of a 1M window. Turns 1 and 2
 /// are the compressible range (the last three turns are kept).
@@ -3024,10 +3103,28 @@ fn a_fold_summary_turn_is_not_the_latest_user_message() {
     ];
     assert_eq!(latest_user_turn(&turns), Some(0));
     let view = compressible_view(&turns, 1);
-    assert_eq!(view.tokens, turns_tokens(&turns[1..4]));
-    assert!(view.ranges.contains("start 1, end 4"), "{}", view.ranges);
+    // The block stays as written: only the turns added after it are offered.
+    assert_eq!(view.tokens, turns_tokens(&turns[2..4]));
+    assert!(view.ranges.contains("start 2, end 4"), "{}", view.ranges);
 }
 
+#[test]
+fn a_range_that_includes_a_block_is_refused() {
+    let summary = crate::marker::summary(1, 3, "b1", None, "what happened");
+    let turns = vec![
+        json!({"role": "user", "parts": [{"text": "start"}]}),
+        json!({"role": "user", "parts": [{"text": summary}]}),
+        json!({"role": "model", "parts": [{"text": "more"}]}),
+    ];
+    let call = |start, end| CompressCall {
+        start,
+        end,
+        summary: "s".into(),
+        topic: None,
+    };
+    assert!(refuse_block_folds(&turns, &[call(1, 3)]).is_err());
+    assert!(refuse_block_folds(&turns, &[call(2, 3)]).is_ok());
+}
 #[tokio::test]
 async fn a_nudge_is_silent_when_the_latest_user_message_blocks_the_only_mass() {
     let fixture = fixture().await;
@@ -3680,10 +3777,9 @@ async fn prefix_is_stable_across_a_mid_run_compress() {
     assert_run_is_prefix_stable("mid-run compress", &requests);
 }
 
-/// A proxy-only pair whose anchor turn is then folded away: the pair is re-placed once, stays
-/// there, and the Session keeps its prefix after the fold.
+/// A fold removes both a proxy-only pair and its anchor; later requests keep the folded prefix.
 #[tokio::test]
-async fn prefix_is_stable_after_a_compress_folds_the_pairs_anchor() {
+async fn prefix_is_stable_after_a_compress_folds_a_pair_and_its_anchor() {
     let fixture = fixture_with(echoed_usage_fake()).await;
     let pair_id = "call_s";
     let requests = drive_growing(&fixture, 0, 9, |index, fixture| {
@@ -3733,8 +3829,11 @@ async fn prefix_is_stable_after_a_compress_folds_the_pairs_anchor() {
     );
     for (index, (body, _)) in requests.iter().enumerate().skip(2) {
         let count = pair_responses(body);
-        // The pair exists from request 2 on, once: a fold that drops it is re-placed, never doubled.
-        assert_eq!(count, 1, "request {index} carries the pair once");
+        let expected = usize::from(index < 6);
+        assert_eq!(
+            count, expected,
+            "request {index} replays only unfolded pairs"
+        );
     }
     assert_run_is_prefix_stable("folded anchor", &requests);
 }

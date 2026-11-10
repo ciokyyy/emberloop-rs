@@ -4,6 +4,7 @@ use crate::tokens;
 use crate::turnkeys::{self, is_transient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -169,6 +170,11 @@ pub trait Compressor: Send + Sync {
     ) -> Result<String, String>;
     fn search_context(&self, query: &str, limit: usize) -> Result<SearchReport, String>;
     fn status(&self) -> CompressorStatus;
+
+    /// Call ids covered by active folds; their proxy exchanges must not be replayed.
+    fn folded_call_ids(&self) -> HashSet<String> {
+        HashSet::new()
+    }
 
     /// Why no stored fold matched `contents`: one line for the session log. Backends without
     /// folds say nothing.
@@ -530,6 +536,15 @@ impl Compressor for NativeCompressor {
         }
     }
 
+    fn folded_call_ids(&self) -> HashSet<String> {
+        self.blocks
+            .iter()
+            .filter(|block| !block.restored)
+            .flat_map(|block| turn_ids(&block.originals))
+            .map(str::to_owned)
+            .collect()
+    }
+
     fn apply_skipping(&mut self, contents: &mut Vec<Value>, skip: &[Value]) -> usize {
         let skip_ids = turn_ids(skip);
         let mut applied = 0;
@@ -679,7 +694,7 @@ pub fn foldable_runs(contents: &[Value], end: usize) -> Vec<Range<usize>> {
     let mut runs = Vec::new();
     let mut start = None;
     for (index, turn) in contents.iter().enumerate().take(end).skip(1) {
-        match (is_protected(turn), start) {
+        match (is_protected(turn) || is_summary_turn(turn), start) {
             (false, None) => start = Some(index),
             (true, Some(first)) => {
                 runs.push(first..index);
@@ -717,7 +732,7 @@ fn is_user_message(turn: &Value) -> bool {
             })
 }
 
-fn is_summary_turn(turn: &Value) -> bool {
+pub fn is_summary_turn(turn: &Value) -> bool {
     turn.pointer("/parts/0/text")
         .and_then(Value::as_str)
         .is_some_and(marker::is_summary)
