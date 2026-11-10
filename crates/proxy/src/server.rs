@@ -2065,7 +2065,7 @@ fn error_response(error: &ProxyError) -> Response<Body> {
     response_with(
         status,
         Some("text/plain; charset=utf-8"),
-        Bytes::from(error.to_string()),
+        Bytes::from(error_text(error)),
     )
 }
 
@@ -2957,14 +2957,18 @@ fn sse_error(message: &str) -> String {
     format!("data: {}\n\n", json!({ "error": { "message": message } }))
 }
 
-fn error_event(error: &ProxyError) -> Bytes {
-    let text = match error {
+/// Decode and body failures say "stream was interrupted" so harness retry policies retry them.
+fn error_text(error: &ProxyError) -> String {
+    match error {
         ProxyError::Upstream(err) if err.is_decode() || err.is_body() => {
             format!("stream was interrupted: {error}")
         }
         _ => error.to_string(),
-    };
-    Bytes::from(sse_error(&text))
+    }
+}
+
+fn error_event(error: &ProxyError) -> Bytes {
+    Bytes::from(sse_error(&error_text(error)))
 }
 
 fn dump_request(session_id: &str, stage: &str, request: &Value) {
