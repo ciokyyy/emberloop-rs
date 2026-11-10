@@ -493,6 +493,43 @@ fn bash_timeout_kills_process_group() {
     assert!(started.elapsed() < std::time::Duration::from_secs(4));
 }
 
+/// Whether `pid` has exited: gone from /proc, or a zombie nobody has reaped yet.
+#[cfg(target_os = "linux")]
+fn process_is_dead(pid: i32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(stat) => stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.trim_start().chars().next())
+            .is_some_and(|state| state == 'Z'),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bash_kills_a_detached_child_left_after_the_command_exits() {
+    let fixture = setup();
+    let output = call(
+        &fixture,
+        "bash",
+        json!({"command": "sleep 30 >/dev/null 2>&1 & echo $!; echo done"}),
+    )
+    .expect("bash detached sleeper");
+    let pid: i32 = output
+        .lines()
+        .find_map(|line| line.trim().parse().ok())
+        .expect("pid line");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !process_is_dead(pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let dead = process_is_dead(pid);
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status();
+    assert!(dead, "detached sleeper {pid} outlived bash: {output}");
+}
+
 #[test]
 fn bash_cat_feeds_seen_lines() {
     let fixture = setup();

@@ -84,7 +84,12 @@ pub(crate) async fn foreground(
     });
     let waited = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait()).await;
     let (status, timed_out) = match waited {
-        Ok(status) => (Some(status?), false),
+        Ok(status) => {
+            // The shell is gone, but a child it detached may still run in its group.
+            let status = status?;
+            kill_group(pid);
+            (Some(status), false)
+        }
         Err(_) => {
             kill_group(pid);
             let _ = child.wait().await;
