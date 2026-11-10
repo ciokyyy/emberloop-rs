@@ -522,3 +522,124 @@ async fn pi_sessions_and_catalogue_run_on_the_pi_harness_without_an_agy_account(
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+#[tokio::test]
+async fn planned_update_resumes_active_agents_and_reviewers_but_not_idle_reviewers() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let env = harness(None).await;
+    let (status, _) = request(
+        &env.daemon.router(),
+        Method::PUT,
+        "/api/providers/opencode-go/key",
+        Some(json!({"key": "sk-test"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let root = env._dir.path().join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let (_, requester) = project_and_session(&env.daemon, &root).await;
+    let template = env.daemon.sessions.get(&requester).await.unwrap();
+    let mut active = Vec::new();
+    for (id, role) in [
+        ("ordinary", None),
+        ("spec", Some("spec")),
+        ("standards", Some("standards")),
+        ("idle-reviewer", Some("spec")),
+    ] {
+        let mut meta = template.clone();
+        meta.id = id.into();
+        meta.model = "opencode-go/glm-5".into();
+        meta.resume_token = Some(format!("saved-{id}"));
+        meta.reviewer = role.map(|role| store::sessions::ReviewerAssignment {
+            parent_id: if id == "idle-reviewer" {
+                "ordinary".into()
+            } else {
+                requester.clone()
+            },
+            role: role.into(),
+            ticket_path: "ticket.md".into(),
+            starting_point: "abc123".into(),
+        });
+        std::fs::create_dir_all(env.daemon.data_root.session_dir(id)).unwrap();
+        env.daemon.sessions.save(&meta).await.unwrap();
+        if id != "idle-reviewer" {
+            active.push(id.to_string());
+        }
+    }
+    let mut meta = template;
+    meta.model = "opencode-go/glm-5".into();
+    env.daemon.sessions.save(&meta).await.unwrap();
+    let config = env.daemon.config().clone();
+    let bin_dir = config.data_root.join("pi/v0.12.11");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let binary = bin_dir.join("pi");
+    std::fs::write(
+        &binary,
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([^,}]*\).*/\1/p')
+  result='{"sessionId":"new-session","configOptions":[]}'
+  case "$line" in
+    *'"initialize"'*) result='{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}' ;;
+    *'"session/prompt"'*)
+      printf '%s\n' "$line" >> "$HOME/update-prompts.jsonl"
+      result='{"stopReason":"end_turn"}' ;;
+  esac
+  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    emberloop_daemon::update::write_pending(
+        &config.data_root,
+        &emberloop_daemon::update::PendingUpdate {
+            from: "0.0.70".into(),
+            to: "0.0.71".into(),
+            session: Some(requester.clone()),
+            also: active.clone(),
+        },
+    )
+    .unwrap();
+    let restarted = Daemon::open(config.clone()).await.unwrap();
+    let server = tokio::spawn(restarted.serve());
+    let received = |id: &str| {
+        std::fs::read_to_string(
+            config
+                .data_root
+                .join("pi-homes")
+                .join(id)
+                .join("update-prompts.jsonl"),
+        )
+        .unwrap_or_default()
+    };
+    let completed = tokio::time::timeout(Duration::from_secs(3), async {
+        while received(&requester).is_empty() || active.iter().any(|id| received(id).is_empty()) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    server.abort();
+    assert!(
+        completed.is_ok(),
+        "post-update continuation missing: {:?}",
+        active
+            .iter()
+            .map(|id| (id, received(id)))
+            .collect::<Vec<_>>()
+    );
+    for id in active {
+        let text = received(&id);
+        let requests: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(requests.len(), 1, "{id}: {text}");
+        assert_eq!(requests[0]["params"]["sessionId"], format!("saved-{id}"));
+        assert_eq!(requests[0]["params"]["prompt"][0]["text"], "continue");
+    }
+    assert!(received(&requester).contains("Continue where you left off."));
+    assert!(received("idle-reviewer").is_empty());
+}

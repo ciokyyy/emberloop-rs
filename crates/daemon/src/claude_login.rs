@@ -241,6 +241,7 @@ async fn supervise(login: Arc<Active>, home: PathBuf) {
         Some(token) => {
             save_token(&home, &token).map_err(|e| format!("the token could not be saved: {e}"))
         }
+        None if !view.error.is_empty() => Err(view.error.clone()),
         None => Err("The claude CLI did not print a token. Try again.".to_string()),
     };
     (view.state, view.error) = match saved {
@@ -274,8 +275,19 @@ async fn read_output(login: &Active, mut stdout: tokio::process::ChildStdout) ->
             view.url = rest[..end].to_string();
         }
         drop(view);
-        if let Some(found) = find_token(&strip_ansi(&text)) {
+        let clean = strip_ansi(&text);
+        if let Some(found) = find_token(&clean) {
             return Some(found);
+        }
+        // A rejected code leaves the CLI at "Press Enter to retry"; end the login so the next click starts a fresh one.
+        if let Some(at) = clean.find("OAuth error:") {
+            let message = clean[at..].split("Press Enter").next().unwrap_or_default();
+            login.view.lock().await.error =
+                message.split_whitespace().collect::<Vec<_>>().join(" ");
+            if let Some(child) = login.child.lock().await.as_mut() {
+                let _ = child.start_kill();
+            }
+            return None;
         }
     }
     None

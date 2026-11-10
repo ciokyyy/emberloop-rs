@@ -512,6 +512,7 @@ impl Daemon {
         });
         app_state = app_state.with_driver(runner).with_provider_login(login);
         api::persist::spawn_persister(app_state.clone());
+        api::subagents::watch_errors(app_state.clone());
 
         spawn_archival_sweep(data_root.clone(), sessions.clone());
 
@@ -571,6 +572,11 @@ impl Daemon {
         let toolbox = Toolbox::new(ToolConfig {
             mcp_file: Some(self.config.config_root.join("mcp.json")),
             global_skills: Some(self.config.global_skills.clone()),
+            session_url: Some(format!(
+                "http://{}:{}/api/sessions/{session_id}",
+                self.config.host, self.config.port
+            )),
+            reviewer: meta.reviewer.is_some(),
             ..ToolConfig::new(project.root, self.data_root.session_spill_dir(session_id))
         })?;
         toolbox.flush_notices().await?;
@@ -617,7 +623,19 @@ impl Daemon {
             proxy_url,
             mcp_url: None,
             mcp_command,
-            env: Vec::new(),
+            env: vec![
+                (
+                    "EMBERLOOP_SESSION_URL".into(),
+                    format!(
+                        "http://{}:{}/api/sessions/{session_id}",
+                        self.config.host, self.config.port
+                    ),
+                ),
+                (
+                    "EMBERLOOP_REVIEWER".into(),
+                    if meta.reviewer.is_some() { "1" } else { "0" }.into(),
+                ),
+            ],
             model: Some(meta.model.clone()),
             thought_level: meta.thought_level.clone(),
             resume_token: None,
@@ -636,6 +654,12 @@ impl Daemon {
         let app = self.router();
         let listener = listen(&self.config).await?;
         warn_if_remote(&self.config);
+        let recovery = self.app_state.clone();
+        tokio::spawn(async move {
+            if let Err(error) = api::subagents::recover(&recovery).await {
+                tracing::error!(?error, "could not recover reviewer report delivery");
+            }
+        });
         for (runner, session, prompt) in self.resume.clone() {
             tokio::spawn(async move {
                 use api::driver::SessionDriver;
@@ -740,6 +764,8 @@ pub fn mcp_tool_config(
         tool_keys_file: Some(config_root.join("tool-keys.json")),
         mcp_file: Some(config_root.join("mcp.json")),
         global_skills,
+        session_url: std::env::var("EMBERLOOP_SESSION_URL").ok(),
+        reviewer: std::env::var("EMBERLOOP_REVIEWER").as_deref() == Ok("1"),
         ..ToolConfig::new(root, spill)
     }
 }

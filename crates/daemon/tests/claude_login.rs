@@ -136,3 +136,25 @@ async fn the_real_cli_prints_a_sign_in_url() {
     }
     panic!("the claude CLI printed no sign-in URL in 30 s");
 }
+
+#[tokio::test]
+#[allow(clippy::disallowed_methods)] // polls the spawned CLI, no fake clock to drive it
+async fn a_rejected_code_ends_the_login_with_the_cli_message() {
+    let dir = tempdir().unwrap();
+    let cli = fake_cli(
+        dir.path(),
+        "printf 'OAuth error: That code was rejected.  Press Enter to retry.\\n'; sleep 30",
+    );
+    let login = ClaudeLogin::new(cli, dir.path().join("claude-homes"));
+    let started = login.start("").await.unwrap();
+    for _ in 0..50 {
+        let view = login.status(&started.id).await.unwrap();
+        if view.state != "running" {
+            assert_eq!(view.state, "failed");
+            assert_eq!(view.error, "OAuth error: That code was rejected.");
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("the login never ended");
+}

@@ -152,7 +152,19 @@ impl SessionRunner {
             ),
             mcp_url: None,
             mcp_command,
-            env: Vec::new(),
+            env: vec![
+                (
+                    "EMBERLOOP_SESSION_URL".into(),
+                    format!(
+                        "{}/api/sessions/{session_id}",
+                        self.proxy_base.trim_end_matches('/')
+                    ),
+                ),
+                (
+                    "EMBERLOOP_REVIEWER".into(),
+                    if meta.reviewer.is_some() { "1" } else { "0" }.into(),
+                ),
+            ],
             model: Some(meta.model.clone()),
             thought_level: meta.thought_level.clone(),
             resume_token: meta.resume_token.clone(),
@@ -777,8 +789,8 @@ async fn drain_notices(data_root: &DataRoot, steers: &SteerQueues, session_id: &
     }
 }
 
-/// Every turn end checks for an update a model asked for. It runs only when no Session has a turn
-/// running, so the restart never cuts a model off; the last Session to go idle triggers it.
+/// Apply a queued update once its requester is idle (all Sessions for an external request).
+/// Active Sessions are saved in the update marker for continuation after restart.
 async fn apply_pending_update(
     data_root: &DataRoot,
     handles: &Mutex<HashMap<String, Arc<Handle>>>,

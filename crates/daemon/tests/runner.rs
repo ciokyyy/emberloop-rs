@@ -285,6 +285,28 @@ async fn a_stored_token_and_a_stable_workdir_go_back_to_the_harness() {
     );
 }
 
+#[tokio::test]
+async fn reviewer_wiring_carries_its_session_endpoint_and_tool_policy() {
+    let fixture = runner_with(Vec::new()).await;
+    let mut meta = fixture.sessions.get("ses_1").await.unwrap();
+    meta.reviewer = Some(store::sessions::ReviewerAssignment {
+        parent_id: "parent".into(),
+        role: "spec".into(),
+        ticket_path: "ticket.md".into(),
+        starting_point: "abc123".into(),
+    });
+    fixture.sessions.save(&meta).await.unwrap();
+    prompt_once(&fixture).await;
+    let wiring = fixture.fake.wirings.lock().unwrap()[0].clone();
+    assert!(wiring.env.contains(&(
+        "EMBERLOOP_SESSION_URL".into(),
+        "http://127.0.0.1:1/api/sessions/ses_1".into()
+    )));
+    assert!(wiring
+        .env
+        .contains(&("EMBERLOOP_REVIEWER".into(), "1".into())));
+}
+
 fn write_splices(data_root: &DataRoot) -> std::path::PathBuf {
     let path = data_root.session_splices_file("ses_1");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
