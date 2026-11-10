@@ -233,7 +233,7 @@ fn an_unrelated_fold_keeps_every_protected_byte_and_the_top_level_system_field()
             .compress_batch(&mut contents, vec![call(1, 3)], &policy())
             .unwrap();
         let mut out = body.clone();
-        write_core_contents(wire, &mut out, contents);
+        write_core_contents(wire, &mut out, &contents);
 
         assert_eq!(
             protected_bytes(wire, &out),
@@ -283,7 +283,7 @@ fn a_decompress_restores_the_fold_and_protected_bytes_stay() {
             )
             .unwrap();
         let mut out = body.clone();
-        write_core_contents(wire, &mut out, contents);
+        write_core_contents(wire, &mut out, &contents);
         assert_eq!(
             protected_bytes(wire, &out),
             protected_bytes(wire, &body),
@@ -388,13 +388,13 @@ proptest! {
         if decompress_first {
             let _ = compressor.decompress(&mut contents, DecompressCall { block_id: "b1".into(), to_file: None });
         }
-        write_core_contents(wire, &mut out, contents);
+        write_core_contents(wire, &mut out, &contents);
         prop_assert_eq!(sorted(protected_bytes(wire, &out)), sorted(protected_bytes(wire, &body)));
 
         // A refold of what the harness resends keeps the protected bytes too.
         let mut again = extract_core_contents(wire, &out).unwrap();
         compressor.apply_skipping(&mut again, &[]);
-        write_core_contents(wire, &mut out, again);
+        write_core_contents(wire, &mut out, &again);
         prop_assert_eq!(sorted(protected_bytes(wire, &out)), sorted(protected_bytes(wire, &body)));
     }
 }

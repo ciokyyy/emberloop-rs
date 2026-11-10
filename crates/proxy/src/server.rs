@@ -209,7 +209,7 @@ struct SessionRuntime {
     /// One line of usage per review round, so the cache behaviour of the fork can be audited.
     review_log: std::path::PathBuf,
     /// Core turns of the last request the model saw, so a new harness conversation can carry them.
-    last_history: Mutex<Vec<Value>>,
+    last_history: Mutex<Arc<Vec<Value>>>,
     /// History carried from an earlier harness conversation; leads every request until the next
     /// reset. In memory only: shortcut, a daemon restart between a switch and its first turn loses it.
     carried: Mutex<Vec<Value>>,
@@ -244,7 +244,7 @@ impl SessionRuntime {
             emergency_truncated: AtomicBool::new(false),
             review: Mutex::new(review::ReviewState::default()),
             review_log,
-            last_history: Mutex::new(Vec::new()),
+            last_history: Mutex::new(Arc::new(Vec::new())),
             carried: Mutex::new(Vec::new()),
             last_fold_miss: Mutex::new(None),
         })
@@ -330,7 +330,7 @@ impl ProxyState {
         *compressor = Box::new(NativeCompressor::new(spill).map_err(ProxyError::Compression)?);
         let last = std::mem::take(&mut *lock(&runtime.last_history)?);
         if !last.is_empty() {
-            *lock(&runtime.carried)? = carry::sanitize(last);
+            *lock(&runtime.carried)? = carry::sanitize(Arc::unwrap_or_clone(last));
         }
         lock(&runtime.splices)?.reset()?;
         runtime.close_nudge_gate()?;
@@ -835,10 +835,13 @@ fn prepare_request(
     if preflight.is_some() {
         runtime.emergency_truncated.store(false, Ordering::Relaxed);
     }
-    *lock(&runtime.last_history)? = contents.clone();
-    // The nudge goes last, on the final contents, so its turn numbers match what compress sees.
+    // The stored history is shared with the outgoing turns, which copy only when a nudge rides on
+    // them. The nudge goes last, on the final contents, so its turn numbers match what compress sees.
+    let history = Arc::new(contents);
+    *lock(&runtime.last_history)? = Arc::clone(&history);
+    let mut outgoing = Cow::Borrowed(history.as_slice());
     let (nudge, gate) = if settings.proxy_compression && settings.inject_nudge {
-        inject_nudge(runtime, &mut contents, window, settings)?
+        inject_nudge(runtime, &mut outgoing, window, settings)?
     } else {
         (None, None)
     };
@@ -848,7 +851,7 @@ fn prepare_request(
     {
         runtime.emergency_truncated.store(true, Ordering::Relaxed);
     }
-    write_core_contents(wire, request, contents);
+    write_core_contents(wire, request, &outgoing);
     Ok(PrepareOutcome {
         nudge,
         gate,
@@ -982,7 +985,7 @@ fn outgoing_body<'a>(
     let mut body = request.clone();
     if let Some(mut contents) = extract_core_contents(wire, request_body_mut(&mut body)) {
         truncate_emergency(&mut contents);
-        write_core_contents(wire, request_body_mut(&mut body), contents);
+        write_core_contents(wire, request_body_mut(&mut body), &contents);
     }
     Cow::Owned(body)
 }
@@ -997,7 +1000,7 @@ fn drop_nudge(wire: WireKind, body: &mut Value, text: &str) {
         turn.get("role").and_then(Value::as_str) != Some("user")
             || turn.pointer("/parts/0/text").and_then(Value::as_str) != Some(text)
     });
-    write_core_contents(wire, request_body_mut(body), contents);
+    write_core_contents(wire, request_body_mut(body), &contents);
 }
 
 fn truncate_emergency(contents: &mut [Value]) {
@@ -1150,7 +1153,7 @@ fn compressible_view(turns: &[Value], preserve_recent_messages: usize) -> Compre
 /// upstream accepts the request.
 fn inject_nudge(
     runtime: &SessionRuntime,
-    contents: &mut Vec<Value>,
+    contents: &mut Cow<'_, [Value]>,
     window: usize,
     settings: &Settings,
 ) -> Result<(Option<NudgeReport>, Option<NudgeState>), ProxyError> {
@@ -1199,7 +1202,9 @@ fn inject_nudge(
     let raw = runtime.pins.text(id).unwrap_or_default();
     let text = render_text(id, raw, &vars)?;
     // The nudge turn is proxy-only: a fold must not store it, and no wire may see it.
-    contents.insert(result_index + 1, turnkeys::nudge_turn(&text));
+    contents
+        .to_mut()
+        .insert(result_index + 1, turnkeys::nudge_turn(&text));
     let report = NudgeReport {
         kind: fired.kind.name(),
         tokens,
@@ -1425,7 +1430,7 @@ fn run_proxy_tool(
         &turnkeys::splice_marker(&call.id),
     );
     contents.extend(turns.clone());
-    write_core_contents(wire, request, contents);
+    write_core_contents(wire, request, &contents);
     Ok((turns, after))
 }
 
@@ -2306,7 +2311,7 @@ impl SseState {
         lock(&self.runtime.splices)?.insert(splice)?;
         if let Some(mut contents) = contents {
             contents.extend(turns);
-            write_core_contents(self.wire, req_body, contents);
+            write_core_contents(self.wire, req_body, &contents);
         }
         if self.rounds >= MAX_TOOL_ROUNDS {
             return Err(ProxyError::ToolRoundLimit);
@@ -2534,7 +2539,7 @@ impl SseState {
             &self.settings,
             self.window,
         );
-        write_core_contents(self.wire, req_body, contents);
+        write_core_contents(self.wire, req_body, &contents);
         self.completed.push(CompletedCall { call, text });
     }
 }

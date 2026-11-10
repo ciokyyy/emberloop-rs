@@ -80,7 +80,7 @@ fn round_trip(request: &mut Value) {
     inject_tools_for_wire(WireKind::Anthropic, request, &pins);
     inject_prompts_for_wire(WireKind::Anthropic, request, &pins, false, "");
     let contents = extract_core_contents(WireKind::Anthropic, request).unwrap();
-    write_core_contents(WireKind::Anthropic, request, contents);
+    write_core_contents(WireKind::Anthropic, request, &contents);
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn a_splice_rewrites_only_the_messages_it_replaces() {
     // Fold the tool round (messages 1 and 2) into one summary turn.
     let summary = json!({"role": "user", "parts": [{"text": "Folded: listed the files."}]});
     contents.splice(1..3, [summary]);
-    write_core_contents(WireKind::Anthropic, &mut request, contents);
+    write_core_contents(WireKind::Anthropic, &mut request, &contents);
 
     let messages = request["messages"].as_array().unwrap();
     let before = original["messages"].as_array().unwrap();

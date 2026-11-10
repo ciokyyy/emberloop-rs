@@ -485,8 +485,16 @@ pub fn extract_core_contents(wire: WireKind, request: &Value) -> Option<Vec<Valu
 
 /// Writes the turns back in the wire's shape. The request's system and developer items come first,
 /// in their original order and byte for byte, so no write can drop or fold them.
-pub fn write_core_contents(wire: WireKind, request: &mut Value, contents: Vec<Value>) {
-    let contents = contents.into_iter().map(unmarked).collect::<Vec<_>>();
+pub fn write_core_contents(wire: WireKind, request: &mut Value, contents: &[Value]) {
+    // Only a turn carrying the nudge mark needs a copy; the common request is written from the
+    // caller's slice as it is.
+    let owned;
+    let contents: &[Value] = if contents.iter().any(turnkeys::is_transient) {
+        owned = contents.iter().cloned().map(unmarked).collect::<Vec<_>>();
+        &owned
+    } else {
+        contents
+    };
     let key = items_key(wire);
     let mut out: Vec<Value> = request
         .get(key)
@@ -500,10 +508,10 @@ pub fn write_core_contents(wire: WireKind, request: &mut Value, contents: Vec<Va
         })
         .unwrap_or_default();
     out.extend(match wire {
-        WireKind::Google => contents,
-        WireKind::OpenAiChat => core_to_chat(&contents),
-        WireKind::Anthropic => core_to_anthropic(&contents),
-        WireKind::OpenAiResponses => core_to_responses(&contents),
+        WireKind::Google => contents.to_vec(),
+        WireKind::OpenAiChat => core_to_chat(contents),
+        WireKind::Anthropic => core_to_anthropic(contents),
+        WireKind::OpenAiResponses => core_to_responses(contents),
     });
     request[key] = Value::Array(out);
 }
@@ -1185,21 +1193,21 @@ mod tests {
         let contents = vec![turn];
 
         let mut chat = json!({"messages": []});
-        write_core_contents(WireKind::OpenAiChat, &mut chat, contents.clone());
+        write_core_contents(WireKind::OpenAiChat, &mut chat, &contents);
         assert_eq!(
             chat["messages"][0]["content"][1]["image_url"]["url"],
             "data:image/png;base64,AAAA"
         );
 
         let mut anthropic = json!({"messages": []});
-        write_core_contents(WireKind::Anthropic, &mut anthropic, contents.clone());
+        write_core_contents(WireKind::Anthropic, &mut anthropic, &contents);
         assert_eq!(
             anthropic["messages"][0]["content"][1]["source"]["data"],
             "AAAA"
         );
 
         let mut responses = json!({"input": []});
-        write_core_contents(WireKind::OpenAiResponses, &mut responses, contents);
+        write_core_contents(WireKind::OpenAiResponses, &mut responses, &contents);
         assert_eq!(
             responses["input"][1]["content"][0]["image_url"],
             "data:image/png;base64,AAAA"
@@ -1207,10 +1215,32 @@ mod tests {
     }
 
     #[test]
+    fn write_borrows_the_turns_and_strips_only_the_nudge_mark() {
+        let nudge = turnkeys::nudge_turn("keep the budget");
+        let contents = vec![
+            json!({"role": "user", "parts": [{"text": "a"}]}),
+            nudge.clone(),
+        ];
+
+        let mut chat = json!({"messages": []});
+        write_core_contents(WireKind::OpenAiChat, &mut chat, &contents);
+        assert_eq!(chat["messages"][0]["content"], "a");
+        assert_eq!(chat["messages"][1]["content"], "keep the budget");
+        assert!(!chat.to_string().contains(turnkeys::NUDGE));
+
+        let mut google = json!({"contents": []});
+        write_core_contents(WireKind::Google, &mut google, &contents);
+        assert_eq!(google["contents"][1]["parts"][0]["text"], "keep the budget");
+        assert!(!google.to_string().contains(turnkeys::NUDGE));
+
+        assert_eq!(contents[1], nudge, "the caller's turns keep their mark");
+    }
+
+    #[test]
     fn text_only_chat_turns_keep_the_string_form() {
         let turn = json!({"role": "user", "parts": [{"text": "a"}, {"text": "b"}]});
         let mut chat = json!({"messages": []});
-        write_core_contents(WireKind::OpenAiChat, &mut chat, vec![turn]);
+        write_core_contents(WireKind::OpenAiChat, &mut chat, &[turn]);
         assert_eq!(chat["messages"][0]["content"], "a\n\nb");
     }
 

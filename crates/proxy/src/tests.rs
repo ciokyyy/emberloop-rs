@@ -3137,7 +3137,7 @@ async fn a_nudge_is_silent_when_the_latest_user_message_blocks_the_only_mass() {
     // The 300000-character result sits after the latest user message at turn 2. Inside
     // 1..len-2 it would be counted, but no fold may cover the latest message, so the
     // range ends at turn 2 and holds too little mass to carry a nudge.
-    let mut contents = vec![
+    let contents = vec![
         json!({"role": "user", "parts": [{"text": "first prompt"}]}),
         json!({"role": "model", "parts": [{"text": "a".repeat(2_000)}]}),
         json!({"role": "user", "parts": [{"text": "latest prompt"}]}),
@@ -3146,14 +3146,19 @@ async fn a_nudge_is_silent_when_the_latest_user_message_blocks_the_only_mass() {
         json!({"role": "model", "parts": [{"text": "ok"}]}),
         json!({"role": "model", "parts": [{"text": "more"}]}),
     ];
-    let (nudge, gate) = inject_nudge(&runtime, &mut contents, 100_000, &settings).unwrap();
+    let mut outgoing = Cow::Borrowed(contents.as_slice());
+    let (nudge, gate) = inject_nudge(&runtime, &mut outgoing, 100_000, &settings).unwrap();
     assert!(nudge.is_none(), "{:?}", nudge.map(|report| report.kind));
     assert!(gate.is_some());
-    assert_eq!(contents.len(), 7, "no nudge turn was inserted");
+    assert_eq!(outgoing.len(), 7, "no nudge turn was inserted");
+    assert!(
+        matches!(outgoing, Cow::Borrowed(_)),
+        "without a nudge the turns are never copied"
+    );
 
     // Control: the same mass with the latest message at the end is compressible, so a nudge
     // fires (pressure, as the usage is over 75 percent of this window).
-    let mut control = vec![
+    let control = vec![
         json!({"role": "user", "parts": [{"text": "first prompt"}]}),
         json!({"role": "model", "parts": [{"text": "a".repeat(2_000)}]}),
         json!({"role": "model", "parts": [{"functionCall": {"name": "bash", "id": "call_1", "args": {}}}]}),
@@ -3162,7 +3167,8 @@ async fn a_nudge_is_silent_when_the_latest_user_message_blocks_the_only_mass() {
         json!({"role": "model", "parts": [{"text": "more"}]}),
         json!({"role": "user", "parts": [{"text": "continue"}]}),
     ];
-    let (nudge, _) = inject_nudge(&runtime, &mut control, 100_000, &settings).unwrap();
+    let mut outgoing = Cow::Borrowed(control.as_slice());
+    let (nudge, _) = inject_nudge(&runtime, &mut outgoing, 100_000, &settings).unwrap();
     assert_eq!(nudge.map(|report| report.kind), Some("pressure"));
 }
 
