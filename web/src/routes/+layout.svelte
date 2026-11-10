@@ -23,20 +23,22 @@
   import Providers from '$lib/components/Providers.svelte';
   import Usage from '$lib/components/Usage.svelte';
   import Skills from '$lib/components/Skills.svelte';
+  import SkillDetail from '$lib/components/SkillDetail.svelte';
   import Settings from '$lib/components/Settings.svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import WorkingIndicator from '$lib/components/WorkingIndicator.svelte';
   import ProjectDrawer from '$lib/components/ProjectDrawer.svelte';
   import FigcraftView from '$lib/components/FigcraftView.svelte';
-  import Button from '$lib/components/ui/button.svelte';
   import { PanelsTopLeft } from '@lucide/svelte';
   import { applyEvent, applySnapshot, emptyFeedState, type FeedState } from '$lib/feed';
   import { chosenWindow } from '$lib/contextMeter';
   import { toPromptImage } from '$lib/images';
   import { modelIconId } from '$lib/brands';
-  import { cachePath, designPath, newPath, newSessionProjects, sessionPath, viewOf, viewPath, type Page, type View } from '$lib/route';
+  import { cachePath, designPath, newPath, newSessionProjects, sessionPath, skillPath, viewOf, viewPath, type Page, type View } from '$lib/route';
 
   let { children } = $props();
+  /** The Skill page's SKILL.md path, which its component loads and the header shows. */
+  let skillPathText = $state('');
   let projects = $state<Project[]>([]);
   let sessions = $state<Session[]>([]);
   let models = $state<Model[]>([]);
@@ -46,6 +48,8 @@
     title_generation: true,
     title_model: 'openrouter/openrouter/free',
     default_model: 'gemini-3.8-flash',
+    spec_reviewer: { model: 'gemini-3.8-flash', reasoning_effort: null },
+    standards_reviewer: { model: 'gemini-3.8-flash', reasoning_effort: null },
     proxy_compression: true,
     ponytail_default_level: 'full',
     todo_reminders: true,
@@ -93,6 +97,8 @@
   // browser's back button all land on the same screen.
   const view = $derived<View>(viewOf(page.route.id));
   const selected = $derived(page.params.session ?? null);
+  // A board opened from a Session keeps that Session as the agent it drives.
+  const designSession = $derived(view === 'design' ? page.url.searchParams.get('session') : null);
   const hasMore = $derived((log[0]?.seq ?? 1) > 1);
   const current = $derived(sessions.find((session) => session.id === selected) ?? null);
   // The URL's Project scopes the sidebar: one Project and its Sessions.
@@ -185,6 +191,9 @@
         if (event.kind === 'session_title' && typeof event.data.title === 'string') {
           sessions = sessions.map((session) => session.id === id ? { ...session, title: event.data.title as string } : session);
         }
+      }
+      if (batch.some((event) => event.kind === 'notice' && event.data.action === 'subagent_created')) {
+        void api.listSessions().then((updated) => { sessions = updated; }).catch((cause) => { error = String(cause); });
       }
       log = [...log, ...batch];
       feed = batch.reduce(applyEvent, feed);
@@ -329,13 +338,20 @@
     await goto(newPath(projectId));
   }
 
+  async function cloneProject(repo: string, location: string) {
+    const project = await api.cloneProject(repo, location);
+    projects = [...projects, project];
+    await goto(newPath(project.id));
+  }
+
   // Switching Project lands on its most recent Session; with none, on its Settings, since a
   // Session URL needs an id.
   function selectProject(id: string) {
     const latest = sessions
       .filter((session) => session.projectId === id)
       .sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    const page = view === 'session' || view === 'new' || view === 'cache' ? 'settings' : view;
+    // Switching Project leaves a Skill's page: its list is the Project-scoped view.
+    const page = view === 'session' || view === 'new' || view === 'cache' ? 'settings' : view === 'skill' ? 'skills' : view;
     void goto(latest ? sessionPath(id, latest.id) : viewPath(id, page));
   }
   async function renameSession(session: Session, title: string) {
@@ -406,17 +422,24 @@
   }
 </script>
 
+<svelte:window onkeydown={(event) => { if (drawer && event.key === 'Escape') drawer = false; }} />
+
 <div class="flex h-full">
   {#if drawer}
     <button
-      class="fixed inset-0 z-20 bg-black/50 md:hidden"
+      class="drawer-scrim {view === 'design' ? '' : 'md:hidden'}"
       aria-label="Close sessions"
       onclick={() => (drawer = false)}
       transition:fadeAt
     ></button>
   {/if}
 
-  <aside class="drawer w-[280px] shrink-0 {drawer ? 'open' : ''}">
+  {#if view !== 'design' || drawer}
+    <aside
+      class="drawer w-[var(--drawer-width)] shrink-0 {drawer ? 'open' : ''} {view === 'design'
+        ? 'drawer-floating'
+        : ''}"
+    >
     <Sidebar
       {projects}
       projectId={scope}
@@ -429,7 +452,7 @@
       settingsActive={view === 'settings'}
       providersActive={view === 'providers'}
       usageActive={view === 'usage'}
-      skillsActive={view === 'skills'}
+      skillsActive={view === 'skills' || view === 'skill'}
       onselect={select}
       onselectproject={selectProject}
       onnew={startSession}
@@ -444,19 +467,22 @@
       onusage={() => openView('usage')}
       onskills={() => openView('skills')}
     />
-  </aside>
+    </aside>
+  {/if}
 
   <main class="flex min-w-0 flex-1 flex-col">
-    <header class="flex items-center gap-3 border-b border-border px-4 py-2.5">
-      <button class="btn md:hidden" aria-label="Open sessions" onclick={() => (drawer = true)}>☰</button>
+    <header class="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
+      <button class="btn {view === 'design' ? '' : 'md:hidden'}" aria-label="Open sessions" onclick={() => (drawer = true)}>☰</button>
       <div class="min-w-0 flex-1">
-        <h1 class="truncate font-semibold tracking-[-0.01em]">
+        <h1 class="truncate text-[14px] font-semibold tracking-[-0.01em] text-fg-1">
           {view === 'new'
             ? 'New session'
             : view === 'settings'
               ? 'Settings'
             : view === 'providers'
               ? 'Providers'
+              : view === 'skill'
+                ? decodeURIComponent(page.params.name ?? 'Skills')
               : view === 'skills'
                 ? 'Skills'
               : view === 'usage'
@@ -468,6 +494,8 @@
         <div class="truncate text-[12px] text-fg-3">
           {view === 'new'
             ? scopeProject ? `${scopeProject.name} · ${scopeProject.root}` : ''
+            : view === 'skill'
+              ? skillPathText
             : view === 'design' && activeProject
               ? `${activeProject.name} · ${activeProject.root}`
               : view === 'session' && projectOf ? `${projectOf.name} · ${projectOf.root}` : ''}
@@ -475,14 +503,14 @@
       </div>
 
       {#if activeProject}
-        <Button
-          class="rounded-md text-fg-2"
+        <button
+          class="grid size-8 shrink-0 place-items-center rounded-xl border border-border bg-surface-1 text-fg-2 hover:bg-surface-3 hover:text-fg-1"
           aria-label="Project tools"
           title="Project tools"
           onclick={() => (projectDrawerOpen = true)}
         >
           <PanelsTopLeft class="size-4" />
-        </Button>
+        </button>
       {/if}
 
     </header>
@@ -508,14 +536,18 @@
     {:else if view === 'providers'}
       <Providers onmodels={(list) => (models = list)} />
     {:else if view === 'skills'}
-      <Skills />
+      <Skills projectId={activeProject?.id ?? null}
+        onopen={(name) => { if (activeProject) void goto(skillPath(activeProject.id, name)); }} />
+    {:else if view === 'skill' && activeProject}
+      <SkillDetail name={decodeURIComponent(page.params.name ?? '')} bind:path={skillPathText}
+        onback={() => openView('skills')} />
     {:else if view === 'usage'}
       <Usage />
     {:else if view === 'design' && activeProject}
       <FigcraftView
         project={activeProject}
         {sessions}
-        currentSessionId={selected}
+        currentSessionId={designSession}
         onbacktofeed={(sid) => window.location.assign(sessionPath(activeProject.id, sid))}
       />
     {:else if loading}
@@ -528,7 +560,7 @@
           bind:model={draftModel} onsubmit={sendDraft} />
       {/key}
     {:else if current}
-      <Feed {feed} {hasMore} {loadingMore} onloadmore={loadEarlier} />
+      <Feed {feed} projectId={current.projectId} {hasMore} {loadingMore} onloadmore={loadEarlier} />
       <!-- The plan card and the turn line sit in the composer's own column, right above it. -->
       <div class="px-4">
         <div class="mx-auto max-w-[760px] pb-1">
@@ -556,7 +588,7 @@
         <SessionDialog bind:open={detailsOpen} bind:tab={detailsTab} {models}
           model={current.model} thoughtLevel={current.thoughtLevel ?? ''}
           used={feed.usage?.used ?? null} size={contextSize} breakdown={feed.usage?.breakdown ?? null}
-          disabled={working} onapply={applyModel} oncache={openCache} />
+          disabled={working} onapply={applyModel} oncache={openCache} sessionId={selected ?? ''} />
       {/key}
     {:else}
       <div class="grid flex-1 place-items-center">
@@ -578,6 +610,7 @@
   {models}
   defaultModel={settings.default_model}
   oncreate={createSession}
+  onclone={cloneProject}
 />
 
 {#if activeProject}
@@ -586,7 +619,7 @@
     open={projectDrawerOpen}
     onclose={() => (projectDrawerOpen = false)}
     onopendesign={() => {
-      window.location.assign(designPath(activeProject.id));
+      window.location.assign(designPath(activeProject.id, selected ?? designSession));
     }}
   />
 {/if}

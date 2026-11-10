@@ -45,10 +45,7 @@ pub async fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
             .spawn(&args.command, &toolbox.env_prelude())
             .await;
     }
-    let timeout = args
-        .timeout
-        .unwrap_or(DEFAULT_TIMEOUT_SECS)
-        .clamp(1, MAX_TIMEOUT_SECS);
+    let timeout = toolbox.call_secs(args.timeout, DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
     let output = foreground(toolbox, &args.command, timeout).await?;
     feed_views(toolbox, &args.command);
     toolbox.maybe_spill(output, &format!("bash {:?}", args.command))

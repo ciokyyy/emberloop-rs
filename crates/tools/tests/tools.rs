@@ -355,6 +355,16 @@ fn edit_replaces_and_returns_new_tag() {
 }
 
 #[test]
+fn edit_accepts_bracketed_route_paths() {
+    let fixture = setup();
+    let path = write(&fixture, "routes/[slug]/page.txt", "one\ntwo\n");
+    let tag = tag_of(&read(&fixture, &path, 1, 0));
+    let patch = format!("[{}#{tag}]\nPUT 2.=2:\n+TWO\n", path.display());
+    call(&fixture, "edit", json!({"input": patch})).expect("bracketed path");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "one\nTWO\n");
+}
+
+#[test]
 fn edit_applies_all_ops_against_original_numbering() {
     let fixture = setup();
     let path = write(&fixture, "ops.txt", "a\nb\nc\n");
@@ -582,6 +592,7 @@ fn mcp_serves_tools_and_errors() {
             "ctx_search",
             "skill_search",
             "skill_manage",
+            "prompt_propose",
             "execute"
         ]
     );
@@ -917,4 +928,103 @@ fn bash_routes_long_running_commands_to_background() {
         );
     }
     call(&fixture, "bash", json!({"command": "true && true"})).expect("plain chain");
+}
+
+#[test]
+fn prompt_propose_stages_a_proposal_and_never_changes_the_active_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    fs::create_dir(&root).expect("project root");
+    let prompts_dir = dir.path().join("prompts");
+    let config = ToolConfig {
+        prompts_dir: Some(prompts_dir.clone()),
+        ..ToolConfig::new(&root, dir.path().join("spill"))
+    };
+    let fixture = Fixture {
+        toolbox: Arc::new(Toolbox::new(config).expect("toolbox")),
+        root,
+        _dir: dir,
+    };
+
+    let staged = call(
+        &fixture,
+        "prompt_propose",
+        json!({"id": "tool.edit.description", "text": "new edit text", "reason": "bodies ate lines"}),
+    )
+    .expect("propose");
+    assert!(staged.contains("tool.edit.description"), "{staged}");
+    assert!(staged.contains("User approves"), "{staged}");
+    let active = call(
+        &fixture,
+        "prompt_propose",
+        json!({"id": "tool.edit.description"}),
+    )
+    .expect("read active");
+    assert_ne!(active, "new edit text");
+    assert!(active.contains("hashline"), "{active}");
+    let file = prompts_dir
+        .with_file_name("prompt-proposals")
+        .join("tool.edit.description.json");
+    assert!(fs::read_to_string(file).unwrap().contains("new edit text"));
+    assert!(!prompts_dir.join("tool.edit.description.md").exists());
+
+    for bad in [
+        json!({"id": "nope", "text": "t", "reason": "r"}),
+        json!({"id": "tool.edit.description", "text": "t"}),
+        json!({"id": "tool.edit.description", "text": "t {{ bogus }}", "reason": "r"}),
+    ] {
+        assert!(call(&fixture, "prompt_propose", bad).is_err());
+    }
+}
+
+#[test]
+fn prompt_propose_without_a_prompts_dir_says_so() {
+    let fixture = setup();
+    let error = call(
+        &fixture,
+        "prompt_propose",
+        json!({"id": "tool.edit.description", "text": "t", "reason": "r"}),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("prompts directory"), "{error}");
+}
+
+#[test]
+fn max_call_secs_caps_every_blocking_wait_below_the_harness_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    fs::create_dir(&root).expect("project root");
+    let config = ToolConfig {
+        max_call_secs: Some(1),
+        ..ToolConfig::new(&root, dir.path().join("spill"))
+    };
+    let fixture = Fixture {
+        toolbox: Arc::new(Toolbox::new(config).expect("toolbox")),
+        root,
+        _dir: dir,
+    };
+
+    let output = call(
+        &fixture,
+        "bash",
+        json!({"command": "sleep 5", "timeout": 600}),
+    )
+    .unwrap();
+    assert!(output.starts_with("timeout after 1s"), "{output}");
+
+    let started = call(
+        &fixture,
+        "bash",
+        json!({"command": "sleep 5", "background": true}),
+    )
+    .unwrap();
+    let id = started.split_whitespace().nth(3).unwrap().to_string();
+    let waited = call(
+        &fixture,
+        "background",
+        json!({"action": "wait", "id": id, "timeout": 600}),
+    )
+    .unwrap();
+    assert!(waited.starts_with("timeout after 1s"), "{waited}");
+    call(&fixture, "background", json!({"action": "stop", "id": id})).unwrap();
 }

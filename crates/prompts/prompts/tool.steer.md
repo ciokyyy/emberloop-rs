@@ -1,0 +1,1 @@
+Continue an existing reviewer with text, its ticketPath, and the captured startingPoint. The reviewer must belong to this Session. The same conversation remains available across tickets and follow-ups.

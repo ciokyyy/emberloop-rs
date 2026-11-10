@@ -14,6 +14,7 @@ pub mod jail;
 pub mod mcp;
 pub mod mcpclient;
 pub mod overflow;
+pub mod promptpropose;
 pub mod read;
 pub mod readurl;
 pub mod seen;
@@ -22,6 +23,7 @@ pub mod skills;
 pub mod skillsearch;
 mod skillstore;
 pub mod skillview;
+pub mod subagents;
 pub mod tag;
 pub mod todo;
 pub mod websearch;
@@ -32,12 +34,12 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-pub use jail::ProjectJail;
 tokio::task_local! {
     /// Set while a tool call runs for an `execute` script.
     pub(crate) static IN_SCRIPT: ();
 }
 
+pub use jail::ProjectJail;
 pub use mcp::McpServer;
 pub use mcpclient::McpTool;
 pub use overflow::OverflowStore;
@@ -80,6 +82,13 @@ pub struct ToolConfig {
     pub mcp_file: Option<PathBuf>,
     /// The global skills root (`~/.agents/skills`), readable beyond the project root.
     pub global_skills: Option<PathBuf>,
+    /// `<config root>/prompts`: where `prompt_propose` stages proposals beside it.
+    pub prompts_dir: Option<PathBuf>,
+    pub session_url: Option<String>,
+    pub reviewer: bool,
+    /// A harness cuts an MCP call that blocks longer (Antigravity: 3 minutes) and then dies, so
+    /// every blocking tool wait is clamped to this many seconds. `None` keeps each tool's own cap.
+    pub max_call_secs: Option<u64>,
 }
 impl ToolConfig {
     pub fn new(root: impl Into<PathBuf>, spill_dir: impl Into<PathBuf>) -> Self {
@@ -93,6 +102,10 @@ impl ToolConfig {
             tool_keys_file: None,
             mcp_file: None,
             global_skills: None,
+            prompts_dir: None,
+            session_url: None,
+            reviewer: false,
+            max_call_secs: None,
         }
     }
 }
@@ -178,6 +191,23 @@ impl Toolbox {
         self.config.global_skills.as_deref()
     }
 
+    pub fn prompts_dir(&self) -> Option<&Path> {
+        self.config.prompts_dir.as_deref()
+    }
+
+    /// The longest a blocking call may wait: `max`, lowered to the harness cap.
+    pub(crate) fn cap_secs(&self, max: u64) -> u64 {
+        self.config
+            .max_call_secs
+            .map_or(max, |cap| cap.min(max))
+            .max(1)
+    }
+
+    /// `requested` seconds (else `default`), at least 1, at most `max` and the harness cap.
+    pub fn call_secs(&self, requested: Option<u64>, default: u64, max: u64) -> u64 {
+        requested.unwrap_or(default).clamp(1, self.cap_secs(max))
+    }
+
     pub fn spill_dir(&self) -> &Path {
         &self.config.spill_dir
     }
@@ -246,7 +276,18 @@ impl Toolbox {
         }
     }
 
+    pub(crate) fn tool_available(&self, name: &str) -> bool {
+        match name {
+            "edit" => !self.config.reviewer,
+            "spawn" | "steer" | "stop" | "result" | "submit" => self.config.session_url.is_some(),
+            _ => true,
+        }
+    }
+
     pub async fn call_inner(&self, name: &str, args: &Value) -> ToolResult<String> {
+        if name == "edit" && self.config.reviewer {
+            return Err(ToolError::msg("edit is unavailable to reviewer Sessions"));
+        }
         match name {
             "read" => {
                 if args
@@ -264,22 +305,36 @@ impl Toolbox {
             "ctx_search" => ctxsearch::run(self, args),
             "skill_search" => skillsearch::run(self, args),
             "skill_manage" => skillmanage::run(self, args),
+            "prompt_propose" => promptpropose::run(self, args),
             "find" => find::run(self, args),
             "edit" => edit::run(self, args),
             "write" => write::run(self, args),
             "bash" => bash::run(self, args).await,
-            "background" => self.background.run(args).await,
+            "background" => {
+                self.background
+                    .run_capped(args, self.cap_secs(background::MAX_WAIT_SECS))
+                    .await
+            }
             "websearch" => websearch::run(self, args).await,
+            "spawn" | "steer" | "stop" | "result" | "submit" => {
+                let url = self
+                    .config
+                    .session_url
+                    .as_deref()
+                    .ok_or_else(|| ToolError::msg("Reviewer tools require a daemon Session"))?;
+                let text = subagents::run(url, name, args).await?;
+                self.maybe_spill(text, name)
+            }
             other if other.contains('.') => self.mcp.call(other, args).await,
             other => Err(ToolError::msg(format!("unknown tool {other:?}"))),
         }
     }
 
     pub(crate) fn maybe_spill(&self, content: String, origin: &str) -> ToolResult<String> {
-        Ok(self.overflow.maybe_spill(content, origin)?)
-    }
-}
         // A script inside `execute` filters its own data; a spill stub would hide the content.
         if IN_SCRIPT.try_with(|_| ()).is_ok() {
             return Ok(content);
         }
+        Ok(self.overflow.maybe_spill(content, origin)?)
+    }
+}

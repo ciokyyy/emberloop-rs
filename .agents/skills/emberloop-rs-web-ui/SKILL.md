@@ -1,0 +1,51 @@
+---
+name: emberloop-rs-web-ui
+description: Use when changing the emberloop-rs web UI in web/ (SvelteKit, Tailwind v4, shadcn-svelte): colour tokens, mobile layout, feed rows and their jsdom tests.
+metadata:
+  origin: agent
+---
+
+# Change the emberloop-rs web UI
+
+`web/` is one SvelteKit SPA with dark-only tokens, shadcn-svelte components over bits-ui, and Vitest/jsdom tests. Read `web/AGENTS.md` first; it owns the file map and the event-payload contract.
+
+## Procedure
+
+1. Locate the component by grepping the strings visible in the user's screenshot (a title, a button label), not by reasoning about pixel geometry. A phone screenshot shows the rendered result, never the class that caused it.
+2. Read the component and `web/src/app.css` together: every colour utility must exist as a `--color-*` entry in the `@theme inline` block.
+3. Change the smallest markup that carries the fix, then add or extend a Vitest case for the behaviour (a reducer case in `lib/*.test.ts`, a mount test beside the component).
+4. `cd web && bun run check` (svelte-check covers tsc) and `bun run test`, then the repo `scripts/check`. This repo is bun-only.
+5. Say plainly what was not verified. A class change is unverified until it is seen in a browser or on the phone; jsdom has no layout.
+
+## Porting a design mock into web/
+
+1. Treat the mock as a spec, not a picture: read the frame's geometry (sizes, gaps, radii) and its colour tokens, then map every value to a token name. A raw hex in a component is a value nobody can retheme.
+2. Land the tokens first, in one edit of `web/src/app.css`: the `:root` values plus a `--color-<name>` line in the `@theme inline` block for every token you add. A token without that alias emits no utility at all.
+3. Rebuild the component's chrome to match the mock's own structure: pinned rows (header, toolbar, footer, an effort selector) are ordinary flex siblings, and the single scrolling region is `min-h-0 flex-1 overflow-y-auto`. Pinning is a layout decision, not a styling trick — content inside the scroll box scrolls away however it is painted.
+4. Leave the dialog header row alone when the user says they will edit it by hand; restructure everything below it.
+5. Grep the test files for every label, aria-label and role you renamed or removed, and update them in the same change.
+6. `bun run check` and `bun run test` prove types and behaviour, not CSS: run `bun run build` too, because an unknown utility only fails there.
+
+## Pitfalls
+
+- An unknown utility class is silent: Tailwind v4 emits nothing for `bg-bg-1`, `bg-bg-2` or a bare `text-fg`, so the element renders transparent and the page shows through. The only tokens are `surface-0..3`, `fg-1..4`, `border`, `input`, `brand`, `brand-strong`, `on-accent`, `track`, `status-*` and `tool-*`, and a token added to `:root` needs its `--color-<name>` alias in the same `@theme inline` block or its utility stays silent too. When the user says a panel is transparent, grep `bg-bg-` and `text-fg"` before anything else; opaque overlays are `bg-surface-1`, page surfaces `bg-surface-0`.
+- Do not infer a defect from measured screenshot coordinates. If the wrong element is not legible in the picture, ask which one it is in one short question; a wrong guess costs more than the question.
+- Mobile layout: the `sm` breakpoint is 640px. For a crowded horizontal bar, let it wrap below `sm` (`flex-wrap`, `basis-full` on the input row, `rounded-2xl`) and restore the single line above it (`sm:flex-nowrap`, `sm:rounded-full`), rather than shrinking children until they clip. Overlays in the FigCraft view sit on top of the upstream WASM editor's own floating toolbar, so keep them short.
+- bits-ui sets the same `data-highlighted` for pointer and keyboard. Any highlight-driven `scrollToIndex` on a virtualized list must ignore pointer-driven highlights (a flag set on `pointermove`/`pointerdown`, cleared by a capture-phase `keydown`), or a touch drag snaps back to the row under the finger.
+- jsdom has no `MediaRecorder` or wake lock: stub them with `vi.stubGlobal('navigator', {...})` and `vi.stubGlobal('MediaRecorder', class {...})`. Unmount the component instead of stopping the recorder, because teardown nulls `onstop` and avoids the network call the stop would trigger.
+- A voice note is a state machine, not a mic toggle: show the recording clock, a spinner on the button while transcribing, and on an upload failure keep the recorded Blob so the status row offers Retry (resend that same Blob) and Discard. A mic that silently returns to idle reads as broken and leaves no way back after a dropped network.
+- Take glyph geometry from the packages instead of retyping paths: lucide data is `__iconData` inside `web/node_modules/@lucide/svelte/dist/icons/<name>.svelte`, and brand logos are raw svg files from `@lobehub/icons-static-svg` that `web/src/lib/brands.ts` imports with `?raw`. A hand-copied path drifts from the component that renders it.
+- A long media capture needs a screen wake lock, or the phone sleeps and ends it: request it in an `$effect` keyed on the recording flag, re-request on `visibilitychange` when visible, and release it in the effect cleanup.
+- Two side panels, one grammar: both rails take `--drawer-width`, `.drawer-scrim`, `.drawer-rail` and `--dur-standard`/`--ease-smooth` from `web/src/app.css`, and `design.md` at the repo root is the contract a later session reads. A vendored drawer (vaul behind `ui/drawer`) ships its own `transition: transform 0.5s cubic-bezier(0.32, 0.72, 0, 1)`, so the two rails open at different speeds however the classes are set; when the user asks for one speed, drop the library and use the shared classes. `references/drawer-grammar.md` holds the tokens and the dismiss rules.
+- Flip a drawer at `max-width: 767.98px`, not `760px`: Tailwind's `md` is 768px, and a `760px` query leaves a band where the rail is fixed while the hamburger is hidden.
+- One input format, one button size: a secondary surface that asks the agent something (the FigCraft HUD) reuses the composer's card — `rounded-2xl border border-input bg-surface-1 p-1`, a `rows="1"` textarea where Enter sends and Shift+Enter adds a line, a 32px `bg-brand` arrow send button — and every icon-only control stays `.icon-btn` (32px). A bespoke bar with a Select and a larger button reads as a different product and the user asks for it to be redone.
+- A surface that drives a Session takes it from the URL, not from a switcher inside itself: `designPath(projectId, sessionId)` in `web/src/lib/route.ts` writes `?session=`, the route derives it (`page.url.searchParams.get('session')`), and the component resolves it against `sessions` by id. An in-surface session Select duplicates the sidebar. Degrade the URL-less case visibly: `No session` status, a placeholder that says to open the board from a session, a disabled prompt and no Open chat button; a mount test passes `currentSessionId` explicitly, because a removed fallback to `sessions[0]` otherwise leaves the box disabled in the test too.
+- jsdom never sees `inert`: Svelte assigns it as a DOM property, so assert `aria-hidden` in the test and keep both attributes on the panel.
+- Verify a transition in the browser with a delay. A click and `getComputedStyle` inside one `agent-browser eval` read the pre-click transform, so click in one eval, sleep ~0.6-1s, then read; report the transition (`0.18s`, `cubic-bezier(0.22, 1, 0.36, 1)`) together with the settled transform (`none` open, `matrix(1, 0, 0, 1, ±width, 0)` closed) and the scrim's `rgb(0 0 0 / 0.5)`.
+- Wrap every `agent-browser eval` body in `(() => { ... })()`: consecutive evals share one global scope, so a reused `const a` fails with `SyntaxError: Identifier 'a' has already been declared` and the check is lost. Drive the page by `http://127.0.0.1:3000/...`, and set the viewport with `agent-browser set viewport 390 844` before `open` so the mobile branch is the one measured.
+- A new event field reaches the UI in four places: the daemon payload (`serde_json::json!` in `crates/api/src/routes.rs`), the reducer in `web/src/lib/feed.ts`, the row markup (`Feed.svelte`), and the payload key list in `web/AGENTS.md`. A steer row carries its own fields; the delivered event only changes `route`, so a count must be set when the item is created.
+- A flow that opens a device login (Claude, Codex) and then polls is a two-sided state machine: clear the local flow object in the poll's `catch` (`error`, `stopWatch()`, `flow = null`), else a page reloaded mid-flow keeps showing `running` forever and the daemon refuses the next attempt with `409 a <provider> login is already running`. Label a signed-in provider `Reconnect`, not only `Connect`: a credential file can exist and still be revoked.
+- Dropping a UI dependency orphans the vendored `ui/<name>/` folder that wrapped it (e.g. vaul behind `ui/drawer`), and each orphan counts against `bunx fallow health --score --min-score 87.9`. When a drawer, select or input library goes, delete its component folder in the same change and `bun remove` the package, or the health gate fails on dead files.
+- Flipping the accent to a light near-white turns every `bg-brand text-white` control white-on-white. Add an `--on-accent` token (#111111) with its `--color-on-accent` alias, set `color: var(--on-accent)` in the shared `.btn-pri` and `.seg[aria-pressed]` rules, and grep `bg-brand` and `text-brand` for the call sites that carry their own `text-white`.
+- Tailwind v4's `aria-selected:` variant matches only `aria-selected="true"`, so underline tabs need no state class: put `-mb-px border-b-2 border-transparent` on each tab and `border-b` on the tab row, and the 2px active underline covers the 1px hairline instead of sitting a pixel below it. Keep `role="tab"`, the roving tabindex and `aria-controls` while replacing a segmented control with tabs.
+- Renaming a user-visible label (a breakdown category, a card title) breaks the jsdom test that asserts the old string, and a renamed prop or removed element breaks a role query elsewhere. Grep `web/src/**/*.test.ts` for the old wording in the same change rather than after the suite fails.

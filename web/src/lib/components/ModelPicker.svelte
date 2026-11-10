@@ -3,6 +3,7 @@
   import { createVirtualizer } from '@tanstack/svelte-virtual';
   import { get } from 'svelte/store';
   import { modelIconId } from '$lib/brands';
+  import { modelGroups, windowLabel } from '$lib/models';
   import type { Model } from '$lib/api/types';
   import { slideDown } from '$lib/motion';
   import Brand from './Brand.svelte';
@@ -15,16 +16,7 @@
   let search = $state('');
   let open = $state(false);
   const selected = $derived(models.find((model) => model.id === value));
-  const groups = $derived.by(() => {
-    const grouped = new Map<string, Model[]>();
-    for (const model of models) {
-      const harness = model.source === 'pi' ? 'pi-rs' : model.source === 'claude' ? 'Claude' : 'Antigravity';
-      const group = `${harness} · ${model.provider}`;
-      if (!`${model.id} ${model.label} ${group}`.toLowerCase().includes(search.trim().toLowerCase())) continue;
-      grouped.set(group, [...(grouped.get(group) ?? []), model]);
-    }
-    return [...grouped].sort(([a], [b]) => a.localeCompare(b));
-  });
+  const groups = $derived(modelGroups(models, search));
   // Headings and items in one flat list, so the virtualizer windows both.
   type Row = { key: string; label: string; model?: Model };
   const rows = $derived<Row[]>(groups.flatMap(([group, items]) => [
@@ -47,20 +39,30 @@
   });
 
   // Bits-ui moves the highlight over rows the window has not rendered; scroll the window to the row it lands on.
+  // A pointer sets the same highlight, and following it would drag a touch scroll back to the row under the finger.
   function viewportAction(node: HTMLElement) {
     viewport = node;
+    let byPointer = false;
+    const pointer = () => { byPointer = true; };
+    const key = () => { byPointer = false; };
+    node.addEventListener('pointermove', pointer);
+    node.addEventListener('pointerdown', pointer);
+    document.addEventListener('keydown', key, true);
     const observer = new MutationObserver(() => {
+      if (byPointer) return;
       const index = node.querySelector<HTMLElement>('[data-highlighted]')?.closest<HTMLElement>('[data-index]')?.dataset.index;
       if (index !== undefined) get(virtualizer).scrollToIndex(Number(index), { align: 'auto' });
     });
     observer.observe(node, { subtree: true, attributes: true, attributeFilter: ['data-highlighted'] });
-    return { destroy: () => { observer.disconnect(); viewport = null; } };
-  }
-  function windowLabel(model: Model) {
-    if (!model.context_window) return 'window unknown';
-    return model.context_window >= 1_000_000
-      ? `${Math.round(model.context_window / 1_000_000)}M`
-      : `${Math.round(model.context_window / 1000)}k`;
+    return {
+      destroy: () => {
+        observer.disconnect();
+        node.removeEventListener('pointermove', pointer);
+        node.removeEventListener('pointerdown', pointer);
+        document.removeEventListener('keydown', key, true);
+        viewport = null;
+      }
+    };
   }
 </script>
 

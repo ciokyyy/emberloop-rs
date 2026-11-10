@@ -31,7 +31,7 @@ A threshold is never raised to make a change pass; the function is split instead
 
 ## Release and update
 
-Everyone updates with `emberloop-daemon update`, in a Session or from a terminal: it only queues, and the running daemon installs and restarts into the new build once no Session has a turn running. Run `scripts/check`, then `scripts/release` to build the next version into `target/release-dist`; `scripts/release --publish` uploads it as the GitHub release `emberloop-daemon update` reads. For a build not yet released, `emberloop-daemon update --file <binary>`. Do not stop the daemon to force the update. See `crates/daemon/AGENTS.md` for the update, resume, and verification contract.
+Everyone updates with `emberloop-daemon update`, in a Session or from a terminal: it only queues an orderly restart. Run `scripts/check`, then `scripts/release` to build the next version into `target/release-dist`; `scripts/release --publish` uploads it as the GitHub release `emberloop-daemon update` reads. For a build not yet released, `emberloop-daemon update --file <binary>`. Do not stop the daemon to force the update. See `crates/daemon/AGENTS.md` for the update, resume, and verification contract.
 
 ## Test-first
 

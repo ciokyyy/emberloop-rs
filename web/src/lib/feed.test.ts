@@ -78,6 +78,14 @@ describe('feed reducer', () => {
     expect(state.items[0]).toMatchObject({ kind: 'steer', text: 'hold on', route: 'injected' });
   });
 
+  it('keeps the image count of a queued steer after delivery', () => {
+    const state = run(
+      ev('steer_queued', { id: 'q2', text: 'look', imagesCount: 1 }),
+      ev('steer_delivered', { id: 'q2', route: 'injected' }, 2)
+    );
+    expect(state.items[0]).toMatchObject({ kind: 'steer', imagesCount: 1, route: 'injected' });
+  });
+
   it('carries the prompt-cache counts of the latest request', () => {
     const state = run(
       ev('usage', { inputTokens: 1000, cachedTokens: 600, cacheCreationTokens: 100, contextWindow: 1_000_000 })
@@ -235,4 +243,12 @@ describe('open snapshot', () => {
   it('reads a cancelled status as idle', () => {
     expect(run(ev('status', { state: 'cancelled' })).status).toBe('idle');
   });
+});
+
+it('keeps repeated reviewer reports distinct and preserves metadata on delivery', () => {
+  const report = { sessionId: 'child', role: 'spec', ticketPath: 'ticket.md', status: 'done', summary: 'Review complete', report: 'No findings.' };
+  const state = run(ev('steer_queued', { id: 'one', text: 'same', kind: 'subagent', report }), ev('steer_queued', { id: 'two', text: 'same', kind: 'subagent', report }, 2), ev('steer_delivered', { id: 'one', route: 'injected' }, 3));
+  expect(state.items).toHaveLength(2);
+  expect(state.items[0]).toMatchObject({ id: 'one', report, route: 'injected' });
+  expect(state.items[1]).toMatchObject({ id: 'two', report, route: 'pending' });
 });

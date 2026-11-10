@@ -7,6 +7,9 @@
 //! a running Session's prompt (or the hashes recorded in its metadata).
 
 pub mod defaults;
+mod proposals;
+
+pub use proposals::{Proposal, ProposalStore};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -49,6 +52,14 @@ pub const TOOL_TODO: &str = "tool.todo.description";
 pub const TOOL_CTX_SEARCH: &str = "tool.ctx_search.description";
 pub const TOOL_SKILL_SEARCH: &str = "tool.skill_search.description";
 pub const TOOL_SKILL_MANAGE: &str = "tool.skill_manage.description";
+pub const TOOL_PROMPT_PROPOSE: &str = "tool.prompt_propose.description";
+pub const TOOL_SPAWN: &str = "tool.spawn.description";
+pub const TOOL_STEER: &str = "tool.steer.description";
+pub const TOOL_STOP: &str = "tool.stop.description";
+pub const TOOL_RESULT: &str = "tool.result.description";
+pub const TOOL_SUBMIT: &str = "tool.submit.description";
+pub const REVIEWER_SPEC: &str = "reviewer.spec";
+pub const REVIEWER_STANDARDS: &str = "reviewer.standards";
 /// Billion-context nudges (ticket 20). Derived from the reference wording; the
 /// emergency id is its own header over the pressure body. Raw templates: see `PinnedPrompts::pin`.
 pub const NUDGE_FIRST: &str = "nudge.first";
@@ -79,6 +90,14 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_CTX_SEARCH,
     TOOL_SKILL_SEARCH,
     TOOL_SKILL_MANAGE,
+    TOOL_PROMPT_PROPOSE,
+    TOOL_SPAWN,
+    TOOL_STEER,
+    TOOL_STOP,
+    TOOL_RESULT,
+    TOOL_SUBMIT,
+    REVIEWER_SPEC,
+    REVIEWER_STANDARDS,
     SKILL_CODEBASE_MEMORY,
     SKILL_CATALOG,
     REVIEW_SKILLS,
@@ -144,6 +163,14 @@ pub fn default_text(id: &str) -> &'static str {
         REVIEW_SKILLS => defaults::REVIEW_SKILLS,
         TOOL_SKILL_SEARCH => defaults::TOOL_SKILL_SEARCH,
         TOOL_SKILL_MANAGE => defaults::TOOL_SKILL_MANAGE,
+        TOOL_PROMPT_PROPOSE => defaults::TOOL_PROMPT_PROPOSE,
+        TOOL_SPAWN => defaults::TOOL_SPAWN,
+        TOOL_STEER => defaults::TOOL_STEER,
+        TOOL_STOP => defaults::TOOL_STOP,
+        TOOL_RESULT => defaults::TOOL_RESULT,
+        TOOL_SUBMIT => defaults::TOOL_SUBMIT,
+        REVIEWER_SPEC => defaults::REVIEWER_SPEC,
+        REVIEWER_STANDARDS => defaults::REVIEWER_STANDARDS,
         SKILL_CODEBASE_MEMORY => defaults::SKILL_CODEBASE_MEMORY,
         ACP_STATUS_REPORT => defaults::ACP_STATUS_REPORT,
         TODO_REMINDER => defaults::TODO_REMINDER,
@@ -166,6 +193,10 @@ pub enum PromptError {
     Io { id: String, message: String },
     #[error("prompt not found: {id}")]
     NotFound { id: String },
+    #[error("no pending proposal for prompt {id}")]
+    ProposalNotFound { id: String },
+    #[error("invalid proposal for prompt {id}: {message}")]
+    Invalid { id: String, message: String },
 }
 
 impl PromptError {
@@ -174,7 +205,9 @@ impl PromptError {
             Self::UnknownPlaceholder { id, .. }
             | Self::UnterminatedPlaceholder { id }
             | Self::Io { id, .. }
-            | Self::NotFound { id } => id,
+            | Self::NotFound { id }
+            | Self::ProposalNotFound { id }
+            | Self::Invalid { id, .. } => id,
         }
     }
 }

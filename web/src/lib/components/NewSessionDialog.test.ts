@@ -38,3 +38,15 @@ it('uses the configured default instead of the first model', async () => {
   await fireEvent.click(screen.getByText('Create'));
   expect(oncreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'b', thoughtLevel: 'max' }));
 });
+
+it('clones a repository from the Add project dialog', async () => {
+  const onclone = vi.fn();
+  render(NewSessionDialog, { ...props, open: true, newProject: true, onclone });
+  await fireEvent.click(screen.getByRole('tab', { name: 'Clone from GitHub' }));
+  await fireEvent.input(screen.getByLabelText(/Repository URL/), {
+    target: { value: 'https://github.com/yannelli/emberloop-rs.git' }
+  });
+  expect(screen.getByText('Clones into ~/projects/emberloop-rs')).toBeTruthy();
+  await fireEvent.click(screen.getByText('Clone project'));
+  expect(onclone).toHaveBeenCalledWith('https://github.com/yannelli/emberloop-rs.git', '~/projects');
+});

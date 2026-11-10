@@ -433,6 +433,7 @@ impl Daemon {
                 projects: projects.clone(),
                 data_root: data_root.clone(),
                 global_skills: config.global_skills.clone(),
+                config_root: config.config_root.clone(),
             }));
         if let Some(upstream) = &config.upstream {
             proxy_config = proxy_config.with_upstream(upstream.clone());
@@ -572,6 +573,7 @@ impl Daemon {
         let toolbox = Toolbox::new(ToolConfig {
             mcp_file: Some(self.config.config_root.join("mcp.json")),
             global_skills: Some(self.config.global_skills.clone()),
+            prompts_dir: Some(self.config.config_root.join("prompts")),
             session_url: Some(format!(
                 "http://{}:{}/api/sessions/{session_id}",
                 self.config.host, self.config.port
@@ -764,8 +766,12 @@ pub fn mcp_tool_config(
         tool_keys_file: Some(config_root.join("tool-keys.json")),
         mcp_file: Some(config_root.join("mcp.json")),
         global_skills,
+        prompts_dir: Some(config_root.join("prompts")),
         session_url: std::env::var("EMBERLOOP_SESSION_URL").ok(),
         reviewer: std::env::var("EMBERLOOP_REVIEWER").as_deref() == Ok("1"),
+        max_call_secs: std::env::var("EMBERLOOP_MAX_CALL_SECS")
+            .ok()
+            .and_then(|value| value.parse().ok()),
         ..ToolConfig::new(root, spill)
     }
 }

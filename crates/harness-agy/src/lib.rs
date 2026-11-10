@@ -95,6 +95,10 @@ impl Harness for AgyHarness {
     }
 }
 
+/// Antigravity cuts an MCP tool call after 3 minutes and then exits its process, which ends the
+/// turn. The `el` server clamps every blocking wait below that.
+const MAX_CALL_SECS: &str = "170";
+
 fn mcp_servers(command: Option<Vec<String>>) -> Vec<McpServer> {
     command
         .and_then(|mut parts| {
@@ -103,7 +107,10 @@ fn mcp_servers(command: Option<Vec<String>>) -> Vec<McpServer> {
             Some(vec![McpServer::Stdio(
                 McpServerStdio::new("el", command)
                     .args(args)
-                    .env(Vec::<EnvVariable>::new()),
+                    .env(vec![EnvVariable::new(
+                        "EMBERLOOP_MAX_CALL_SECS",
+                        MAX_CALL_SECS,
+                    )]),
             )])
         })
         .unwrap_or_default()
@@ -199,6 +206,7 @@ mod tests {
     fn mcp_command_becomes_a_stdio_server() {
         let servers = mcp_servers(Some(vec!["emberloop-mcp".into(), "--root".into()]));
         assert!(matches!(servers.as_slice(), [McpServer::Stdio(server)]
-            if server.name == "el" && server.args == ["--root"]));
+            if server.name == "el" && server.args == ["--root"]
+                && server.env.iter().any(|var| var.name == "EMBERLOOP_MAX_CALL_SECS" && var.value == "170")));
     }
 }

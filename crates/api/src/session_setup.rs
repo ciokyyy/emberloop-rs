@@ -46,11 +46,14 @@ pub async fn configure(
             ));
         }
     }
-    state
-        .driver
-        .configure_model(&meta.id, selected, level.as_deref())
-        .await
-        .map_err(|error| (StatusCode::CONFLICT, error))?;
+    // New Sessions have no harness to configure; their first prompt uses the saved model.
+    if state.sessions.get(&meta.id).await.is_some() {
+        state
+            .driver
+            .configure_model(&meta.id, selected, level.as_deref())
+            .await
+            .map_err(|error| (StatusCode::CONFLICT, error))?;
+    }
     if old_source.as_deref() != Some(entry.source.as_str()) {
         // Another harness cannot load the old conversation; it starts fresh and the proxy carries the history.
         meta.resume_token = None;

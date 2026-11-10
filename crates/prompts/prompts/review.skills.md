@@ -1,4 +1,4 @@
-Skill review. Use only skill_manage, skill_search and read. Do not use any other tool, and do not continue the user's task.
+Skill review. Use only skill_manage, skill_search, prompt_propose and read. Do not use any other tool, and do not continue the user's task.
 
 Review the conversation above and update the skill library. Be ACTIVE: most sessions produce at least one skill update, even if small. A pass that does nothing is a missed learning opportunity, not a neutral outcome.
 
@@ -36,10 +36,13 @@ If you notice two existing skills that overlap, note it in your reply. Never del
 Do NOT capture as skills (these become persistent self-imposed constraints that bite you later when the environment changes):
   • Environment-dependent failures: missing binaries, fresh-install errors, post-migration path mismatches, 'command not found', unconfigured credentials, uninstalled packages. The user can fix these; they are not durable rules.
   • Negative claims about tools or features ('browser tools do not work', 'X tool is broken', 'cannot use Y from execute_code'). These harden into refusals the agent cites against itself for months after the actual problem was fixed.
+  • Workarounds for a tool defect or a misleading tool error (a tool refuses valid input, an error message names the wrong cause). A skill hides the defect and outlives the fix. Name the defect, with the exact error string, in your final reply and write no skill for it.
   • Session-specific transient errors that resolved before the conversation ended. If retrying worked, the lesson is the retry pattern, not the original failure.
   • One-off task narratives. A user asking 'summarize today's market' or 'analyze this PR' is not a class of work that warrants a skill.
   • Unresolved failures: if the session ended WITHOUT actually finding a working method, do NOT write those attempts up as a 'reliable workflow' or 'recommended approach'. Either say 'Nothing to save', or, only if you are independently confident of a real working alternative, capture ONLY that alternative. Never the dead ends, and never dressed up as best practice.
 If a tool failed because of setup state, capture the FIX (install command, config step, env var to set) under an existing setup or troubleshooting skill, never 'this tool does not work' as a standalone constraint.
+
+Some guidance does not belong in a skill: a rule about how to call one tool correctly, or any rule every Session needs whatever its task. That is prompt text. Do not write it as a skill. Instead call prompt_propose with the prompt id (the description of a tool is tool.<name>.description, for example tool.edit.description; the context-compression instructions are compress.prompt), the COMPLETE new text, and a reason. First call prompt_propose with only the id to read the active text: your text replaces it, so keep every rule that is still right and keep the placeholders it uses. The User approves or rejects each proposal; nothing changes until then, so propose only a rule you are sure of, once per prompt. The edit and compress rules already live in those prompts; do not recreate them as skills.
 
 'Nothing to save.' is a real option but should NOT be the default. If the session ran smoothly with no corrections and produced no new technique, just say 'Nothing to save.' and stop. Otherwise, act.
 

@@ -15,7 +15,13 @@ fn wiring() -> HarnessWiring {
             "--root".into(),
             "/p".into(),
         ]),
-        env: Vec::new(),
+        env: vec![
+            (
+                "EMBERLOOP_SESSION_URL".into(),
+                "http://127.0.0.1:9/api/sessions/s1".into(),
+            ),
+            ("EMBERLOOP_REVIEWER".into(), "1".into()),
+        ],
         model: Some("opencode-go/glm-5".into()),
         thought_level: None,
         resume_token: None,
@@ -77,6 +83,11 @@ async fn the_session_home_points_pi_at_the_proxy_and_the_tools() {
     assert_eq!(mcp["mcpServers"]["el"]["command"], "emberloop");
     assert_eq!(mcp["mcpServers"]["el"]["args"][0], "mcp");
     assert_eq!(mcp["mcpServers"]["el"]["exposure"], "direct");
+    assert_eq!(
+        mcp["mcpServers"]["el"]["env"]["EMBERLOOP_SESSION_URL"],
+        "http://127.0.0.1:9/api/sessions/s1"
+    );
+    assert_eq!(mcp["mcpServers"]["el"]["env"]["EMBERLOOP_REVIEWER"], "1");
     let mode = std::fs::metadata(dir.path().join("pi/s1/.pi/agent/models.json"))
         .unwrap()
         .permissions()

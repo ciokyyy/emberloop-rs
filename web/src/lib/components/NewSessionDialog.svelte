@@ -3,6 +3,7 @@
   import { fadeAt, rise } from '$lib/motion';
   import type { Model, Project } from '$lib/api/types';
   import Button from './ui/button.svelte';
+  import Icon from './Icon.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import Select from './Select.svelte';
 
@@ -13,7 +14,8 @@
     newProject = false,
     models = [],
     defaultModel = '',
-    oncreate
+    oncreate,
+    onclone = async () => {}
   }: {
     open?: boolean;
     projects: Project[];
@@ -26,10 +28,14 @@
       model?: string;
       thoughtLevel?: string;
     }) => Promise<void> | void;
+    onclone?: (repo: string, location: string) => Promise<void> | void;
   } = $props();
 
   let projectId = $state('');
   let root = $state('');
+  let mode = $state<'new' | 'clone'>('new');
+  let repo = $state('');
+  let location = $state('~/projects');
   let model = $state('');
   let effort = $state('');
   const efforts = $derived(models.find((entry) => entry.id === model)?.efforts ?? []);
@@ -37,10 +43,26 @@
   let error = $state('');
   let busy = $state(false);
 
+  const cloneName = $derived(repoName(repo));
+  const cloneInto = $derived(`${location.trim().replace(/\/+$/, '')}/${cloneName}`);
+
+  function repoName(value: string) {
+    const last = value
+      .trim()
+      .replace(/\/+$/, '')
+      .split(/[/:]/)
+      .filter(Boolean)
+      .at(-1) ?? '';
+    return last.replace(/\.git$/, '');
+  }
+
   $effect(() => {
     if (open) {
       projectId = projects[0]?.id ?? '';
       root = '';
+      mode = 'new';
+      repo = '';
+      location = '~/projects';
       model = models.some((entry) => entry.id === defaultModel) ? defaultModel : models[0]?.id ?? '';
       error = '';
     }
@@ -48,6 +70,23 @@
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();
+    if (newProject && mode === 'clone') {
+      if (!repoName(repo) || !location.trim()) {
+        error = 'Enter the repository URL and a location.';
+        return;
+      }
+      busy = true;
+      error = '';
+      try {
+        await onclone(repo.trim(), location.trim());
+        open = false;
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : String(cause);
+      } finally {
+        busy = false;
+      }
+      return;
+    }
     const targetProject = root.trim() ? undefined : projectId;
     if (newProject && !root.trim()) {
       error = 'Enter the path of the Project to add.';
@@ -90,13 +129,20 @@
         {#if shown}
           <div {...props} transition:rise>
       <Dialog.Title class="text-[1.0625rem] font-semibold">
-        {newProject ? 'New project' : 'New session'}
+        {newProject ? 'Add project' : 'New session'}
       </Dialog.Title>
       <Dialog.Description class="sr-only">
         Create a Session in an existing Project or in a new Project by path.
       </Dialog.Description>
 
       <form class="flex flex-col gap-4" onsubmit={submit}>
+        {#if newProject}
+          <div class="flex border-b border-border" role="tablist" aria-label="Add project">
+            <button class="flex-1 -mb-px border-b-2 border-transparent pt-1 pb-2 text-center text-[13px] text-fg-3 aria-selected:border-fg-1 aria-selected:font-semibold aria-selected:text-fg-1" role="tab" aria-selected={mode === 'new'} aria-controls="add-project-new" id="add-project-new-tab" onclick={() => (mode = 'new')}>New project</button>
+            <button class="flex-1 -mb-px border-b-2 border-transparent pt-1 pb-2 text-center text-[13px] text-fg-3 aria-selected:border-fg-1 aria-selected:font-semibold aria-selected:text-fg-1" role="tab" aria-selected={mode === 'clone'} aria-controls="add-project-clone" id="add-project-clone-tab" onclick={() => (mode = 'clone')}>Clone from GitHub</button>
+          </div>
+        {/if}
+
         {#if projects.length && !newProject}
           <div class="flex flex-col gap-1.5 text-[13px] text-fg-3">
             Project
@@ -106,10 +152,29 @@
           </div>
         {/if}
 
-        <label class="flex flex-col gap-1.5 text-[13px] text-fg-3">
-          {newProject ? 'Project path' : 'Or add a Project by path'}
-          <input class="field font-mono" bind:value={root} placeholder="/home/you/Projects/name" />
-        </label>
+        {#if newProject && mode === 'clone'}
+          <label class="flex flex-col gap-1.5 text-[13px] text-fg-3">
+            Repository URL
+            <input class="field font-mono" bind:value={repo} placeholder="https://github.com/you/name" />
+            <span class="text-[12px] text-fg-4">Private repos use your local git credentials.</span>
+          </label>
+          <label class="flex flex-col gap-1.5 text-[13px] text-fg-3">
+            Location
+            <input class="field font-mono" bind:value={location} placeholder="~/projects" />
+            <span class="text-[12px] text-fg-4">Folder name is taken from the repository.</span>
+          </label>
+          {#if cloneName}
+            <div class="flex items-center gap-2 text-[13px] text-fg-3">
+              <Icon name="git-branch" />
+              <span>Clones into {cloneInto}</span>
+            </div>
+          {/if}
+        {:else}
+          <label class="flex flex-col gap-1.5 text-[13px] text-fg-3">
+            {newProject ? 'Project path' : 'Or add a Project by path'}
+            <input class="field font-mono" bind:value={root} placeholder="/home/you/Projects/name" />
+          </label>
+        {/if}
 
         {#if !newProject}
         <ModelPicker searchable {models} bind:value={model} />
@@ -127,7 +192,7 @@
 
         <div class="flex justify-end gap-2">
           <Button onclick={() => (open = false)}>Cancel</Button>
-          <Button variant="primary" type="submit" disabled={busy}>Create</Button>
+          <Button variant="primary" type="submit" disabled={busy}>{newProject && mode === 'clone' ? 'Clone project' : 'Create'}</Button>
         </div>
       </form>
           </div>

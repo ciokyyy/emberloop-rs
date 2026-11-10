@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -176,9 +177,21 @@ impl SpliceStore {
     /// turn, as before, and records that user turn as its anchor so that later
     /// requests keep it there. The record is appended to the file.
     pub fn apply(&mut self, contents: &mut Vec<Value>) -> std::io::Result<SpliceReport> {
+        self.apply_skipping(contents, &HashSet::new())
+    }
+
+    /// Keep folded proxy exchanges on disk for decompression, but out of replay.
+    pub fn apply_skipping(
+        &mut self,
+        contents: &mut Vec<Value>,
+        folded_call_ids: &HashSet<String>,
+    ) -> std::io::Result<SpliceReport> {
         let mut report = SpliceReport::default();
         for index in 0..self.splices.len() {
             let splice = &self.splices[index];
+            if folded_call_ids.contains(&splice.tool_result_id) && self_anchored(splice) {
+                continue;
+            }
             if marker_present(contents, &splice.marker) {
                 continue;
             }
@@ -381,6 +394,88 @@ mod tests {
                 "thoughtSignature": "opaque-\u{1F600}-signature"
             }]
         })
+    }
+
+    #[test]
+    fn nested_folds_hide_persisted_pairs_until_decompression() {
+        use crate::compressor::{
+            CompressCall, CompressPolicy, Compressor, DecompressCall, NativeCompressor,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("splices.jsonl");
+        let pair = vec![
+            json!({"role": "model", "parts": [{"functionCall": {
+                "id": "c1", "name": "acp_status", "args": {}
+            }}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {
+                "id": "c1", "name": "acp_status",
+                "response": {"splice": "emberloop-splice:c1", "result": "status"}
+            }}]}),
+        ];
+        let mut store = SpliceStore::open(&path);
+        store.insert(Splice::new("c1", pair.clone())).unwrap();
+        let harness = vec![
+            json!({"role": "user", "parts": [{"text": "old task"}]}),
+            json!({"role": "user", "parts": [{"text": "latest task"}]}),
+            json!({"role": "model", "parts": [{"text": "ack"}]}),
+        ];
+        let mut contents = harness.clone();
+        contents.splice(1..1, pair);
+        let originals = contents.clone();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        for end in [3, 1] {
+            compressor
+                .compress_batch(
+                    &mut contents,
+                    vec![CompressCall {
+                        start: 0,
+                        end,
+                        summary: "saved task".into(),
+                        topic: None,
+                    }],
+                    &CompressPolicy::default(),
+                )
+                .unwrap();
+        }
+        let saved_splices = std::fs::read(&path).unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let mut store = SpliceStore::open(&path);
+        let mut resent = harness;
+        assert_eq!(compressor.apply_skipping(&mut resent, &store.turns()), 2);
+        assert_eq!(resent, contents);
+        for _ in 0..2 {
+            store
+                .apply_skipping(&mut resent, &compressor.folded_call_ids())
+                .unwrap();
+            assert_eq!(resent, contents);
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), saved_splices);
+
+        for block_id in ["b2", "b1"] {
+            compressor
+                .decompress(
+                    &mut resent,
+                    DecompressCall {
+                        block_id: block_id.into(),
+                        to_file: None,
+                    },
+                )
+                .unwrap();
+            store
+                .apply_skipping(&mut resent, &compressor.folded_call_ids())
+                .unwrap();
+        }
+        assert_eq!(resent, originals);
+        assert!(compressor.folded_call_ids().is_empty());
+        store
+            .apply_skipping(&mut resent, &compressor.folded_call_ids())
+            .unwrap();
+        assert_eq!(resent, originals, "decompression must not duplicate a pair");
+        assert!(NativeCompressor::new(dir.path())
+            .unwrap()
+            .folded_call_ids()
+            .is_empty());
     }
 
     #[test]

@@ -178,6 +178,13 @@ async fn images_sent_during_a_turn_are_queued_as_a_steer() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].images.len(), 1);
     assert_eq!(entries[0].images[0].data_base64, "AAAA");
+    let log = state.get_event_log("s1").await.unwrap();
+    let events = log.replay(None).await.unwrap();
+    let queued = events
+        .iter()
+        .find(|event| event.kind == emberloop_core::events::EventKind::SteerQueued)
+        .unwrap();
+    assert_eq!(queued.data["imagesCount"], 1);
 }
 
 #[tokio::test]

@@ -236,6 +236,7 @@ fn mcp_config(wiring: &HarnessWiring) -> serde_json::Value {
         (None, Some(command)) if !command.is_empty() => serde_json::json!({
             "command": command[0], "args": &command[1..], "exposure": "direct",
             "timeout": TIMEOUT_SECONDS,
+            "env": wiring.env.iter().cloned().collect::<BTreeMap<_, _>>(),
         }),
         _ => return serde_json::json!({"mcpServers": {}}),
     };

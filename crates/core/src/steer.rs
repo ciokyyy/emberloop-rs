@@ -43,12 +43,25 @@ pub struct SteerImage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReviewerReport {
+    pub session_id: String,
+    pub role: String,
+    pub ticket_path: String,
+    pub status: String,
+    pub summary: String,
+    pub report: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SteerEntry {
     pub id: String,
     pub kind: SteerKind,
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<SteerImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<ReviewerReport>,
     pub state: SteerState,
     pub queued_at: u64,
     pub delivered_at: Option<u64>,
@@ -86,12 +99,7 @@ impl SteerQueue {
     /// flight when the daemon stopped is requeued.
     pub async fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let mut entries = load(&path);
-        for entry in &mut entries {
-            if entry.state == SteerState::InFlight {
-                entry.state = SteerState::Pending;
-            }
-        }
+        let entries = load(&path);
         Self {
             entries: AsyncMutex::new(entries),
             gate: AsyncMutex::new(()),
@@ -131,80 +139,96 @@ impl SteerQueue {
             kind,
             text: text.into(),
             images,
+            report: None,
             state: SteerState::Pending,
             queued_at: now_ms(),
             delivered_at: None,
             route: None,
         };
-        let snapshot = {
-            let mut entries = self.entries.lock().await;
-            entries.push(entry.clone());
-            entries.clone()
-        };
-        self.save(&snapshot);
+        let mut entries = self.entries.lock().await;
+        entries.push(entry.clone());
+        self.save(&entries);
         entry
+    }
+
+    /// Accept a report only after its queue entry is durable.
+    pub async fn enqueue_report(&self, report: ReviewerReport) -> std::io::Result<SteerEntry> {
+        let entry = SteerEntry {
+            id: generate_id("submit"),
+            kind: SteerKind::Steer,
+            text: format!(
+                "Sub-agent report from {} reviewer ({}) for {} [{}]\n{}\n\n{}",
+                report.role,
+                report.session_id,
+                report.ticket_path,
+                report.status,
+                report.summary,
+                report.report
+            ),
+            images: Vec::new(),
+            report: Some(report),
+            state: SteerState::Pending,
+            queued_at: now_ms(),
+            delivered_at: None,
+            route: None,
+        };
+        let mut entries = self.entries.lock().await;
+        entries.push(entry.clone());
+        if let Err(error) = self.try_save(&entries) {
+            entries.pop();
+            return Err(error);
+        }
+        Ok(entry)
     }
 
     /// Mark every pending entry in flight before one upstream request carries
     /// the whole queue as a single prompt.
     pub async fn drain_pending(&self) -> Vec<SteerEntry> {
-        let (drained, snapshot) = {
-            let mut entries = self.entries.lock().await;
-            let mut drained = Vec::new();
-            for entry in entries.iter_mut() {
-                if entry.state == SteerState::Pending {
-                    entry.state = SteerState::InFlight;
-                    drained.push(entry.clone());
-                }
+        let mut entries = self.entries.lock().await;
+        let mut drained = Vec::new();
+        for entry in entries.iter_mut() {
+            if entry.state == SteerState::Pending {
+                entry.state = SteerState::InFlight;
+                drained.push(entry.clone());
             }
-            (drained, entries.clone())
-        };
-        self.save(&snapshot);
+        }
+        self.save(&entries);
         drained
     }
 
     pub async fn mark_in_flight(&self, ids: &[String]) {
-        let snapshot = {
-            let mut entries = self.entries.lock().await;
-            for entry in entries.iter_mut() {
-                if ids.contains(&entry.id) {
-                    entry.state = SteerState::InFlight;
-                }
+        let mut entries = self.entries.lock().await;
+        for entry in entries.iter_mut() {
+            if ids.contains(&entry.id) {
+                entry.state = SteerState::InFlight;
             }
-            entries.clone()
-        };
-        self.save(&snapshot);
+        }
+        self.save(&entries);
     }
 
     pub async fn mark_delivered(&self, ids: &[String], route: &str) {
         let now = now_ms();
-        let snapshot = {
-            let mut entries = self.entries.lock().await;
-            for entry in entries.iter_mut() {
-                if ids.contains(&entry.id) {
-                    entry.state = SteerState::Delivered;
-                    entry.delivered_at = Some(now);
-                    entry.route = Some(route.to_string());
-                }
+        let mut entries = self.entries.lock().await;
+        for entry in entries.iter_mut() {
+            if ids.contains(&entry.id) {
+                entry.state = SteerState::Delivered;
+                entry.delivered_at = Some(now);
+                entry.route = Some(route.to_string());
             }
-            entries.clone()
-        };
-        self.save(&snapshot);
+        }
+        self.save(&entries);
     }
 
     pub async fn requeue(&self, ids: &[String]) {
-        let snapshot = {
-            let mut entries = self.entries.lock().await;
-            for entry in entries.iter_mut() {
-                if ids.contains(&entry.id) {
-                    entry.state = SteerState::Pending;
-                    entry.delivered_at = None;
-                    entry.route = None;
-                }
+        let mut entries = self.entries.lock().await;
+        for entry in entries.iter_mut() {
+            if ids.contains(&entry.id) {
+                entry.state = SteerState::Pending;
+                entry.delivered_at = None;
+                entry.route = None;
             }
-            entries.clone()
-        };
-        self.save(&snapshot);
+        }
+        self.save(&entries);
     }
 
     /// A request owns the Session until `end_request`. Delivery is decided at
@@ -298,27 +322,34 @@ impl SteerQueue {
     }
 
     fn save(&self, entries: &[SteerEntry]) {
+        let _ = self.try_save(entries);
+    }
+
+    fn try_save(&self, entries: &[SteerEntry]) -> std::io::Result<()> {
         let Some(path) = &self.path else {
-            return;
+            return Ok(());
         };
-        let Ok(text) = serde_json::to_string_pretty(entries) else {
-            return;
-        };
+        let text = serde_json::to_vec_pretty(entries)?;
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
         let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(tmp, path);
-        }
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(tmp, path)
     }
 }
 
 fn load(path: &Path) -> Vec<SteerEntry> {
-    std::fs::read_to_string(path)
+    let mut entries: Vec<SteerEntry> = std::fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for entry in &mut entries {
+        if entry.state == SteerState::InFlight {
+            entry.state = SteerState::Pending;
+        }
+    }
+    entries
 }
 
 #[derive(Clone, Default)]

@@ -1,11 +1,13 @@
 import type { components } from './schema';
 
-/** An agent-managed skill as the skill list shows it. */
+/** A skill the daemon sees, as the skills page shows it. */
 export interface SkillSummary {
   name: string;
   description: string;
   /** Found under a project root rather than the global root. */
   project: boolean;
+  /** `agent`, `downloaded`, or `human` when the frontmatter names no origin. */
+  origin: string;
   path: string;
 }
 
@@ -56,6 +58,8 @@ export interface Session {
   title: string;
   model: string;
   thoughtLevel?: string;
+  parentId?: string;
+  reviewerRole?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -73,10 +77,26 @@ export interface Model {
   updated_at: number;
 }
 
+export interface ReviewerSettings {
+  model: string;
+  reasoning_effort: string | null;
+}
+
+export interface ReviewerReport {
+  sessionId: string;
+  role: string;
+  ticketPath: string;
+  status: string;
+  summary: string;
+  report: string;
+}
+
 export interface Settings {
   title_generation: boolean;
   title_model: string;
   default_model: string;
+  spec_reviewer: ReviewerSettings;
+  standards_reviewer: ReviewerSettings;
   proxy_compression: boolean;
   ponytail_default_level: string;
   todo_reminders: boolean;
@@ -107,6 +127,14 @@ export interface PromptInfo {
 export interface PromptText {
   id: string;
   text: string;
+}
+
+export interface PromptProposal {
+  id: string;
+  text: string;
+  reason: string;
+  current: string;
+  stale: boolean;
 }
 
 export interface PromptImage {

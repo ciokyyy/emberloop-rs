@@ -9,14 +9,23 @@ use serde_json::Value;
 use store::{DataRoot, ProjectsStore, SessionsStore};
 use tools::{ToolConfig, Toolbox};
 
-/// The review may write skills and look around; it may not run commands or edit files.
-const ALLOWED: &[&str] = &["skill_manage", "skill_search", "read", "grep", "find"];
+/// The review may write skills, stage prompt proposals for the User, and look around; it may not
+/// run commands, edit files, or change a prompt itself.
+const ALLOWED: &[&str] = &[
+    "skill_manage",
+    "skill_search",
+    "prompt_propose",
+    "read",
+    "grep",
+    "find",
+];
 
 pub(crate) struct ReviewExecutor {
     pub sessions: SessionsStore,
     pub projects: ProjectsStore,
     pub data_root: DataRoot,
     pub global_skills: PathBuf,
+    pub config_root: PathBuf,
 }
 
 impl std::fmt::Debug for ReviewExecutor {
@@ -31,7 +40,7 @@ impl ReviewTools for ReviewExecutor {
         let short = crate::tooldisplay::short_tool_name(name);
         if !ALLOWED.contains(&short) {
             return Err(format!(
-                "Background review denied non-whitelisted tool: {name}. Only skill tools and read-only file tools are allowed."
+                "Background review denied non-whitelisted tool: {name}. Only skill tools, prompt_propose and read-only file tools are allowed."
             ));
         }
         let meta = self
@@ -46,6 +55,7 @@ impl ReviewTools for ReviewExecutor {
             .ok_or("the Project is gone")?;
         let toolbox = Toolbox::new(ToolConfig {
             global_skills: Some(self.global_skills.clone()),
+            prompts_dir: Some(self.config_root.join("prompts")),
             ..ToolConfig::new(project.root, self.data_root.session_spill_dir(session_id))
         })
         .map_err(|error| error.to_string())?;
@@ -72,15 +82,22 @@ mod tests {
                 .unwrap(),
             data_root,
             global_skills: dir.path().join("skills"),
+            config_root: dir.path().join("config"),
         };
         for name in ["bash", "mcp__el__edit", "write"] {
             let error = executor.call("ses_1", name, &json!({})).await.unwrap_err();
             assert_eq!(
                 error,
                 format!(
-                    "Background review denied non-whitelisted tool: {name}. Only skill tools and read-only file tools are allowed."
+                    "Background review denied non-whitelisted tool: {name}. Only skill tools, prompt_propose and read-only file tools are allowed."
                 )
             );
         }
+        // Allowed: it gets past the whitelist and stops at the missing Session.
+        let error = executor
+            .call("ses_1", "mcp__el__prompt_propose", &json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(error, "the Session is gone");
     }
 }

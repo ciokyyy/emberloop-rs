@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { Select as SelectPrimitive } from 'bits-ui';
   import CheckIcon from '@lucide/svelte/icons/check';
   import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
@@ -7,7 +8,8 @@
 
   // The one select. Controlled: `value` in, `onchange` out. The label comes from `value`,
   // not the menu's own state, so an action item such as "+ Add project" never shows as the value.
-  let { value = '', options, label, placeholder = '', disabled = false, class: className, onchange }: {
+  // `trigger` replaces the trigger's contents when a caller needs more than one line of label.
+  let { value = '', options, label, placeholder = '', disabled = false, class: className, onchange, trigger }: {
     value?: string;
     options: { value: string; label: string }[];
     label: string;
@@ -15,6 +17,7 @@
     disabled?: boolean;
     class?: string;
     onchange?: (value: string) => void;
+    trigger?: Snippet<[string]>;
   } = $props();
 
   let open = $state(false);
@@ -23,8 +26,12 @@
 
 <SelectPrimitive.Root type="single" {value} bind:open {disabled} onValueChange={(next) => onchange?.(next)}>
   <SelectPrimitive.Trigger aria-label={label} class={cn('field flex items-center justify-between gap-2 text-left cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 hover:border-fg-3 focus-visible:outline-none focus-visible:border-fg-3', className)}>
-    <span class="truncate">{shown}</span>
-    <ChevronDownIcon class={cn('size-4 shrink-0 text-fg-3 transition-transform', open && 'rotate-180')} />
+    {#if trigger}
+      {@render trigger(shown)}
+    {:else}
+      <span class="truncate">{shown}</span>
+      <ChevronDownIcon class={cn('size-4 shrink-0 text-fg-3 transition-transform', open && 'rotate-180')} />
+    {/if}
   </SelectPrimitive.Trigger>
   <SelectPrimitive.Portal>
     <SelectPrimitive.Content forceMount sideOffset={6}>

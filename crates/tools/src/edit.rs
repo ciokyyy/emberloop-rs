@@ -43,17 +43,15 @@ struct Parsed {
 
 fn header_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(
-        || match Regex::new(r"^\s*\[([^#\s\]]+)#([0-9A-Fa-f]{4})\]") {
-            Ok(re) => re,
-            Err(_) => unreachable!(),
-        },
-    )
+    RE.get_or_init(|| match Regex::new(r"^\s*\[([^#\s]+)#([0-9A-Fa-f]{4})\]") {
+        Ok(re) => re,
+        Err(_) => unreachable!(),
+    })
 }
 
 fn loose_header_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| match Regex::new(r"^\s*\[([^\]\s]+)#([^\]]*)\]") {
+    RE.get_or_init(|| match Regex::new(r"^\s*\[([^#\s]+)#([^\]]*)\]") {
         Ok(re) => re,
         Err(_) => unreachable!(),
     })

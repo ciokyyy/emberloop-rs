@@ -143,6 +143,7 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tools",
  "tower",
+ "tracing",
  "utoipa",
 ]
 
@@ -1887,6 +1888,7 @@ version = "0.0.12"
 dependencies = [
  "hex",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 1.0.69",

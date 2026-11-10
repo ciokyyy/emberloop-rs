@@ -79,3 +79,15 @@ describe('paging', () => {
     expect(onloadmore).toHaveBeenCalledTimes(1);
   });
 });
+
+it('shows each incoming sub-agent report with a reviewer link and its delivery state', () => {
+  const report = { sessionId: 'child', role: 'spec', ticketPath: 'ticket.md', status: 'done', summary: 'Missing acceptance check', report: '**Finding:** missing check.' };
+  const view = render(Feed, { feed: state([{ id: 'submit1', kind: 'steer', route: 'pending', report }]) });
+  expect(view.getByText('Sub-agent report')).toBeTruthy();
+  expect(view.getByRole('link', { name: 'Spec reviewer' }).getAttribute('href')).toContain('child');
+  expect(view.getByText('ticket.md')).toBeTruthy();
+  expect(view.getByText('Missing acceptance check')).toBeTruthy();
+  expect(view.getByText('Queued')).toBeTruthy();
+  expect(view.container.querySelector('details strong')?.textContent).toBe('Finding:');
+  expect(view.queryByText('Steer ·')).toBeNull();
+});

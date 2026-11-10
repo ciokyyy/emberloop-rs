@@ -1,9 +1,16 @@
 # AGENTS.md — crates/api
 
+## Reviewer subagents
+
+`subagents.rs` owns `POST /api/sessions/{id}/subagents`: parent/role reuse, assignment validation, ownership checks, review dispatch and per-submission delivery. `result` reads report history from the parent queue. Only `submit` forwards reports; numbered reviewer errors and cancellation notify the parent separately. Recovery restores queued delivery, not reviewer work. Settings provide independent creation-only reviewer model and reasoning defaults. A `notice` with `action: subagent_created` refreshes the sidebar.
+
+`session_setup.rs` validates creation defaults before a reviewer is saved. It configures the driver only for an existing Session; a new Session starts its harness with the saved model on its first prompt. Session timestamps use milliseconds, matching ordinary Session creation.
+
 ## Purpose
 
 Exposes axum REST API, SSE event endpoints and the model catalogue with utoipa OpenAPI schema generator:
 - `/api/projects`: list, create, update, delete projects
+- `/api/projects/clone`: add a Project by `git clone`. `project_clone.rs` takes the folder name from the repository URL, expands `~` with `$HOME`, refuses an existing folder, and runs `git clone --` with `GIT_TERMINAL_PROMPT=0`, a 120-second timeout and no stdin, so a private clone fails on the local git credentials instead of hanging on a prompt.
 - `/api/projects/:id/design` returns the private edit link for the project’s one live FigCraft document, or 503 when unavailable. `design.rs` keeps a project MCP client for atomic five-second `design.figcraft` snapshots. `/api/figcraft/live/` proxies WebSocket frames only to the loopback FigCraft server and rejects cross-origin or missing-Origin requests. FigCraft normalizes the server path with a trailing slash and sends file credentials in its binary Hello, not WebSocket query parameters. The publish key stays server-side.
 - `/api/sessions`: list, create, update, delete sessions. PATCH accepts `model` and `thoughtLevel` together; `session_setup.rs` validates catalogue efforts and idle state, waits for the driver acknowledgment, then persists settings. Unknown models/efforts are 400; busy/refused changes are 409 and keep metadata unchanged.
 - `/api/sessions/:id/prompt`: user prompt with text and images; refreshes `lastUsedAt`. The prompt route allows 70 MiB JSON bodies for up to five 10 MiB PNG/JPEG/WebP/GIF attachments and rejects known text-only models. While the Session's turn is active a prompt, with or without images, is queued as a steer instead, so a reloaded UI that thinks the Session is idle cannot hand the harness a second prompt.
@@ -15,6 +22,7 @@ Exposes axum REST API, SSE event endpoints and the model catalogue with utoipa O
 - `/api/settings`: get and update system settings, including the ticket-20 Context keys (`max_context_limit`, `min_pressure_benefit_tokens`, `emergency_threshold_percent`, `preserve_recent_messages`, `protected_tools`, `inject_tool`, `inject_nudge`, `tier2_trigger`, `tier3_trigger`); `serde(default)` fills them for older saved settings.
 - `Settings.skills_review_interval` (`u32`, default 5, `serde(default)`): tool-calling rounds after the last `skill_manage` before a final answer starts the background skill review in the proxy; 0 turns it off. No UI control in v1; `openapi.json` and `web/src/lib/api/schema.d.ts` carry it.
 - `/api/prompts`: list prompt ids with default/override/active hashes; `PUT/DELETE /api/prompts/:id` writes or removes an override
+- `/api/prompt-proposals`: `GET` lists pending prompt proposals staged by the background review (`id`, `text`, `reason`, `current` active text, `stale`); `POST /api/prompt-proposals/:id/approve` writes the proposal as the override and returns the `PromptDto`; `DELETE /api/prompt-proposals/:id` rejects it (204). 404 for an id with no proposal, 400 for text the override rules refuse. The store sits beside the prompts directory (`prompts::ProposalStore::for_prompts_dir`).
 - `/api/models`: merged model catalogue; `POST /api/models/refresh` forces the configured sources to refresh
 - `/api/providers`: list providers, Antigravity login flow, and `PUT`/`DELETE /api/providers/:id/key` for API-key providers (`opencode-go` and the `emberloop_core::providers` registry; any other id is 404). `ProviderView.auth` is `login` or `key`
 - `/api/version`: reports `EMBERLOOP_BUILD_VERSION` when supplied at build time, otherwise the crate version, matching the daemon release version.
@@ -31,4 +39,4 @@ Exposes axum REST API, SSE event endpoints and the model catalogue with utoipa O
 
 ## Title and usage contracts
 
-Settings include `title_generation` (default true) and `title_model` (default `openrouter/openrouter/free`). PUT validates the provider/model format. Settings remain process-local, like the existing settings. `GET /api/providers/{provider}/usage?refresh=true` calls the daemon usage seam and returns `UsageView { windows, balance, error }`; percentages describe used quota, resets are epoch-second strings or provider timestamps. No credentials are returned. PATCH applies explicit title changes through `SessionsStore::update_title`.
+Settings include `title_generation` (default true) and `title_model` (default `openrouter/openrouter/free`). PUT validates the provider/model format, then writes the whole Settings to `settings.json` under the data root and only then swaps the in-memory copy, so reviewer model defaults and every other choice survive a daemon restart or update; a failed write is a 500 and leaves the running settings untouched. `GET /api/providers/{provider}/usage?refresh=true` calls the daemon usage seam and returns `UsageView { windows, balance, error }`; percentages describe used quota, resets are epoch-second strings or provider timestamps. No credentials are returned. PATCH applies explicit title changes through `SessionsStore::update_title`.

@@ -62,3 +62,76 @@ it('restores text drafts per session and clears only after successful send', asy
   setup({ sessionId: 'draft-one' });
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('');
 });
+
+it('holds a screen wake lock while recording a voice note', async () => {
+  const release = vi.fn().mockResolvedValue(undefined);
+  const request = vi.fn().mockResolvedValue({ release });
+  vi.stubGlobal('navigator', {
+    mediaDevices: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) },
+    wakeLock: { request }
+  });
+  vi.stubGlobal('MediaRecorder', class {
+    static isTypeSupported = () => true;
+    mimeType = 'audio/webm';
+    state = 'inactive';
+    onstop: (() => void) | null = null;
+    start() { this.state = 'recording'; }
+    stop() { this.state = 'inactive'; this.onstop?.(); }
+  });
+  const view = setup();
+  await fireEvent.click(screen.getByRole('button', { name: 'Record voice note' }));
+  await waitFor(() => expect(request).toHaveBeenCalledWith('screen'));
+  view.unmount();
+  await waitFor(() => expect(release).toHaveBeenCalled());
+});
+
+it('retries a voice note whose transcription failed', async () => {
+  vi.stubGlobal('navigator', {
+    mediaDevices: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) }
+  });
+  vi.stubGlobal('MediaRecorder', class {
+    static isTypeSupported = () => true;
+    mimeType = 'audio/webm';
+    state = 'inactive';
+    onstop: (() => void) | null = null;
+    start() { this.state = 'recording'; }
+    stop() { this.state = 'inactive'; this.onstop?.(); }
+  });
+  vi.stubGlobal('fetch', vi.fn()
+    .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    .mockResolvedValue({ ok: true, headers: { get: () => 'application/json' }, json: async () => ({ text: 'hello there' }) }));
+  setup();
+  await fireEvent.click(screen.getByRole('button', { name: 'Record voice note' }));
+  await fireEvent.click(await screen.findByRole('button', { name: 'Stop recording' }));
+  expect(await screen.findByText('Transcription failed')).toBeTruthy();
+  expect(screen.getByText('Failed to fetch')).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await waitFor(() =>
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('hello there')
+  );
+  expect(screen.queryByText('Transcription failed')).toBeNull();
+});
+
+it('starts the recorder so a second mic tap can stop it', async () => {
+  vi.stubGlobal('navigator', {
+    mediaDevices: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) }
+  });
+  // Real MediaRecorder throws on stop() before start(), so this stub fails the test when start() is lost.
+  vi.stubGlobal('MediaRecorder', class {
+    static isTypeSupported = () => true;
+    mimeType = 'audio/webm';
+    state = 'inactive';
+    onstop: (() => void) | null = null;
+    start() { this.state = 'recording'; }
+    stop() {
+      if (this.state !== 'recording') throw new DOMException('Recorder is inactive', 'InvalidStateError');
+      this.state = 'inactive';
+      this.onstop?.();
+    }
+  });
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+  setup();
+  await fireEvent.click(screen.getByRole('button', { name: 'Record voice note' }));
+  await fireEvent.click(await screen.findByRole('button', { name: 'Stop recording' }));
+  expect(await screen.findByText('Transcription failed')).toBeTruthy();
+});

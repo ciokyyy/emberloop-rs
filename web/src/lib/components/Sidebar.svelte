@@ -67,6 +67,8 @@
   };
   const statusOf = (id: string): SessionStatus => statuses[id] ?? 'idle';
   const ADD = '__new__';
+  // The switcher's second line: the Project's root, so two Projects of the same name stay apart.
+  const rootOf = (id: string | null) => projects.find((project) => project.id === id)?.root ?? '';
   // A Session's harness is its model's source; a model the catalogue lost falls back to its name.
   const harnessOf = (model: string) =>
     models.find((entry) => entry.id === model)?.source ?? (model.includes('/') ? 'pi' : 'agy');
@@ -96,6 +98,8 @@
           project,
           hasWorking: projSessions.some((session) => statusOf(session.id) === 'working'),
           sessions: projSessions
+            .filter((session) => !session.parentId || !projSessions.some((parent) => parent.id === session.parentId))
+            .flatMap((parent) => [parent, ...projSessions.filter((child) => child.parentId === parent.id)])
         });
       }
     }
@@ -195,16 +199,27 @@
 </script>
 
 <div class="flex h-full flex-col border-r border-border bg-sidebar">
-  <div class="flex items-center gap-1 px-2 pt-3 pb-2">
-    <Select label="Project" placeholder="Select a Project" class="min-w-0 flex-1" value={projectId ?? ''} onchange={pick}
-      options={[{ value: ADD, label: '+ Add project' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]} />
-    <button class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-2 hover:bg-surface-2 hover:text-fg-1"
+  <div class="flex items-center gap-2 px-2 py-2.5">
+    <Select label="Project" placeholder="Select a Project"
+      class="h-[45px] min-w-0 flex-1 rounded-lg border-transparent bg-transparent px-2 py-1 hover:bg-surface-2"
+      value={projectId ?? ''} onchange={pick}
+      options={[{ value: ADD, label: '+ Add project' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]}>
+      {#snippet trigger(name: string)}
+        <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0 fill-none stroke-current stroke-[1.75] text-fg-2" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></svg>
+        <span class="grid min-w-0 flex-1">
+          <span class="truncate text-[13px] text-fg-1">{name}</span>
+          <span class="truncate text-[11px] text-fg-3">{rootOf(projectId)}</span>
+        </span>
+        <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0 fill-none stroke-current stroke-[1.75] text-fg-3" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+      {/snippet}
+    </Select>
+    <button class="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-border bg-surface-1 text-fg-2 hover:bg-surface-3 hover:text-fg-1"
       aria-label="New session" title="New session" onclick={onnew}>
       <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
     </button>
   </div>
 
-  <nav class="min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label="Sessions">
+  <nav class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2" aria-label="Sessions">
     {#if dragging}
       <div
         bind:this={trashEl}
@@ -219,8 +234,8 @@
       </div>
     {/if}
     {#if draftModel}
-      <div class="row sel flex items-center gap-1 px-1">
-        <button class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left" aria-current="true" onclick={ondraft}>
+      <div class="row sel flex h-8 items-center px-2">
+        <button class="flex h-full min-w-0 flex-1 items-center gap-2 text-left" aria-current="true" onclick={ondraft}>
           <span
             class="h-5 w-[3px] shrink-0 rounded-full"
             style:background={harnessColor(harnessOf(draftModel))}
@@ -231,7 +246,7 @@
       </div>
     {/if}
     {#each projectGroups as group (group.project.id)}
-      <div data-testid="project-header" class="px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-3">
+      <div data-testid="project-header" class="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-3">
         {group.project.name}
       </div>
       {#each group.sessions as session (session.id)}
@@ -239,7 +254,8 @@
         {@const harness = harnessOf(session.model)}
         <div
           class={cn(
-            'row group flex items-center gap-1 px-1',
+            'row group flex h-8 items-center px-2',
+            session.parentId && 'ml-5 border-l border-border',
             selectedId === session.id && 'sel',
             holding === session.id && 'holding',
             dragging?.id === session.id && 'lifted'
@@ -252,7 +268,7 @@
           {#if editing === session.id}
             <span class="h-5 w-[3px] shrink-0 rounded-full" style:background={harnessColor(harness)}></span>
             <input
-              class="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-[13px] outline-none"
+              class="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
               aria-label="Session title"
               bind:value={draft}
               use:focusAll
@@ -264,7 +280,7 @@
             />
           {:else}
             <button
-              class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+              class="flex h-full min-w-0 flex-1 items-center gap-2 text-left"
               aria-current={selectedId === session.id ? 'true' : undefined}
               onpointerdown={(event) => holdStart(event, session)}
               onclick={(event) => {
@@ -296,19 +312,19 @@
   </nav>
 
   <div class="grid grid-cols-4 gap-1 border-t border-border p-2">
-    <button class={cn('row flex flex-col items-center gap-1 px-1 py-2 text-[12px]', usageActive && 'sel')} aria-label="Usage" onclick={onusage}>
+    <button class={cn('row flex flex-col items-center gap-1 py-1.5 text-[11px]', usageActive ? 'sel text-fg-1' : 'text-fg-3 hover:text-fg-1')} aria-label="Usage" onclick={onusage}>
       <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></svg>
       Usage
     </button>
-    <button class={cn('row flex flex-col items-center gap-1 px-1 py-2 text-[12px]', skillsActive && 'sel')} aria-label="Skills" onclick={onskills}>
+    <button class={cn('row flex flex-col items-center gap-1 py-1.5 text-[11px]', skillsActive ? 'sel text-fg-1' : 'text-fg-3 hover:text-fg-1')} aria-label="Skills" onclick={onskills}>
       <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Z" /><path d="M8 7h6" /><path d="M8 11h4" /></svg>
       Skills
     </button>
-    <button class={cn('row flex flex-col items-center gap-1 px-1 py-2 text-[12px]', providersActive && 'sel')} aria-label="Providers" onclick={onproviders}>
+    <button class={cn('row flex flex-col items-center gap-1 py-1.5 text-[11px]', providersActive ? 'sel text-fg-1' : 'text-fg-3 hover:text-fg-1')} aria-label="Providers" onclick={onproviders}>
       <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z" /><path d="m2 22 3-3" /><path d="M7.5 13.5 10 11" /><path d="M10.5 16.5 13 14" /><path d="m18 3-4 4h6l-4 4" /></svg>
       Providers
     </button>
-    <button class={cn('row flex flex-col items-center gap-1 px-1 py-2 text-[12px]', settingsActive && 'sel')} aria-label="Settings" onclick={onsettings}>
+    <button class={cn('row flex flex-col items-center gap-1 py-1.5 text-[11px]', settingsActive ? 'sel text-fg-1' : 'text-fg-3 hover:text-fg-1')} aria-label="Settings" onclick={onsettings}>
       <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><line x1="21" x2="14" y1="4" y2="4" /><line x1="10" x2="3" y1="4" y2="4" /><line x1="21" x2="12" y1="12" y2="12" /><line x1="8" x2="3" y1="12" y2="12" /><line x1="21" x2="16" y1="20" y2="20" /><line x1="12" x2="3" y1="20" y2="20" /><line x1="14" x2="14" y1="2" y2="6" /><line x1="8" x2="8" y1="10" y2="14" /><line x1="16" x2="16" y1="18" y2="22" /></svg>
       Settings
     </button>

@@ -4,6 +4,7 @@
   // Lucide outlines, inlined: the tool feed needs a dozen glyphs and no icon package.
   const ICONS: Record<string, Shape> = {
     'chevron-right': { d: ['m9 18 6-6-6-6'] },
+    'chevron-left': { d: ['m15 18-6-6 6-6'] },
     'chevron-down': { d: ['m6 9 6 6 6-6'] },
     terminal: { d: ['M4 17 10 11 4 5', 'M12 19h8'] },
     pencil: {
@@ -44,6 +45,13 @@
     paperclip: {
       d: [
         'm16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551'
+      ]
+    },
+    'git-branch': {
+      d: ['M6 3v12', 'm18 9a9 9 0 0 1-9 9'],
+      circles: [
+        [6, 18, 3],
+        [18, 6, 3]
       ]
     },
     x: { d: ['M18 6 6 18', 'm6 6 12 12'] },

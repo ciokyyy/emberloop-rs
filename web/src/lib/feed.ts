@@ -1,6 +1,6 @@
 import { readBreakdown } from './contextBreakdown';
 import { skillDiffText } from './skilldiff';
-import type { ContextBreakdown, SessionEvent, SessionStatus, SteerRoute } from './api/types';
+import type { ContextBreakdown, ReviewerReport, SessionEvent, SessionStatus, SteerRoute } from './api/types';
 
 export type ToolStatus = 'running' | 'completed' | 'failed';
 
@@ -28,6 +28,7 @@ export interface FeedItem {
   body?: string;
   finished?: boolean;
   route?: SteerRoute;
+  report?: ReviewerReport;
 }
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
@@ -118,6 +119,13 @@ function toolId(data: Record<string, unknown>): string {
 
 function displayOf(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+}
+
+function reviewerReport(value: unknown): ReviewerReport | undefined {
+  const data = displayOf(value);
+  if (!data || !text(data.sessionId) || !['spec', 'standards'].includes(text(data.role))) return;
+  return { sessionId: text(data.sessionId), role: text(data.role), ticketPath: text(data.ticketPath),
+    status: text(data.status), summary: text(data.summary), report: text(data.report) };
 }
 
 function statusFromFinish(data: Record<string, unknown>): ToolStatus {
@@ -346,7 +354,14 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
         ...state,
         items: [
           ...state.items,
-          { id: toolId(data) || nextId('steer'), kind: 'steer', text: text(data.text), route: 'pending' }
+          {
+            id: toolId(data) || nextId('steer'),
+            kind: 'steer',
+            text: text(data.text),
+            imagesCount: number(data.imagesCount) || undefined,
+            report: reviewerReport(data.report),
+            route: 'pending'
+          }
         ]
       };
 

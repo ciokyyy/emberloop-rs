@@ -45,8 +45,10 @@
             void refresh();
           }
         } catch (cause) {
+          // A flow that cannot be polled is gone: clearing it brings the Connect button back.
           error = String(cause);
           stopWatch();
+          login = null;
         }
       })();
     }, 1000);
@@ -71,6 +73,7 @@
         } catch (cause) {
           error = String(cause);
           stopCodexWatch();
+          codex = null;
         }
       })();
     }, 1000);
@@ -95,6 +98,7 @@
         } catch (cause) {
           error = String(cause);
           stopClaudeWatch();
+          claude = null;
         }
       })();
     }, 1000);
@@ -316,7 +320,7 @@
                 <input class="input w-40" placeholder="Label (optional)" aria-label="Account label" bind:value={label} />
               {/if}
               <button class="btn" disabled={loading} onclick={() => void start(provider.id)}>
-                {provider.signedIn ? 'Add account' : 'Connect'}
+                {provider.signedIn ? (provider.id === 'agy' ? 'Add account' : 'Reconnect') : 'Connect'}
               </button>
             </div>
           {/if}

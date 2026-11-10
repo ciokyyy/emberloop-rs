@@ -135,3 +135,13 @@ it('shows active working sessions across projects at the top with a working dot'
   expect(screen.getByLabelText('Working')).toBeTruthy();
   expect(screen.getByText('In Pi')).toBeTruthy();
 });
+
+it("keeps reviewer children after their parent and opens their own Session", async () => {
+  const session = { projectId: "p", model: "gemini", createdAt: 1, updatedAt: 1 };
+  const onselect = vi.fn();
+  const view = render(Sidebar, { ...base, onselect, projects: [{ id: "p", name: "P", root: "/p" }], projectId: "p", selectedId: "main",
+    sessions: [{ ...session, id: "child", title: "Spec reviewer", parentId: "main", reviewerRole: "spec", updatedAt: 9 }, { ...session, id: "main", title: "Main" }] });
+  expect(view.container.textContent!.indexOf("Main")).toBeLessThan(view.container.textContent!.indexOf("Spec reviewer"));
+  await fireEvent.click(view.getByText("Spec reviewer"));
+  expect(onselect).toHaveBeenCalledWith("child");
+});

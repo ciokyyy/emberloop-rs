@@ -27,6 +27,9 @@ fn write_override(dir: &Path, id: &str, text: &str) {
 fn tool_guidance_keeps_edits_anchored_and_graph_calls_discoverable() {
     assert!(default_text(POLICY).contains("Use hashline `edit` for existing files"));
     assert!(default_text(TOOL_EDIT).contains("PUT 4.=4:"));
+    // A short body must not eat the lines a range covers.
+    assert!(default_text(TOOL_EDIT).contains("replaces every line from N through M"));
+    assert!(default_text(COMPRESS_PROMPT).contains("pending step"));
     // Python edits route through the hashline tool, not around it.
     assert!(default_text(TOOL_EXECUTE).contains("tools.edit(input="));
     assert!(default_text(SKILL_CODEBASE_MEMORY).contains("tools.call('graph.search_graph'"));
@@ -49,6 +52,7 @@ const OFFERED_TOOLS: &[&str] = &[
     "ctx_search",
     "skill_search",
     "skill_manage",
+    "prompt_propose",
     "execute",
 ];
 /// Tools the proxy injects into every request.
@@ -447,4 +451,126 @@ fn todo_and_status_templates_pin_raw_and_render_per_request() {
     assert!(report.contains("{{ status_ranges }}"), "{report}");
     assert!(PROMPT_IDS.contains(&TODO_REMINDER));
     assert!(PROMPT_IDS.contains(&ACP_STATUS_REPORT));
+}
+
+fn proposal_stores(root: &Path) -> (PromptStore, ProposalStore) {
+    let prompts = PromptStore::new(root.join("prompts"));
+    let proposals = ProposalStore::for_prompts_dir(prompts.dir());
+    (prompts, proposals)
+}
+
+#[test]
+fn a_proposal_is_stored_listed_and_replaced_by_a_newer_one() {
+    let dir = tempdir().unwrap();
+    let (prompts, proposals) = proposal_stores(dir.path());
+    assert!(proposals.list().is_empty());
+
+    let first = proposals
+        .propose(&prompts, TOOL_EDIT, "first text", "why one")
+        .unwrap();
+    assert_eq!(first.base_hash, prompts.active_hash(TOOL_EDIT).unwrap());
+    proposals
+        .propose(&prompts, TOOL_EDIT, "second text", "why two")
+        .unwrap();
+    proposals
+        .propose(&prompts, TOOL_BASH, "bash text", "why bash")
+        .unwrap();
+
+    let listed = proposals.list();
+    assert_eq!(listed.len(), 2);
+    let edit = proposals.get(TOOL_EDIT).unwrap();
+    assert_eq!(
+        (edit.text.as_str(), edit.reason.as_str()),
+        ("second text", "why two")
+    );
+    assert!(
+        !prompts.has_override(TOOL_EDIT),
+        "a proposal never changes the active text"
+    );
+    assert_eq!(dir.path().join("prompt-proposals"), proposals.dir());
+}
+
+#[test]
+fn a_bad_proposal_is_refused_and_leaves_nothing_behind() {
+    let dir = tempdir().unwrap();
+    let (prompts, proposals) = proposal_stores(dir.path());
+    let active = prompts.text(TOOL_EDIT).unwrap();
+
+    let cases = [
+        ("no.such.prompt", "text", "reason"),
+        (TOOL_EDIT, "  ", "reason"),
+        (TOOL_EDIT, "text {{ nope }}", "reason"),
+        (TOOL_EDIT, "text", " "),
+        (TOOL_EDIT, active.as_str(), "same as active"),
+    ];
+    for (id, text, reason) in cases {
+        assert!(
+            proposals.propose(&prompts, id, text, reason).is_err(),
+            "{id} {text:?} {reason:?}"
+        );
+    }
+    assert!(matches!(
+        proposals.propose(&prompts, "no.such.prompt", "t", "r"),
+        Err(PromptError::NotFound { .. })
+    ));
+    assert!(proposals.list().is_empty());
+}
+
+#[test]
+fn a_proposal_goes_stale_when_the_active_text_changes() {
+    let dir = tempdir().unwrap();
+    let (prompts, proposals) = proposal_stores(dir.path());
+    let proposal = proposals
+        .propose(&prompts, TOOL_EDIT, "proposed", "reason")
+        .unwrap();
+    assert!(!proposal.is_stale(&prompts));
+    prompts.set_override(TOOL_EDIT, "edited by hand").unwrap();
+    assert!(proposals.get(TOOL_EDIT).unwrap().is_stale(&prompts));
+}
+
+#[test]
+fn approving_writes_the_override_and_clears_the_proposal_but_not_a_pinned_session() {
+    let dir = tempdir().unwrap();
+    let (prompts, proposals) = proposal_stores(dir.path());
+    let running = PinnedPrompts::pin(&prompts, &vars()).unwrap();
+    let before = running.text(TOOL_EDIT).unwrap().to_string();
+    proposals
+        .propose(&prompts, TOOL_EDIT, "approved text", "reason")
+        .unwrap();
+
+    proposals.approve(&prompts, TOOL_EDIT).unwrap();
+
+    assert_eq!(prompts.text(TOOL_EDIT).unwrap(), "approved text");
+    assert_eq!(
+        std::fs::read_to_string(prompts.dir().join("tool.edit.description.md")).unwrap(),
+        "approved text"
+    );
+    assert!(proposals.list().is_empty());
+    assert_eq!(running.text(TOOL_EDIT).unwrap(), before);
+    let fresh = PinnedPrompts::pin(&prompts, &vars()).unwrap();
+    assert_eq!(fresh.text(TOOL_EDIT).unwrap(), "approved text");
+}
+
+#[test]
+fn discarding_or_approving_a_missing_proposal_is_not_found() {
+    let dir = tempdir().unwrap();
+    let (prompts, proposals) = proposal_stores(dir.path());
+    for result in [
+        proposals.discard(TOOL_EDIT),
+        proposals.approve(&prompts, TOOL_EDIT),
+        proposals.get("no.such.prompt").map(|_| ()),
+    ] {
+        assert!(matches!(result, Err(PromptError::ProposalNotFound { .. })));
+    }
+    proposals
+        .propose(&prompts, TOOL_EDIT, "text", "reason")
+        .unwrap();
+    proposals.discard(TOOL_EDIT).unwrap();
+    assert!(proposals.list().is_empty());
+}
+
+#[test]
+fn the_propose_tool_has_a_default_description_and_prompt_id() {
+    assert!(PROMPT_IDS.contains(&TOOL_PROMPT_PROPOSE));
+    assert!(default_text(TOOL_PROMPT_PROPOSE).contains("approve"));
 }

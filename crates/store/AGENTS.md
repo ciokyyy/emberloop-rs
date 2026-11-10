@@ -1,5 +1,10 @@
 # AGENTS.md — crates/store
 
+## Reviewer subagents
+
+`sessions::ReviewerAssignment` is optional Session metadata: parent, role, current ticket path and captured starting point. It persists reviewer identity across reports, ticket changes and restarts; older Session files remain readable without it.
+
+
 ## Purpose
 
 Filesystem persistence and storage layer:

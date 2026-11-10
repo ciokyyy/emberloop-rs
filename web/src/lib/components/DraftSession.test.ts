@@ -9,8 +9,7 @@ it('keeps the greeting central and sends the selected model effort from the bott
   ], onsubmit });
   expect(screen.getByRole('heading', { name: 'What are we working on today?' })).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Choose model and reasoning effort' }));
-  await fireEvent.click(screen.getByRole('combobox', { name: 'Reasoning effort' }));
-  await fireEvent.pointerUp(screen.getByRole('option', { name: 'max' }));
+  await fireEvent.click(screen.getByRole('button', { name: 'max' }));
   await fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
   await fireEvent.input(screen.getByRole('textbox'), { target: { value: 'hello' } });
   await fireEvent.click(screen.getByRole('button', { name: 'Send' }));

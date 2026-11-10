@@ -15,7 +15,7 @@ use crate::{ToolError, ToolResult};
 
 const READ_CHUNK: u64 = 64 * 1024;
 const DEFAULT_WAIT_SECS: u64 = 60;
-const MAX_WAIT_SECS: u64 = 600;
+pub(crate) const MAX_WAIT_SECS: u64 = 600;
 const FIRST_OUTPUT_WAIT: Duration = Duration::from_millis(50);
 
 #[derive(Deserialize)]
@@ -135,11 +135,19 @@ impl BackgroundManager {
     }
 
     pub async fn run(&self, args: &Value) -> ToolResult<String> {
+        self.run_capped(args, MAX_WAIT_SECS).await
+    }
+
+    /// `max_wait_secs` caps a `wait`: [`MAX_WAIT_SECS`], lowered to the harness cap.
+    pub async fn run_capped(&self, args: &Value, max_wait_secs: u64) -> ToolResult<String> {
         let args: BackgroundArgs = serde_json::from_value(args.clone())?;
         match args.action.as_str() {
             "list" => self.list().await,
             "read" => self.read(args.id.as_deref(), args.offset.unwrap_or(0)),
-            "wait" => self.wait(args.id.as_deref(), args.timeout).await,
+            "wait" => {
+                self.wait(args.id.as_deref(), args.timeout, max_wait_secs)
+                    .await
+            }
             "stop" => self.stop(args.id.as_deref()).await,
             other => Err(ToolError::msg(format!(
                 "unknown background action {other:?}; use list, read, wait or stop"
@@ -176,9 +184,14 @@ impl BackgroundManager {
     }
 
     #[allow(clippy::disallowed_methods)]
-    async fn wait(&self, id: Option<&str>, timeout: Option<u64>) -> ToolResult<String> {
+    async fn wait(
+        &self,
+        id: Option<&str>,
+        timeout: Option<u64>,
+        max_wait_secs: u64,
+    ) -> ToolResult<String> {
         let id = id.ok_or_else(|| ToolError::msg("background wait needs an id"))?;
-        let secs = timeout.unwrap_or(DEFAULT_WAIT_SECS).clamp(1, MAX_WAIT_SECS);
+        let secs = timeout.unwrap_or(DEFAULT_WAIT_SECS).clamp(1, max_wait_secs);
         let mut entries = self.entries.lock().await;
         let entry = entries
             .get_mut(id)

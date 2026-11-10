@@ -282,10 +282,7 @@ pub async fn run(toolbox: Arc<Toolbox>, args: &Value) -> ToolResult<String> {
     if args.code.trim().is_empty() {
         return Err(ToolError::msg("code is required"));
     }
-    let timeout_secs = args
-        .timeout
-        .unwrap_or(DEFAULT_TIMEOUT_SECS)
-        .clamp(1, MAX_TIMEOUT_SECS);
+    let timeout_secs = toolbox.call_secs(args.timeout, DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
     let tmp_dir = create_bridge_dir()?;
     // An MCP failure or a slow start costs the MCP stubs only: the builtin ones stay.
     let mcp = toolbox.mcp_tools_soon().await;
@@ -579,6 +576,11 @@ _SPECS = {{
     "background": {{"sig": "background(action, id, offset, timeout)", "desc": "Manage background commands."}},
     "find": {{"sig": "find(query, grep_keywords, limit, mode, path)", "desc": "Semantic/lexical code finder with modes."}},
     "websearch": {{"sig": "websearch(query, count, domains, fresh, freshness, provider)", "desc": "Search the web."}},
+    "spawn": {{"sig": "spawn(role, ticketPath, startingPoint, text)", "desc": "Start or reuse a persistent Spec or Standards reviewer."}},
+    "steer": {{"sig": "steer(id, ticketPath, startingPoint, text)", "desc": "Continue a reviewer Session."}},
+    "stop": {{"sig": "stop(id)", "desc": "Stop a reviewer without deleting its conversation."}},
+    "result": {{"sig": "result(id)", "desc": "Retrieve all reports from a reviewer."}},
+    "submit": {{"sig": "submit(status, report, summary)", "desc": "Send a new report to the parent Session."}},
 }}
 
 _MCP = _json.loads({mcp_json})

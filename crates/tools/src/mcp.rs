@@ -47,6 +47,9 @@ impl McpServer {
             .into_iter()
             .filter_map(|spec| {
                 let name = spec.get("name")?.as_str()?.to_string();
+                if !self.toolbox.tool_available(&name) {
+                    return None;
+                }
                 let description = self.descriptions.get(&name).cloned().unwrap_or_default();
                 let schema: Map<String, Value> =
                     serde_json::from_value(spec.get("inputSchema")?.clone()).ok()?;
@@ -109,6 +112,36 @@ fn default_descriptions() -> HashMap<String, String> {
 
 fn tool_specs() -> Vec<Value> {
     let specs = json!([
+        {
+            "name": "spawn",
+            "inputSchema": {"type": "object", "properties": {
+                "role": {"type": "string", "enum": ["spec", "standards"]},
+                "ticketPath": {"type": "string"}, "startingPoint": {"type": "string"},
+                "text": {"type": "string"}
+            }, "required": ["role", "ticketPath", "startingPoint"]}
+        },
+        {
+            "name": "steer",
+            "inputSchema": {"type": "object", "properties": {
+                "id": {"type": "string"}, "text": {"type": "string"},
+                "ticketPath": {"type": "string"}, "startingPoint": {"type": "string"}
+            }, "required": ["id", "text", "ticketPath", "startingPoint"]}
+        },
+        {
+            "name": "stop",
+            "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
+        },
+        {
+            "name": "result",
+            "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
+        },
+        {
+            "name": "submit",
+            "inputSchema": {"type": "object", "properties": {
+                "status": {"type": "string", "enum": ["done", "blocked"]},
+                "report": {"type": "string"}, "summary": {"type": "string"}
+            }, "required": ["status"]}
+        },
         {
             "name": "read",
             "inputSchema": {
@@ -302,6 +335,18 @@ fn tool_specs() -> Vec<Value> {
                     }
                 },
                 "required": ["ops"]
+            }
+        },
+        {
+            "name": "prompt_propose",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Prompt id, for example tool.edit.description."},
+                    "text": {"type": "string", "description": "The complete replacement text. Omit text and reason to read the active text."},
+                    "reason": {"type": "string", "description": "What failed and why this text fixes it for every Session."}
+                },
+                "required": ["id"]
             }
         },
         {

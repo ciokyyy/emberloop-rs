@@ -15,6 +15,15 @@ pub enum SessionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewerAssignment {
+    pub parent_id: String,
+    pub role: String,
+    pub ticket_path: String,
+    pub starting_point: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionMeta {
     pub id: String,
     #[serde(rename = "projectId")]
@@ -45,6 +54,8 @@ pub struct SessionMeta {
     /// daemon can load it again instead of starting an empty one.
     #[serde(rename = "resumeToken", default)]
     pub resume_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<ReviewerAssignment>,
 }
 
 impl Default for SessionMeta {
@@ -64,6 +75,7 @@ impl Default for SessionMeta {
             restored_seq: None,
             state: SessionState::Active,
             resume_token: None,
+            reviewer: None,
         }
     }
 }

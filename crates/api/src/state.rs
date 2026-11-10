@@ -6,7 +6,7 @@ use emberloop_core::steer::SteerQueues;
 use prompts::PromptStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{DataRoot, EventLog, ProjectsStore, SessionsStore};
 use tokio::sync::RwLock;
@@ -17,6 +17,8 @@ use utoipa::ToSchema;
 pub struct Settings {
     pub title_generation: bool,
     pub title_model: String,
+    pub spec_reviewer: ReviewerSettings,
+    pub standards_reviewer: ReviewerSettings,
     pub default_model: String,
     pub proxy_compression: bool,
     pub ponytail_default_level: String,
@@ -52,6 +54,8 @@ impl Default for Settings {
             title_generation: true,
             title_model: "openrouter/openrouter/free".into(),
             default_model: "gemini-3.8-flash".into(),
+            spec_reviewer: ReviewerSettings::default(),
+            standards_reviewer: ReviewerSettings::default(),
             proxy_compression: true,
             ponytail_default_level: "full".to_string(),
             todo_reminders: true,
@@ -70,6 +74,43 @@ impl Default for Settings {
             skills_review_interval: 5,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct ReviewerSettings {
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+}
+
+impl Default for ReviewerSettings {
+    fn default() -> Self {
+        Self {
+            model: "gemini-3.8-flash".into(),
+            reasoning_effort: None,
+        }
+    }
+}
+
+/// `settings.json` at the data root: an update to the daemon keeps every choice.
+pub fn save_settings(root: &Path, settings: &Settings) -> Result<(), String> {
+    let file = settings_file(root);
+    let body = serde_json::to_vec_pretty(settings).map_err(|error| error.to_string())?;
+    let temp = file.with_extension("json.tmp");
+    std::fs::write(&temp, body)
+        .and_then(|()| std::fs::rename(&temp, &file))
+        .map_err(|error| format!("cannot save {}: {error}", file.display()))
+}
+
+fn settings_file(root: &Path) -> PathBuf {
+    root.join("settings.json")
+}
+
+fn load_settings(root: &Path) -> Settings {
+    std::fs::read(settings_file(root))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 
 #[derive(Clone)]
@@ -92,6 +133,7 @@ pub struct AppState {
     /// The global skills root the skill pages read; `None` lists no global skills.
     pub global_skills: Option<PathBuf>,
     pub designs: Arc<crate::design::Designs>,
+    pub subagent_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -117,13 +159,14 @@ impl AppState {
             vec![Arc::new(AgySource)],
         ));
         let steers = SteerQueues::with_dir(data_root.sessions_dir());
+        let settings = load_settings(data_root.root());
         Self {
             data_root,
             projects,
             sessions,
             event_bus,
             prompts,
-            settings: Arc::new(RwLock::new(Settings::default())),
+            settings: Arc::new(RwLock::new(settings)),
             event_logs: Arc::new(RwLock::new(HashMap::new())),
             models,
             steers,
@@ -133,6 +176,7 @@ impl AppState {
             global_skills: None,
             groq: None,
             designs: Arc::new(crate::design::Designs::default()),
+            subagent_gate: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 

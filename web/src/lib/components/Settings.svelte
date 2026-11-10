@@ -46,9 +46,9 @@
   ]);
 
   const subagents = [
-    { name: 'scout', description: 'Reads and searches. Cannot edit.', tools: 'read, grep' },
-    { name: 'worker', description: 'Edits and runs commands. One at a time per Session.', tools: 'all tools except subagents' }
-  ];
+    { key: 'spec_reviewer', name: 'Spec reviewer', description: 'Checks ticket requirements, missing work and scope creep.' },
+    { key: 'standards_reviewer', name: 'Standards reviewer', description: 'Checks repository standards and code smells.' }
+  ] as const;
 
   // Tool keys live in the runtime env file the tool shells read on every call, so a saved key
   // applies to the next call with no restart. The API never returns a stored value, only whether one is set.
@@ -257,27 +257,35 @@
 
     <Prompts />
 
-    <details class="rounded-2xl border border-border bg-surface-1 p-4">
-      <summary class="cursor-pointer text-[1.0625rem] font-semibold">Subagents <span class="chip">phase 2</span></summary>
-      <div class="mt-3 grid gap-3 sm:grid-cols-2">
-        {#each subagents as agent (agent.name)}
-          <div class="flex flex-col gap-3 rounded-2xl border border-border bg-surface-1 p-4 opacity-70">
-            <div class="flex items-start justify-between gap-3">
-              <div>
-                <div class="font-mono font-semibold">{agent.name}</div>
-                <div class="text-[13px] text-fg-3">{agent.description}</div>
-              </div>
-              <Switch checked={false} disabled label={`Enable ${agent.name}`} />
+    <section class="flex flex-col gap-3" aria-labelledby="g-subagents">
+      <h3 id="g-subagents" class="text-[1.0625rem] font-semibold">Sub-agents</h3>
+      <p class="text-[13px] text-fg-3">Defaults apply when a reviewer Session is created. Existing reviewers keep their model and reasoning effort.</p>
+      <div class="grid gap-3 sm:grid-cols-2">
+        {#each subagents as agent (agent.key)}
+          {@const defaults = settings[agent.key]}
+          {@const efforts = models.find((model) => model.id === defaults.model)?.efforts ?? []}
+          <div class="flex min-w-0 flex-col gap-3 rounded-2xl border border-border bg-surface-1 p-4">
+            <div>
+              <h4 class="font-semibold">{agent.name}</h4>
+              <p class="text-[13px] text-fg-3">{agent.description}</p>
             </div>
-            <ModelPicker {models} label="Model" disabled />
-            <label class="flex flex-col gap-1 text-[12px] text-fg-3">
-              Extra instruction
-              <input class="field" disabled placeholder="Optional line added to its prompt" />
-            </label>
-            <div class="text-[12px] text-fg-3">Tools: {agent.tools}</div>
+            <ModelPicker {models} value={defaults.model} label={`${agent.name} model`}
+              onchange={(model) => change({ [agent.key]: { model, reasoning_effort: null } })} />
+            {#if efforts.length}
+              <span class="text-[12px] text-fg-3">Reasoning effort</span>
+              <div class="seg flex-wrap" role="group" aria-label={`${agent.name} reasoning effort`}>
+                {#each [null, ...efforts] as option (option)}
+                  <button type="button" aria-pressed={defaults.reasoning_effort === option}
+                    onclick={() => change({ [agent.key]: { ...defaults, reasoning_effort: option } })}>{option ?? 'Default'}</button>
+                {/each}
+              </div>
+            {:else}
+              <p class="text-[12px] text-fg-3">This model has no configurable reasoning effort.</p>
+            {/if}
+            <p class="text-[12px] text-fg-3">The edit tool is unavailable. Shell and other tools remain available; this is not a sandbox.</p>
           </div>
         {/each}
       </div>
-    </details>
+    </section>
   </div>
 </div>

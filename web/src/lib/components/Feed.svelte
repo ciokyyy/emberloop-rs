@@ -8,14 +8,17 @@
   import { segments } from '$lib/toolRuns';
   import Icon from './Icon.svelte';
   import ToolFeed from './ToolFeed.svelte';
+  import SubagentReport from './SubagentReport.svelte';
 
   let {
     feed,
+    projectId = '',
     hasMore = false,
     loadingMore = false,
     onloadmore = null
   }: {
     feed: FeedState;
+    projectId?: string;
     hasMore?: boolean;
     loadingMore?: boolean;
     onloadmore?: (() => Promise<void>) | null;
@@ -262,9 +265,17 @@
 {/snippet}
 
 {#snippet steerBubble(item: FeedItem)}
+  {#if item.report}
+    <SubagentReport report={item.report} route={item.route} {projectId} />
+  {:else}
   <div class="my-1.5 self-end text-right" in:slideUp|global={{ skip: !arrived.has(item.id) }}>
     <div class="inline-block max-w-[85%] rounded-2xl bg-surface-3 px-4 py-2 text-left">
       {item.text}
+      {#if item.imagesCount}
+        <div class="mt-1 text-[11px] text-fg-3">
+          {item.imagesCount} image{item.imagesCount === 1 ? '' : 's'}
+        </div>
+      {/if}
     </div>
     <div class="mt-0.5 text-[12px] text-fg-3">
       Steer ·
@@ -273,6 +284,7 @@
       </span>
     </div>
   </div>
+  {/if}
 {/snippet}
 
 </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cachePath, newPath, newSessionProjects, sessionPath, viewOf, viewPath } from './route';
+import { cachePath, newPath, newSessionProjects, sessionPath, skillPath, viewOf, viewPath } from './route';
 
 describe('route', () => {
   it('builds the paths the Go app uses', () => {
@@ -8,6 +8,7 @@ describe('route', () => {
     expect(viewPath(null, 'providers')).toBe('/providers');
     expect(newPath('p1')).toBe('/p/p1/new');
     expect(cachePath('p1', 's1')).toBe('/p/p1/s/s1/cache');
+    expect(skillPath('p1', 'research')).toBe('/p/p1/skills/research');
   });
 
   it('names the view from the route the router matched', () => {
@@ -17,6 +18,8 @@ describe('route', () => {
     expect(viewOf('/p/[project]/settings')).toBe('settings');
     expect(viewOf('/settings')).toBe('settings');
     expect(viewOf('/providers')).toBe('providers');
+    expect(viewOf('/p/[project]/skills')).toBe('skills');
+    expect(viewOf('/p/[project]/skills/[name]')).toBe('skill');
     expect(viewOf('/')).toBe('session');
     expect(viewOf(null)).toBe('session');
   });

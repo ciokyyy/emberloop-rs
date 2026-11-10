@@ -3,12 +3,14 @@ pub mod design;
 pub mod driver;
 pub mod models;
 pub mod persist;
+pub mod project_clone;
 pub mod providers;
 pub mod routes;
 mod session_setup;
 pub mod skills;
 pub mod sse;
 pub mod state;
+pub mod subagents;
 pub mod transcribe;
 pub mod usage;
 

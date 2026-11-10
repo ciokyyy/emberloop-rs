@@ -8,6 +8,7 @@ import type {
   ProviderView,
   PromptImage,
   PromptInfo,
+  PromptProposal,
   PromptText,
   Session,
   SessionEvent,
@@ -40,6 +41,8 @@ export const api = {
   listProjects: () => request<Project[]>('/api/projects'),
   createProject: (name: string, root: string) =>
     request<Project>('/api/projects', { method: 'POST', body: JSON.stringify({ name, root }) }),
+  cloneProject: (repo: string, location: string) =>
+    request<Project>('/api/projects/clone', { method: 'POST', body: JSON.stringify({ repo, location }) }),
   updateProject: (id: string, patch: { name?: string; root?: string }) =>
     request<Project>(`/api/projects/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -108,7 +111,10 @@ export const api = {
 
   providerUsage: (provider: string, refresh = false): Promise<UsageView> =>
     request(`/api/providers/${encodeURIComponent(provider)}/usage?refresh=${refresh}`),
-  listSkills: () => request<SkillSummary[]>('/api/skills'),
+  listSkills: (projectId?: string | null) =>
+    request<SkillSummary[]>(
+      projectId ? `/api/skills?project=${encodeURIComponent(projectId)}` : '/api/skills'
+    ),
   skillDetail: (name: string) => request<SkillDetail>(`/api/skills/${encodeURIComponent(name)}`),
   skillHistory: (name: string) => request<SkillHistory>(`/api/skills/${encodeURIComponent(name)}/history`),
   /** The newest `limit` model requests of a Session, oldest first; the server default is 200. */
@@ -179,6 +185,13 @@ export const api = {
     }),
   deletePrompt: (id: string) =>
     request<PromptInfo>(`/api/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  listPromptProposals: () => request<PromptProposal[]>('/api/prompt-proposals'),
+  approvePromptProposal: (id: string) =>
+    request<PromptInfo>(`/api/prompt-proposals/${encodeURIComponent(id)}/approve`, {
+      method: 'POST'
+    }),
+  discardPromptProposal: (id: string) =>
+    request<void>(`/api/prompt-proposals/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   // history is one page older than `before`, oldest first: the client walks back from the tail
   // window one page at a time, so a refresh never pays for the whole Session.
   history: (id: string, before: number, limit = 8) =>

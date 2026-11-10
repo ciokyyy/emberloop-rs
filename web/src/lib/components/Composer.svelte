@@ -58,10 +58,15 @@
   let dragging = $state(false);
   let textarea = $state<HTMLTextAreaElement | null>(null);
   let picker = $state<HTMLInputElement | null>(null);
-  let recording = $state(false);
+  let voice = $state<'idle' | 'recording' | 'transcribing' | 'failed'>('idle');
+  let voiceError = $state('');
+  let audio = $state<Blob | null>(null);
+  let elapsed = $state(0);
   let recorder: MediaRecorder | null = null;
   let stream: MediaStream | null = null;
   let chunks: Blob[] = [];
+  const recording = $derived(voice === 'recording');
+  const clock = $derived(`${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`);
 
   const action = $derived(resolveComposerAction(working));
   const canSend = $derived(!disabled && !busy && (!!text.trim() || attachments.length > 0));
@@ -73,6 +78,29 @@
     textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
   });
 
+  // Keep the screen awake while recording; a sleeping screen ends the capture. The browser drops the
+  // lock when the page hides, so ask again when it comes back.
+  $effect(() => {
+    if (!recording) return;
+    let lock: WakeLockSentinel | null = null;
+    const request = async () => {
+      try { lock = (await navigator.wakeLock?.request('screen')) ?? null; } catch { lock = null; }
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible' && !lock) void request(); };
+    void request();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      void lock?.release().catch(() => {});
+    };
+  });
+
+  $effect(() => {
+    if (voice !== 'recording') return;
+    elapsed = 0;
+    const timer = setInterval(() => (elapsed += 1), 1000);
+    return () => clearInterval(timer);
+  });
   const reasonText = (reason: RejectReason) =>
     reason === 'size'
       ? 'is over 10 MB and was not attached.'
@@ -157,10 +185,8 @@
       recorder?.stop();
       return;
     }
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      errors = ['Voice input needs https or localhost and a browser with MediaRecorder.'];
-      return;
-    }
+    if (voice === 'transcribing') return;
+    discardVoice();
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const type = pickAudioType((candidate) => MediaRecorder.isTypeSupported(candidate));
@@ -170,9 +196,9 @@
         if (event.data.size) chunks.push(event.data);
       };
       current.onstop = () => void finishVoice(current.mimeType);
-      recorder = current;
       current.start();
-      recording = true;
+      recorder = current;
+      voice = 'recording';
     } catch (error) {
       releaseMic();
       errors = [error instanceof Error ? error.message : String(error)];
@@ -180,29 +206,42 @@
   }
 
   async function finishVoice(mimeType: string) {
-    recording = false;
+    voice = 'idle';
     releaseMic();
-    const audio = new Blob(chunks, { type: mimeType || 'audio/webm' });
+    const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
     chunks = [];
-    if (audio.size > MAX_AUDIO_BYTES) {
+    if (blob.size > MAX_AUDIO_BYTES) {
       errors = ['Recording is over 25 MB. Record a shorter note.'];
       return;
     }
+    await transcribe(blob);
+  }
+
+  async function transcribe(blob: Blob) {
+    voice = 'transcribing';
+    voiceError = '';
     busy = true;
     try {
-      const { text: spoken } = await api.transcribe(audio);
-      if (!spoken) {
-        errors = ['No speech was recognized.'];
-        return;
-      }
+      const { text: spoken } = await api.transcribe(blob);
+      if (!spoken) throw new Error('No speech was recognized.');
       const start = textarea?.selectionStart ?? text.length;
       const end = textarea?.selectionEnd ?? text.length;
       text = insertAt(text, start, end, spoken);
+      audio = null;
+      voice = 'idle';
     } catch (error) {
-      errors = [error instanceof Error ? error.message : String(error)];
+      audio = blob;
+      voiceError = error instanceof Error ? error.message : String(error);
+      voice = 'failed';
     } finally {
       busy = false;
     }
+  }
+
+  function discardVoice() {
+    audio = null;
+    voiceError = '';
+    voice = 'idle';
   }
 
   function releaseMic() {
@@ -215,7 +254,7 @@
       recorder.onstop = null;
       recorder.stop();
     }
-    recording = false;
+    voice = 'idle';
     releaseMic();
   }
 </script>
@@ -267,6 +306,21 @@
       ondragleave={() => (dragging = false)}
       {ondrop}
     >
+      {#if voice !== 'idle'}
+        <div class="flex min-w-0 items-center gap-2 px-2 pb-1 pt-2 text-[12px]" role="status" aria-live="polite">
+          <span class={cn('dot animate-pulse', voice === 'transcribing' ? 'bg-status-working' : 'bg-status-failed')}></span>
+          <span class="shrink-0 text-fg-2">
+            {#if voice === 'recording'}Recording {clock} · tap the mic to stop
+            {:else if voice === 'transcribing'}Transcribing…
+            {:else}Transcription failed{/if}
+          </span>
+          {#if voice === 'failed'}
+            <span class="min-w-0 flex-1 truncate text-fg-3">{voiceError}</span>
+            <button type="button" class="chip shrink-0 hover:bg-surface-3" onclick={() => audio && void transcribe(audio)}>Retry</button>
+            <button type="button" class="chip shrink-0 hover:bg-surface-3" onclick={discardVoice}>Discard</button>
+          {/if}
+        </div>
+      {/if}
       <label class="sr-only" for="composer-text">Message</label>
       <textarea
         id="composer-text"
@@ -308,7 +362,7 @@
           title={recording ? 'Stop and transcribe' : 'Record voice note'}
           disabled={disabled || busy}
           onclick={() => void toggleVoice()}
-        ><Icon name="mic" size={16} /></button>
+        >{#if voice === 'transcribing'}<span class="h-4 w-4 animate-spin rounded-full border-2 border-fg-3 border-t-transparent"></span>{:else}<Icon name="mic" size={16} />{/if}</button>
         <button
           type="button"
           class="icon-btn"
@@ -330,7 +384,7 @@
         {/if}
         <button
           type="button"
-          class="icon-btn bg-brand text-white hover:bg-brand-strong disabled:opacity-40"
+          class="icon-btn bg-brand text-on-accent hover:bg-brand-strong disabled:opacity-40"
           aria-label={action === 'steer' ? 'Steer' : 'Send'}
           title={action === 'steer' ? 'Steer (Enter)' : 'Send (Enter)'}
           data-mode={action}

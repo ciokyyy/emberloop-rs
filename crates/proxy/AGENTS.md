@@ -1,5 +1,10 @@
 # AGENTS.md — crates/proxy
 
+## Reviewer subagents
+
+The Session runtime appends its pinned `reviewer.spec` or `reviewer.standards` instructions to the frozen catalog. `wire::remove_edit_tool` removes only the edit declaration across Google, Anthropic, Chat Completions and Responses tool shapes, independently of compression settings. Harnesses never compose the reviewer system prompt.
+
+
 ## Purpose
 
 Model-wire proxy for every harness.
@@ -40,7 +45,8 @@ The provider's prompt cache hits only when a request starts with the bytes of th
 - Transient, never in the prefix: the nudge sits after the newest tool result and `write_core_contents` strips its mark.
 - Emergency truncation is sticky. An emergency nudge sets `SessionRuntime::emergency_truncated`; every later request then truncates its older results on the outgoing copy with the same rule, until a `compress`, a preflight fold or `reset_history` clears it. `outgoing_body` makes that copy at send time; the stored request keeps every full result, so a `compress` or `decompress` in the emergency request stores and restores the full text. The band is judged on the usage of the truncated body, so without the flag the emergency flips on and off. The flag is in memory only: a restarted proxy starts clear and may flip once.
 - Splice anchor: a self-anchored proxy pair (`compress`, `decompress`, `search_context`, `acp_status`) records `Splice::after_turn` when it is created, the `turn_key` of the newest non-transient turn of the request: `call:<id>` for a tool result, `text:<sha256>` for a text-only user turn, none for a model turn. On apply it goes right after the first turn with that key, so its index stays fixed as the history grows. A key only ever matches a user turn, so the wire order holds by construction.
-- Fallback: when the anchor turn is gone (folded away, rewritten), the pair goes right after the nearest user turn before the newest model turn (directly before that model turn in an alternating history, as before). That user turn becomes its `after_turn`, appended to `splices.jsonl` (a later line with the same id replaces the earlier one). A model turn is never a key, so a model-after-model placement cannot be recorded. A record without the field loads with no anchor and takes the same path.
+- Fold coverage: before replay, `Compressor::folded_call_ids` supplies call ids from every unrestored block's originals. `SpliceStore::apply_skipping` suppresses self-anchored exchanges covered by those ids, including nested folds and summaries already present in the request. Records and originals remain intact; decompression releases their ids for normal replay. Harness-anchored splices retain their existing anchor behavior.
+- Fallback: an unfolded pair whose anchor is gone (folded away, rewritten) goes right after the nearest user turn before the newest model turn (directly before that model turn in an alternating history, as before). That user turn becomes its `after_turn`, appended to `splices.jsonl` (a later line with the same id replaces the earlier one). A model turn is never a key, so a model-after-model placement cannot be recorded. A record without the field loads with no anchor and takes the same path.
 
 ## Nudge gate
 

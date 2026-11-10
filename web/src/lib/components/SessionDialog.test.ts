@@ -14,11 +14,9 @@ describe('Session dialog', () => {
   it('changes reasoning choices with the selected model and submits only a supported effort', async () => {
     const onapply = vi.fn();
     render(SessionDialog, { ...props, onapply });
-    await fireEvent.click(screen.getByRole('button', { name: 'Show model options' }));
-    await fireEvent.pointerUp(screen.getByRole('option', { name: /two/ }));
-    await waitFor(() => expect(screen.queryByRole('option', { name: 'high' })).toBeNull());
-    await fireEvent.click(screen.getByRole('combobox', { name: 'Reasoning effort' }));
-    await fireEvent.pointerUp(screen.getByRole('option', { name: 'max' }));
+    await fireEvent.click(screen.getByRole('button', { name: /two/ }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'high' })).toBeNull());
+    await fireEvent.click(screen.getByRole('button', { name: 'max' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
     expect(onapply).toHaveBeenCalledWith({ model: 'two', thoughtLevel: 'max' });
   });
@@ -27,11 +25,11 @@ describe('Session dialog', () => {
     render(SessionDialog, { ...props, tab: 'context', used: 12000, size: 200000,
       breakdown: { system: 100, toolDefinitions: 200, toolCalls: 300, toolResults: 400,
         compression: 500, conversation: 600, images: 0, estimatedTokens: 2100, imageCount: 2 } });
-    expect(await screen.findByText('System prompts')).toBeTruthy();
+    expect(await screen.findByText('System')).toBeTruthy();
     expect(screen.getByText('Tool definitions')).toBeTruthy();
     expect(screen.getByText('Tool results')).toBeTruthy();
-    expect(screen.getByText('Compression summaries')).toBeTruthy();
-    expect(screen.getByText(/Provider-reported/)).toBeTruthy();
+    expect(screen.getByText('Compression')).toBeTruthy();
+    expect(screen.getByText('Reported input')).toBeTruthy();
     expect(screen.getByText(/image token cost is not available/i)).toBeTruthy();
   });
 

@@ -16,3 +16,5 @@ Open tasks in order, each directly actionable.
 
 ## Reference
 Verbatim code, paths, commands, error strings and session or agent IDs the next session needs. Quote exact.
+
+Keep the pending step, the files still to edit and the commands already proven in Next steps and Reference, verbatim. Keep each open question with its owner. Drop how a decision was reached. Never write a recap of the whole session: the next agent reads the newest user turn first, and this summary is background.

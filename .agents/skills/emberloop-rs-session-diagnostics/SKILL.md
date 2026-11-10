@@ -1,0 +1,37 @@
+---
+name: emberloop-rs-session-diagnostics
+description: Use when a live emberloop-rs Session or its web UI shows a suspicious number or state (cache hit rate, token counts, compression, tool errors, model) or a turn that stops without answering, and you must say whether it is real or a bug. Maps the web route to its component and API call, then reads the daemon's usage and event history, or the harness session file, to find the cause.
+metadata:
+  origin: agent
+---
+
+# Session diagnostics
+
+Answer "is this real or an error?" from the daemon's own records, never from the rendered page alone.
+
+## Procedure
+1. Get the URL the user pasted. The web app is one shell: every route in `web/src/routes/p/[project]/s/[session]/` is a stub, and `web/src/routes/+layout.svelte` picks the component by `view`. Read the route's component (e.g. the cache page renders `web/src/lib/components/CacheView.svelte`) to learn the endpoint it calls.
+2. Reach the daemon's REST API directly with curl. The host in the URL serves `/api` too, so a hosted Session is diagnosable without shell access to that machine:
+   - `GET /api/sessions` — every Session with its `model` and `thoughtLevel`.
+   - `GET /api/sessions/<id>/usage?limit=N` — one `UsageRecord` per model request, oldest first (default 200, max 1000).
+   - `GET /api/sessions/<id>/history?limit=N` — the event log: `usage`, `compression`, `prompt`, `tool_started`/`tool_finished`, `status`, `todos`, `error`.
+   - `GET /api/settings` — `proxy_compression`, `inject_nudge`, `max_context_limit`.
+   On the daemon's own machine the same records are cheaper to aggregate: `/root/.local/share/emberloop-rs/sessions/<id>/` holds `events/*.jsonl` (the history stream), `meta.json`, `nudge.json` and `splices.jsonl`. Parse them in `execute` and print a computed table; a long Session is more than a thousand `usage` rows and printing them buries the pattern.
+3. Correlate by `seq`, not by wall clock: `usage` events carry `seq` matching `UsageRecord.seq`, and the `compression` events between them explain what changed in the prompt. Print the merged timeline (nudge/compress interleaved with usage input, cached, hit) — that pattern usually names the cause in one screen.
+4. Confirm the mechanism in the crate that produced it (`crates/proxy/src/…`, `crates/api/src/usage.rs`) and `crates/*/AGENTS.md`, then answer with the cause and the concrete knob or code path, not with a restatement of the numbers.
+5. Weigh the cost and the spread before proposing a fix: sum the input tokens of the cold rows, express them as a share of all input, and run the same totals over the neighbouring Sessions. Churn concentrated in one Session is a gate or guard defect; churn spread evenly across Sessions is a policy or threshold decision.
+
+## Pitfalls
+- A metric the provider cannot report is displayed as zero, and zero is not a fault: check the wire parser (`crates/proxy/src/meter.rs`) before calling it one. Gemini hardcodes `cache_creation_tokens: 0`, so a permanent `Written 0` is expected on the Google wire.
+- A prompt that goes `working` to `idle` in under a second with no assistant text and no `usage` event never reached a model. Provider errors are not in the event journal; read the harness session file under `pi-homes/<id>/.pi/agent/sessions/` and follow `references/stuck-turns.md`.
+- A turn that ends with an `assistant_chunk` `Agent execution error: Harness process exited unexpectedly (WS close code 1011)` on an agy Session carries the harness stderr in that chunk. `MCP tool call to server "el" timed out after 3m0s` there means a blocking `el` tool call (`bash`, `background wait`, `execute`) ran 3 minutes and Antigravity killed its own process. Match the failed `tool_finished` events (status `failed`, output `Failure in MCP tool execution`) to their `timeout` argument; `ToolConfig::max_call_secs` (`EMBERLOOP_MAX_CALL_SECS`, 170 for agy) is the clamp.
+- To resume a Session that ended on `Agent execution error`, find it by scanning `sessions/*/meta.json` (a reviewer has a `reviewer` object with `parentId` and `role`) for a last `assistant_chunk` containing that string, then `POST /api/sessions/<id>/prompt` with `{"text": ...}`. `spawn`/`steer` reach only reviewers you spawned, so a reviewer under another parent needs the REST prompt. Say in the text what failed and what changed (for example the call cap), tell it to resume and `submit`, then check `/history?limit=6` a minute later for new `tool_started` events.
+- Name the hop before theorising: `invalid request body:` is the proxy, `{"error":{"message":...}}` is structured backend validation, `{"detail":"..."}` is the backend's terse rejection, `Provider HTTP 5xx:` is the proxy wrapping an upstream failure. A bare `{"detail":"Bad Request"}` carries no cause.
+- Fetch with `curl -o /tmp/<name>.json` and parse the file in `execute`. Piping curl into `python3 -c` is refused, and large JSON printed through `bash` spills to a `ctx:` handle before you can parse it.
+- The cache page refetches whenever Session status changes; a UI that looks like it reloads is not evidence of a backend problem. Only the records settle it.
+- Cache hit rate falling is real invalidation whenever the prompt prefix changed. Find the event that changed it (a fold, a steer, a model or wire switch) before blaming the meter or the UI; `UsageRecord.fold: true` names the fold on the row itself. See `references/prompt-cache.md`.
+- A repeatedly re-firing nudge is a gate-state question, not a provider quirk: read the gate (`crates/proxy/src/nudge.rs`) and the `sinceLast`/`kind` fields on the `compression` events before theorising about caching.
+- A golden or parity fixture taken from the reference implementation can encode the defect you are fixing. When its expected early nudge exists only because a fold reopened the gate, changing the golden is the fix; record the deliberate deviation in the fixture's doc comment so the next reader does not restore it.
+- Fold-quality suspicions (model misreads the user's last message, summaries decay): read `<session>/spill/blocks/b*.json` (`start`, `originals`, `summary`). Every block with `start` 1 whose originals hold a prior summary turn means folds re-summarise blocks (`foldable_runs` in `crates/proxy/src/compressor.rs` treats summary turns as foldable, so nudge ranges always begin at 1). Blocks cover only raw turns added after the last block (the billion-context design: one non-compounding fold per increment, tiering only as a deliberate step). `foldable_runs` therefore ends a run at a summary turn, and `refuse_block_folds` in `server.rs` rejects a model `compress` range that includes one; `compress_batch` itself stays permissive so legacy nested blocks still replay. Summary turns also carry the `user` role, so the model can read its own handoff text as user speech.
+- Tool output inside an `execute` script must arrive whole: `Toolbox::maybe_spill` skips spilling while the `IN_SCRIPT` task-local is set (scoped around `call_inner` in `crates/tools/src/execute.rs`). Only the script's final printed output spills at 10 KB, so a script filters before printing instead of paging a `ctx:` stub.
+- A threshold that traces to a spec or parity constant is the user's decision, not part of the diagnosis: measure what it costs (the context and hit rate the Session reached while ignoring a nudge), state the one-line change, and leave the constant alone until they say yes.

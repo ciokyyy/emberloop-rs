@@ -105,6 +105,40 @@
         }
       }
     },
+    "/api/projects/clone": {
+      "post": {
+        "tags": [],
+        "operationId": "clone_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloneProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Repository cloned and added as a Project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a repository URL, git clone failed, or the folder exists"
+          },
+          "500": {
+            "description": "Storage error"
+          }
+        }
+      }
+    },
     "/api/projects/{id}": {
       "delete": {
         "tags": [],
@@ -205,6 +239,85 @@
           },
           "500": {
             "description": "Design load error"
+          }
+        }
+      }
+    },
+    "/api/prompt-proposals": {
+      "get": {
+        "tags": [],
+        "operationId": "list_prompt_proposals",
+        "responses": {
+          "200": {
+            "description": "Pending prompt proposals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PromptProposalDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/prompt-proposals/{id}": {
+      "delete": {
+        "tags": [],
+        "operationId": "discard_prompt_proposal",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Proposal rejected"
+          },
+          "404": {
+            "description": "No pending proposal for this prompt"
+          }
+        }
+      }
+    },
+    "/api/prompt-proposals/{id}/approve": {
+      "post": {
+        "tags": [],
+        "operationId": "approve_prompt_proposal",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Proposal written as the prompt override",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The proposed text is invalid"
+          },
+          "404": {
+            "description": "No pending proposal for this prompt"
           }
         }
       }
@@ -1316,6 +1429,22 @@
           }
         }
       },
+      "CloneProjectRequest": {
+        "type": "object",
+        "description": "Add project, \"Clone from GitHub\": `repo` into `location/<repo name>`.",
+        "required": [
+          "repo",
+          "location"
+        ],
+        "properties": {
+          "location": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        }
+      },
       "CompleteClaudeLoginRequest": {
         "type": "object",
         "required": [
@@ -1578,6 +1707,35 @@
             "type": "string"
           },
           "mimeType": {
+            "type": "string"
+          }
+        }
+      },
+      "PromptProposalDto": {
+        "type": "object",
+        "description": "A prompt edit the background review staged, beside the text it would replace.",
+        "required": [
+          "id",
+          "text",
+          "reason",
+          "current",
+          "stale"
+        ],
+        "properties": {
+          "current": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "The active text changed after the proposal was written."
+          },
+          "text": {
             "type": "string"
           }
         }

@@ -22,6 +22,8 @@ pub struct Summary {
     pub description: String,
     /// Found under a project root rather than the global root.
     pub project: bool,
+    /// `agent`, `downloaded`, or `human` when the frontmatter names no origin.
+    pub origin: String,
     pub path: String,
 }
 
@@ -62,11 +64,13 @@ pub fn summary(skill: &Skill) -> Summary {
         name: skill.name.clone(),
         description: skill.description.clone(),
         project: skill.project,
+        origin: skill.origin.clone(),
         path: skill.path.display().to_string(),
     }
 }
 
-/// Agent-origin skills under each project root, then under the global root.
+/// Every skill the daemon sees: each project root first, then the global root, whatever its
+/// origin. A project skill shadows a global one of the same name, so the first match wins.
 pub fn list(global: Option<&Path>, projects: &[PathBuf]) -> Vec<Skill> {
     let mut found = Vec::new();
     for root in projects {
@@ -75,7 +79,8 @@ pub fn list(global: Option<&Path>, projects: &[PathBuf]) -> Vec<Skill> {
     if let Some(root) = global {
         found.extend(skills::load(root, false));
     }
-    found.retain(|skill| skill.origin == "agent");
+    let mut seen = std::collections::HashSet::new();
+    found.retain(|skill| seen.insert(skill.name.clone()));
     found
 }
 
@@ -181,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn lists_agent_skills_and_reads_detail_and_history() {
+    fn lists_every_skill_and_reads_detail_and_history() {
         let tmp = tempfile::tempdir().unwrap();
         let global = tmp.path().join("global");
         let project = tmp.path().join("proj");
@@ -190,8 +195,18 @@ mod tests {
         write_skill(&project.join(PROJECT_SKILLS), "local", "agent");
 
         let found = list(Some(&global), std::slice::from_ref(&project));
-        let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["local", "deploy"]);
+        let coords: Vec<(&str, bool, &str)> = found
+            .iter()
+            .map(|s| (s.name.as_str(), s.project, s.origin.as_str()))
+            .collect();
+        assert_eq!(
+            coords,
+            vec![
+                ("local", true, "agent"),
+                ("deploy", false, "agent"),
+                ("human-one", false, "human"),
+            ]
+        );
 
         let deploy = found.iter().find(|s| s.name == "deploy").unwrap();
         let detail = detail(deploy).unwrap();

@@ -22,6 +22,7 @@ use crate::state::{AppState, Settings};
     paths(
         list_projects,
         create_project,
+        clone_project,
         update_project,
         delete_project,
         get_project_design,
@@ -37,6 +38,9 @@ use crate::state::{AppState, Settings};
         list_tool_keys,
         set_tool_key,
         list_prompts,
+        list_prompt_proposals,
+        approve_prompt_proposal,
+        discard_prompt_proposal,
         update_prompt,
         delete_prompt,
         get_prompt,
@@ -59,12 +63,14 @@ use crate::state::{AppState, Settings};
         crate::providers::get_claude_login,
         crate::providers::cancel_claude_login,
         crate::providers::complete_claude_login,
+        crate::subagents::action,
     ),
     components(
         schemas(
             ProjectDto,
             ProjectDesignDto,
             CreateProjectRequest,
+            CloneProjectRequest,
             UpdateProjectRequest,
             SessionDto,
             CreateSessionRequest,
@@ -73,11 +79,14 @@ use crate::state::{AppState, Settings};
             PromptImageDto,
             SteerRequest,
             Settings,
+            crate::state::ReviewerSettings,
+            crate::subagents::SubagentRequest,
             ToolKeyDto,
             ToolKeyRequest,
             PromptDto,
             UpdatePromptRequest,
             PromptTextDto,
+            PromptProposalDto,
             ModelEntry,
             crate::providers::ProviderView,
             crate::usage::UsageRecord,
@@ -122,6 +131,13 @@ pub struct CreateProjectRequest {
     pub root: String,
 }
 
+/// Add project, "Clone from GitHub": `repo` into `location/<repo name>`.
+#[derive(Deserialize, ToSchema)]
+pub struct CloneProjectRequest {
+    pub repo: String,
+    pub location: String,
+}
+
 #[derive(Deserialize, ToSchema)]
 pub struct UpdateProjectRequest {
     pub name: Option<String>,
@@ -141,6 +157,10 @@ pub struct SessionDto {
     pub created_at: u64,
     #[serde(rename = "updatedAt")]
     pub updated_at: u64,
+    #[serde(rename = "parentId", skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(rename = "reviewerRole", skip_serializing_if = "Option::is_none")]
+    pub reviewer_role: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -229,6 +249,53 @@ pub async fn create_project(
         id: generate_id("proj"),
         name: payload.name,
         root: PathBuf::from(payload.root),
+    };
+    let saved = state
+        .projects
+        .insert(project)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = tools::figcraft::ensure_design_file(&saved.root);
+    Ok((
+        StatusCode::CREATED,
+        Json(ProjectDto {
+            id: saved.id,
+            name: saved.name,
+            root: saved.root.to_string_lossy().to_string(),
+        }),
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/projects/clone",
+    request_body = CloneProjectRequest,
+    responses(
+        (status = 201, description = "Repository cloned and added as a Project", body = ProjectDto),
+        (status = 400, description = "Not a repository URL, git clone failed, or the folder exists"),
+        (status = 500, description = "Storage error")
+    )
+)]
+pub async fn clone_project(
+    State(state): State<AppState>,
+    Json(payload): Json<CloneProjectRequest>,
+) -> Result<(StatusCode, Json<ProjectDto>), (StatusCode, String)> {
+    let name = crate::project_clone::repo_name(&payload.repo).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("Not a repository URL: {}", payload.repo.trim()),
+    ))?;
+    let location = crate::project_clone::expand_location(&payload.location);
+    if location.as_os_str().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Enter a location.".into()));
+    }
+    let target = location.join(&name);
+    crate::project_clone::clone_into(&payload.repo, &target)
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let project = Project {
+        id: generate_id("proj"),
+        name,
+        root: target,
     };
     let saved = state
         .projects
@@ -470,6 +537,11 @@ fn session_dto(s: SessionMeta) -> SessionDto {
         thought_level: s.thought_level,
         created_at: s.created_at,
         updated_at: s.updated_at,
+        parent_id: s
+            .reviewer
+            .as_ref()
+            .map(|reviewer| reviewer.parent_id.clone()),
+        reviewer_role: s.reviewer.map(|reviewer| reviewer.role),
     }
 }
 
@@ -601,7 +673,8 @@ pub async fn steer_session(
         serde_json::json!({
             "id": entry.id,
             "text": entry.text,
-            "kind": "steer"
+            "kind": "steer",
+            "imagesCount": entry.images.len()
         }),
     );
     let appended = log
@@ -659,6 +732,15 @@ pub async fn cancel_session(
         .cancel(&id)
         .await
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    if let Some(child) = state.sessions.get(&id).await {
+        crate::subagents::notify_failure(
+            &state,
+            &child,
+            "stopped",
+            "Review stopped. Continue this reviewer explicitly when ready.",
+        )
+        .await?;
+    }
     Ok(StatusCode::OK)
 }
 
@@ -711,6 +793,9 @@ pub async fn update_settings(
             format!("Unknown model: {}", payload.default_model),
         ));
     }
+    crate::subagents::validate_defaults(&state, &payload).await?;
+    crate::state::save_settings(state.data_root.root(), &payload)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
     let mut settings = state.settings.write().await;
     *settings = payload.clone();
     Ok(Json(payload))
@@ -833,7 +918,9 @@ fn prompt_dto(info: PromptInfo) -> PromptDto {
 
 fn prompt_error(error: prompts::PromptError) -> (StatusCode, String) {
     let status = match error {
-        prompts::PromptError::NotFound { .. } => StatusCode::NOT_FOUND,
+        prompts::PromptError::NotFound { .. } | prompts::PromptError::ProposalNotFound { .. } => {
+            StatusCode::NOT_FOUND
+        }
         _ => StatusCode::BAD_REQUEST,
     };
     (status, error.to_string())
@@ -919,6 +1006,86 @@ pub async fn delete_prompt(
     Ok(Json(prompt_dto(info)))
 }
 
+/// A prompt edit the background review staged, beside the text it would replace.
+#[derive(Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptProposalDto {
+    pub id: String,
+    pub text: String,
+    pub reason: String,
+    pub current: String,
+    /// The active text changed after the proposal was written.
+    pub stale: bool,
+}
+
+fn proposals(state: &AppState) -> prompts::ProposalStore {
+    prompts::ProposalStore::for_prompts_dir(state.prompts.dir())
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/prompt-proposals",
+    responses(
+        (status = 200, description = "Pending prompt proposals", body = Vec<PromptProposalDto>)
+    )
+)]
+pub async fn list_prompt_proposals(State(state): State<AppState>) -> Json<Vec<PromptProposalDto>> {
+    Json(
+        proposals(&state)
+            .list()
+            .into_iter()
+            .map(|proposal| PromptProposalDto {
+                current: state.prompts.text(&proposal.id).unwrap_or_default(),
+                stale: proposal.is_stale(&state.prompts),
+                id: proposal.id,
+                text: proposal.text,
+                reason: proposal.reason,
+            })
+            .collect(),
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/prompt-proposals/{id}/approve",
+    responses(
+        (status = 200, description = "Proposal written as the prompt override", body = PromptDto),
+        (status = 400, description = "The proposed text is invalid"),
+        (status = 404, description = "No pending proposal for this prompt")
+    )
+)]
+pub async fn approve_prompt_proposal(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<PromptDto>, (StatusCode, String)> {
+    proposals(&state)
+        .approve(&state.prompts, &id)
+        .map_err(prompt_error)?;
+    let info = state
+        .prompts
+        .list()
+        .into_iter()
+        .find(|info| info.id == id)
+        .ok_or((StatusCode::NOT_FOUND, format!("prompt not found: {id}")))?;
+    Ok(Json(prompt_dto(info)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/prompt-proposals/{id}",
+    responses(
+        (status = 204, description = "Proposal rejected"),
+        (status = 404, description = "No pending proposal for this prompt")
+    )
+)]
+pub async fn discard_prompt_proposal(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    proposals(&state).discard(&id).map_err(prompt_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[utoipa::path(
     get,
     path = "/api/models",
@@ -953,6 +1120,7 @@ pub fn build_router(state: AppState) -> Router {
     let providers = crate::providers::router();
     Router::new()
         .route("/api/projects", get(list_projects).post(create_project))
+        .route("/api/projects/clone", post(clone_project))
         .route(
             "/api/projects/{id}",
             patch(update_project).delete(delete_project),
@@ -970,6 +1138,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/sessions/{id}/steer", post(steer_session))
         .route("/api/sessions/{id}/cancel", post(cancel_session))
+        .route("/api/sessions/{id}/subagents", post(crate::subagents::action))
         .route(
             "/api/sessions/{id}/events",
             get(
@@ -986,7 +1155,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/sessions/{id}/usage",
             get(crate::usage::session_usage_handler),
         )
-        .route("/api/skills", get(crate::skills::list_agent_skills))
+        .route("/api/skills", get(crate::skills::list_skills))
         .route("/api/skills/{name}", get(crate::skills::skill_detail))
         .route("/api/skills/{name}/history", get(crate::skills::skill_history))
         .route(
@@ -1007,15 +1176,24 @@ pub fn build_router(state: AppState) -> Router {
             "/api/prompts/{id}",
             get(get_prompt).put(update_prompt).delete(delete_prompt),
         )
+        .route("/api/prompt-proposals", get(list_prompt_proposals))
+        .route(
+            "/api/prompt-proposals/{id}/approve",
+            post(approve_prompt_proposal),
+        )
+        .route(
+            "/api/prompt-proposals/{id}",
+            axum::routing::delete(discard_prompt_proposal),
+        )
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .merge(providers)
         .merge(crate::transcribe::router())
         .with_state(state)
 }
 
-struct DriverWaker<'a> {
-    driver: &'a dyn crate::driver::SessionDriver,
-    session_id: &'a str,
+pub(crate) struct DriverWaker<'a> {
+    pub(crate) driver: &'a dyn crate::driver::SessionDriver,
+    pub(crate) session_id: &'a str,
 }
 
 #[async_trait::async_trait]
@@ -1298,6 +1476,85 @@ mod prompt_routes_tests {
         assert!(deleted["overrideHash"].is_null());
         assert_eq!(deleted["differs"], false);
         assert_eq!(deleted["activeHash"], deleted["defaultHash"]);
+    }
+
+    #[tokio::test]
+    async fn prompt_proposals_are_listed_approved_and_rejected() {
+        let dir = tempdir().unwrap();
+        let data_root = DataRoot::new(dir.path());
+        let projects = ProjectsStore::load(data_root.projects_file())
+            .await
+            .unwrap();
+        let sessions = SessionsStore::load(data_root.clone()).await.unwrap();
+        let state = AppState::new(data_root, projects, sessions, Arc::new(EventBus::default()));
+        let staged = prompts::ProposalStore::for_prompts_dir(state.prompts.dir());
+        staged
+            .propose(&state.prompts, "policy", "Proposed policy", "clearer")
+            .unwrap();
+        staged
+            .propose(&state.prompts, "caveman", "Proposed caveman", "terser")
+            .unwrap();
+        let app = build_router(state);
+        let send = |method: &str, uri: &str| {
+            let request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            app.clone().oneshot(request)
+        };
+
+        let listed = json(send("GET", "/api/prompt-proposals").await.unwrap()).await;
+        let policy = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|proposal| proposal["id"] == "policy")
+            .unwrap();
+        assert_eq!(policy["text"], "Proposed policy");
+        assert_eq!(policy["reason"], "clearer");
+        assert_eq!(policy["stale"], false);
+        assert!(policy["current"].as_str().unwrap().len() > "Proposed policy".len());
+        assert_eq!(listed.as_array().unwrap().len(), 2);
+
+        let approved = send("POST", "/api/prompt-proposals/policy/approve")
+            .await
+            .unwrap();
+        assert_eq!(approved.status(), StatusCode::OK);
+        assert_eq!(json(approved).await["differs"], true);
+        let active = json(send("GET", "/api/prompts/policy").await.unwrap()).await;
+        assert_eq!(active["text"], "Proposed policy");
+
+        let rejected = send("DELETE", "/api/prompt-proposals/caveman")
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::NO_CONTENT);
+        let active = json(send("GET", "/api/prompts/caveman").await.unwrap()).await;
+        assert_ne!(active["text"], "Proposed caveman");
+
+        let listed = json(send("GET", "/api/prompt-proposals").await.unwrap()).await;
+        assert!(listed.as_array().unwrap().is_empty());
+        for (method, uri) in [
+            ("POST", "/api/prompt-proposals/policy/approve"),
+            ("DELETE", "/api/prompt-proposals/caveman"),
+            ("DELETE", "/api/prompt-proposals/no.such.prompt"),
+        ] {
+            assert_eq!(
+                send(method, uri).await.unwrap().status(),
+                StatusCode::NOT_FOUND,
+                "{method} {uri}"
+            );
+        }
+        // A hand-edited file with a bad placeholder is refused, not applied.
+        std::fs::write(
+            staged.dir().join("policy.json"),
+            r#"{"id":"policy","text":"{{ bogus }}","reason":"r","base_hash":"x"}"#,
+        )
+        .unwrap();
+        let refused = send("POST", "/api/prompt-proposals/policy/approve")
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
     }
 
     struct RecordingDriver {

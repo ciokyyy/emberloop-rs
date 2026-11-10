@@ -6,13 +6,15 @@ disable-model-invocation: true
 
 You have been provided a spec. This spec should have tickets associated with it, describing how to implement the spec.
 
+When `spawn` offers only the `spec` and `standards` reviewer roles, implement the assigned tickets in the main Session instead of using the implementer/merger workflow below. Follow `implement` for each ready ticket: capture its local path and pre-edit starting point, implement and check it, pause edits, then dispatch both reviewers and wait for their separate submitted reports. Reuse the same reviewer pair for the whole specification. Do not create a Run, schedule background implementers, automatically retry reviewers or close tickets. Stop here when the assigned work and its reviews are complete.
+
 The issue tracker should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`.
 
 The goal is the entire spec implemented on a single **integration branch**, with every ticket resolved the way the issue tracker closes work.
 
 The tickets are not a list of steps. They are a **task graph** with blocking relationships between them. This means there is always a **frontier** of tickets which are ready to be grabbed.
 
-Start every subagent with a fresh context window.
+For the implementer/merger workflow below, start each implementation subagent with a fresh context. Reviewer Sessions instead persist across tickets as specified by `code-review`.
 
 Communication to and from subagents should be sparse. Communicate primarily through **context pointers**: to the spec, tickets, research notes, and previous commits. Don't duplicate information already available via pointers.
 

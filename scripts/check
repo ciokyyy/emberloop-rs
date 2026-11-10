@@ -8,6 +8,21 @@ if [ -f "$HOME/.cargo/env" ]; then
     . "$HOME/.cargo/env"
 fi
 
+# The stages below each fan out over every core; on a small VPS that is how the
+# check exhausts RAM. Cap build jobs and test workers at what memory can hold
+# beyond a 4 GiB reserve for the daemon and its Sessions, 2 GiB per job.
+jobs=1
+if [ -r /proc/meminfo ]; then
+    total_mb=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+    jobs=$(( (total_mb - 4096) / 2048 ))
+    cores=$(nproc)
+    [ "$jobs" -lt 1 ] && jobs=1
+    [ "$jobs" -gt "$cores" ] && jobs=$cores
+fi
+export CARGO_BUILD_JOBS="$jobs"
+export jobs
+echo "==> concurrency: $jobs build jobs and test workers"
+
 budgets="scripts/check-budget.tsv"
 mkdir -p target
 
@@ -123,13 +138,13 @@ if [ "$(cat "$web_stamp" 2>/dev/null)" = "$web_hash" ] && [ -f web/build/index.h
     echo "==> web unchanged (${web_hash:0:12}); skipped"
 else
     echo "==> web"
-    run_stage web bash -c 'cd web && bun install --frozen-lockfile && bunx svelte-check --tsconfig ./tsconfig.json --incremental && bunx fallow health --score --min-score 87.9 && bun run test && bun run build'
+    run_stage web bash -c 'cd web && bun install --frozen-lockfile && bunx svelte-check --tsconfig ./tsconfig.json --incremental && bunx fallow health --score --min-score 87.9 && bun run test -- --maxWorkers="$jobs" && bun run build'
     wait_stage
     printf '%s\n' "$web_hash" > "$web_stamp"
 fi
 
 echo "==> nextest"
-run_stage nextest bash -o pipefail -c 'cargo nextest run --workspace 2>&1 | tee target/nextest-tests.log'
+run_stage nextest bash -o pipefail -c 'cargo nextest run --workspace --test-threads "$jobs" 2>&1 | tee target/nextest-tests.log'
 wait_stage
 
 echo "==> doc tests"
