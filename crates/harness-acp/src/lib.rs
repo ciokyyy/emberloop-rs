@@ -501,7 +501,10 @@ impl HarnessSession for AcpSession {
         let _ = self.commands.send(Command::Close);
         let driver = self.driver.lock().await.take();
         if let Some(mut driver) = driver {
-            if tokio::time::timeout(CLOSE_TIMEOUT, &mut driver).await.is_err() {
+            if tokio::time::timeout(CLOSE_TIMEOUT, &mut driver)
+                .await
+                .is_err()
+            {
                 driver.abort();
             }
         }
