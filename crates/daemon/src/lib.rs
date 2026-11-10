@@ -31,6 +31,7 @@ pub mod claude_login;
 pub mod codegraph;
 pub mod codex;
 pub mod figcraft;
+pub mod idle;
 pub mod login;
 mod review;
 pub mod runner;
@@ -193,6 +194,8 @@ pub struct Config {
     pub global_skills: PathBuf,
     pub upstream: Option<String>,
     pub allow_remote: bool,
+    /// Idle time before a Session's harness and tool server are closed.
+    pub idle_timeout: std::time::Duration,
 }
 
 impl Default for Config {
@@ -205,6 +208,7 @@ impl Default for Config {
             global_skills: default_global_skills(),
             upstream: None,
             allow_remote: false,
+            idle_timeout: idle::DEFAULT_IDLE_TIMEOUT,
         }
     }
 }
@@ -236,6 +240,9 @@ impl Config {
         }
         config.upstream = cli.upstream.clone();
         config.allow_remote = cli.allow_remote;
+        if let Some(minutes) = cli.idle_timeout_minutes {
+            config.idle_timeout = std::time::Duration::from_secs(minutes * 60);
+        }
         config
     }
 }
@@ -301,6 +308,9 @@ pub struct Cli {
     pub upstream: Option<String>,
     #[arg(long)]
     pub allow_remote: bool,
+    /// Minutes a Session may sit idle before its harness is closed; it resumes on its next message.
+    #[arg(long)]
+    pub idle_timeout_minutes: Option<u64>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -492,9 +502,11 @@ impl Daemon {
             ))
             .with_config_root(config.config_root.clone())
             .with_global_skills(config.global_skills.clone())
-            .with_prompts(Arc::clone(&prompts)),
+            .with_prompts(Arc::clone(&prompts))
+            .with_idle_timeout(config.idle_timeout),
         );
         runner.watch_updates();
+        runner.watch_idle();
         let resume = updated.map_or_else(Vec::new, |pending| {
             let mut resume = Vec::new();
             if let Some(session) = pending.session.clone() {

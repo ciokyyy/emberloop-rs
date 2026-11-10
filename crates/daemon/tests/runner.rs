@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+use futures::StreamExt as _;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -7,6 +8,7 @@ use api::routes::PromptImageDto;
 use async_trait::async_trait;
 use emberloop_core::events::{EventBus, EventKind};
 use emberloop_core::steer::{SteerKind, SteerQueues};
+use emberloop_daemon::idle::{ManualClock, DEFAULT_IDLE_TIMEOUT};
 use emberloop_daemon::runner::SessionRunner;
 use futures::stream;
 use harness::{
@@ -26,6 +28,12 @@ struct FakeHarness {
     woken: Arc<Mutex<Vec<String>>>,
     cancelled: Arc<Mutex<usize>>,
     events: Arc<Mutex<Vec<HarnessEvent>>>,
+    /// Sessions the runner has released; a session is dropped once nothing holds it.
+    dropped: Arc<Mutex<usize>>,
+    /// Keeps the event stream open after its scripted events, as a live harness does.
+    keep_open: bool,
+    /// Sessions the runner closed through `HarnessSession::close`.
+    closed: Arc<Mutex<usize>>,
 }
 
 #[async_trait]
@@ -43,6 +51,9 @@ impl Harness for FakeHarness {
             woken: Arc::clone(&self.woken),
             cancelled: Arc::clone(&self.cancelled),
             events,
+            dropped: Arc::clone(&self.dropped),
+            keep_open: self.keep_open,
+            closed: Arc::clone(&self.closed),
         }))
     }
 }
@@ -53,6 +64,15 @@ struct FakeSession {
     woken: Arc<Mutex<Vec<String>>>,
     cancelled: Arc<Mutex<usize>>,
     events: Vec<HarnessEvent>,
+    dropped: Arc<Mutex<usize>>,
+    keep_open: bool,
+    closed: Arc<Mutex<usize>>,
+}
+
+impl Drop for FakeSession {
+    fn drop(&mut self) {
+        *self.dropped.lock().unwrap() += 1;
+    }
 }
 
 /// The prompt the fake Session refuses to start on.
@@ -69,7 +89,17 @@ impl HarnessSession for FakeSession {
     }
 
     fn events(&self) -> EventStream {
-        Box::pin(stream::iter(self.events.clone()))
+        let scripted = stream::iter(self.events.clone());
+        if self.keep_open {
+            Box::pin(scripted.chain(stream::pending()))
+        } else {
+            Box::pin(scripted)
+        }
+    }
+
+    async fn close(&self) -> Result<(), HarnessError> {
+        *self.closed.lock().unwrap() += 1;
+        Ok(())
     }
 
     async fn cancel(&self) -> Result<(), HarnessError> {
@@ -100,6 +130,7 @@ impl HarnessSession for FakeSession {
 }
 
 struct HarnessFixture {
+    clock: Arc<ManualClock>,
     sessions: SessionsStore,
     runner: Arc<SessionRunner>,
     fake: Arc<FakeHarness>,
@@ -121,6 +152,15 @@ async fn runner_with_models(
     events_stream: Vec<HarnessEvent>,
     resumes: bool,
     sources: Vec<Arc<dyn api::models::Source>>,
+) -> HarnessFixture {
+    runner_with_stream(events_stream, resumes, sources, false).await
+}
+
+async fn runner_with_stream(
+    events_stream: Vec<HarnessEvent>,
+    resumes: bool,
+    sources: Vec<Arc<dyn api::models::Source>>,
+    keep_open_stream: bool,
 ) -> HarnessFixture {
     let dir = tempdir().unwrap();
     let data_root = DataRoot::new(dir.path().join("data"));
@@ -171,8 +211,10 @@ async fn runner_with_models(
     let fake = Arc::new(FakeHarness {
         resumes,
         events: Arc::new(Mutex::new(events_stream)),
+        keep_open: keep_open_stream,
         ..FakeHarness::default()
     });
+    let clock = Arc::new(ManualClock::new());
     let logs = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
     let runner = Arc::new(
         SessionRunner::new(
@@ -189,9 +231,12 @@ async fn runner_with_models(
             Arc::new(tokio::sync::RwLock::new(api::state::Settings::default())),
         )
         .with_global_skills(dir.path().join("global-skills"))
-        .with_prompts(prompts),
+        .with_prompts(prompts)
+        .with_clock(clock.clone())
+        .with_idle_timeout(DEFAULT_IDLE_TIMEOUT),
     );
     HarnessFixture {
+        clock,
         sessions,
         runner,
         fake,
@@ -367,6 +412,17 @@ async fn a_model_from_another_harness_starts_a_new_harness_conversation() {
     assert_eq!(wirings.len(), 2);
     assert_eq!(wirings[1].model.as_deref(), Some("claude/haiku"));
     assert_eq!(wirings[1].resume_token, None);
+}
+
+#[tokio::test]
+async fn a_harness_whose_event_stream_ended_is_respawned_on_the_next_prompt() {
+    let fixture = runner_with(Vec::new()).await;
+    prompt_once(&fixture).await;
+    let dropped = Arc::clone(&fixture.fake.dropped);
+    // The stream of an empty fake ends at once, so the pump exits and releases the session.
+    until(|| *dropped.lock().unwrap() == 1).await;
+    prompt_once(&fixture).await;
+    assert_eq!(fixture.fake.wirings.lock().unwrap().len(), 2);
 }
 
 async fn until(mut check: impl FnMut() -> bool) {
@@ -655,4 +711,79 @@ async fn the_runner_numbers_its_events_after_the_proxys_backlog() {
     })
     .await
     .expect("the answer is stored once the backlog is");
+}
+
+#[tokio::test]
+async fn a_session_whose_send_fails_is_respawned_on_its_next_prompt() {
+    let fixture = runner_with(Vec::new()).await;
+    let refused = fixture
+        .runner
+        .prompt("ses_1", "boom", Vec::<PromptImageDto>::new())
+        .await;
+    assert!(refused.is_err());
+    prompt_once(&fixture).await;
+    assert_eq!(fixture.fake.wirings.lock().unwrap().len(), 2);
+    assert_eq!(fixture.fake.sent.lock().unwrap().as_slice(), ["hi"]);
+}
+
+#[tokio::test]
+async fn an_idle_session_is_closed_after_the_threshold_and_resumes_on_its_next_message() {
+    let fixture = runner_with_stream(
+        vec![HarnessEvent::TurnFinished {
+            stop_reason: None,
+            usage: None,
+        }],
+        false,
+        Vec::new(),
+        true,
+    )
+    .await;
+    prompt_once(&fixture).await;
+    let queue = fixture.steers.queue("ses_1");
+    until(|| !queue.is_turn_active()).await;
+
+    fixture
+        .clock
+        .advance(DEFAULT_IDLE_TIMEOUT - std::time::Duration::from_secs(1));
+    assert!(fixture.runner.reap_idle().await.is_empty());
+    fixture.clock.advance(std::time::Duration::from_secs(1));
+    assert_eq!(fixture.runner.reap_idle().await, vec!["ses_1".to_string()]);
+    assert_eq!(*fixture.fake.closed.lock().unwrap(), 1);
+    let dropped = Arc::clone(&fixture.fake.dropped);
+    until(|| *dropped.lock().unwrap() == 1).await;
+
+    prompt_once(&fixture).await;
+    let wirings = fixture.fake.wirings.lock().unwrap().clone();
+    assert_eq!(wirings.len(), 2);
+    assert_eq!(wirings[1].resume_token.as_deref(), Some("tok-1"));
+}
+
+#[tokio::test]
+async fn a_session_with_a_running_turn_is_never_closed() {
+    let fixture = runner_with_stream(Vec::new(), false, Vec::new(), true).await;
+    prompt_once(&fixture).await;
+    fixture.clock.advance(DEFAULT_IDLE_TIMEOUT * 6);
+    assert!(fixture.runner.reap_idle().await.is_empty());
+    assert_eq!(*fixture.fake.closed.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_session_with_a_pending_steer_is_never_closed() {
+    let fixture = runner_with_stream(
+        vec![HarnessEvent::TurnFinished {
+            stop_reason: None,
+            usage: None,
+        }],
+        false,
+        Vec::new(),
+        true,
+    )
+    .await;
+    prompt_once(&fixture).await;
+    let queue = fixture.steers.queue("ses_1");
+    until(|| !queue.is_turn_active()).await;
+    queue.enqueue(SteerKind::Notice, "later").await;
+    fixture.clock.advance(DEFAULT_IDLE_TIMEOUT * 6);
+    assert!(fixture.runner.reap_idle().await.is_empty());
+    assert_eq!(*fixture.fake.closed.lock().unwrap(), 0);
 }

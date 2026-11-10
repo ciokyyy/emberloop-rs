@@ -95,6 +95,7 @@ async fn the_background_review_leaves_the_main_prompt_cache_intact() {
     std::fs::write(project.join("notes.txt"), "alpha\nbeta\ngamma\n").unwrap();
 
     let config = Config {
+        idle_timeout: emberloop_daemon::idle::DEFAULT_IDLE_TIMEOUT,
         port: 0,
         host: "127.0.0.1".to_string(),
         data_root: base.join("data"),

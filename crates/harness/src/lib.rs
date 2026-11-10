@@ -75,6 +75,12 @@ pub trait HarnessSession: Send + Sync {
     }
     /// Delete the harness's copy of this Session.
     async fn forget(&self, resume_token: &str) -> Result<(), HarnessError>;
+    /// Stop the harness process for this Session and wait until it has exited. The
+    /// conversation stays resumable. Dropping the session also ends the process; this
+    /// is the path that waits for it.
+    async fn close(&self) -> Result<(), HarnessError> {
+        Ok(())
+    }
     /// Apply a model and optional effort on the same conversation, awaiting the agent's reply.
     async fn configure_model(
         &self,

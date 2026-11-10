@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::idle::{self, Activity, Clock, SystemClock, DEFAULT_IDLE_TIMEOUT};
 use crate::todo_reminder::{self, Cycle};
 use crate::tooldisplay::ToolTracker;
 use api::driver::SessionDriver;
@@ -14,8 +15,13 @@ use futures::StreamExt;
 use harness::{Harness, HarnessEvent, HarnessSession, HarnessWiring, PromptImage};
 use prompts::PromptStore;
 use proxy::ProxyState;
+use std::sync::Mutex as StdMutex;
+use std::time::{Duration, Instant};
 use store::{DataRoot, EventLog, ProjectsStore, SessionMeta, SessionsStore};
 use tokio::sync::{Mutex, RwLock};
+
+/// How often the idle watcher checks the Sessions.
+const IDLE_CHECK_EVERY: Duration = Duration::from_secs(30);
 
 /// The daemon's turn loop: one harness process per Session, its event stream
 /// folded into the Session log, and idle steer delivery at turn end.
@@ -37,6 +43,8 @@ pub struct SessionRunner {
     config_root: Option<std::path::PathBuf>,
     global_skills: Option<std::path::PathBuf>,
     prompts: Option<Arc<PromptStore>>,
+    clock: Arc<dyn Clock>,
+    idle_timeout: Duration,
 }
 
 fn log_failure(error: Option<impl std::fmt::Display>, what: &str) {
@@ -50,6 +58,47 @@ struct Handle {
     queue: Arc<SteerQueue>,
     /// Wakes the pump to drop the harness when the Session moves to another one.
     stop: tokio::sync::Notify,
+    clock: Arc<dyn Clock>,
+    /// Set on every use and when a turn ends; the idle reaper counts from here.
+    last_active: StdMutex<Instant>,
+}
+
+impl Handle {
+    fn new(
+        session: Arc<dyn HarnessSession>,
+        queue: Arc<SteerQueue>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        let last_active = StdMutex::new(clock.now());
+        Self {
+            session,
+            queue,
+            stop: tokio::sync::Notify::new(),
+            clock,
+            last_active,
+        }
+    }
+
+    fn touch(&self) {
+        let now = self.clock.now();
+        if let Ok(mut last) = self.last_active.lock() {
+            *last = now;
+        }
+    }
+
+    fn idle_since(&self) -> Instant {
+        self.last_active
+            .lock()
+            .map_or_else(|_| self.clock.now(), |last| *last)
+    }
+}
+
+/// Stop a Session's harness: the pump ends, then the harness is closed and its process waited for.
+async fn retire(handle: &Handle) {
+    handle.stop.notify_one();
+    if let Err(error) = handle.session.close().await {
+        tracing::warn!(%error, "harness did not close cleanly");
+    }
 }
 
 impl SessionRunner {
@@ -85,6 +134,91 @@ impl SessionRunner {
             config_root: None,
             global_skills: None,
             prompts: None,
+            clock: Arc::new(SystemClock),
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+        }
+    }
+
+    /// The clock the idle reaper reads; tests inject one that moves by hand.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// How long a Session may sit idle before its harness is closed.
+    pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_timeout = timeout;
+        self
+    }
+
+    /// Closes every Session whose harness has been idle past the threshold, and returns their IDs.
+    /// A Session with a running turn, a pending steer or a live background job is never closed.
+    /// It resumes through the normal spawn path on its next message.
+    pub async fn reap_idle(&self) -> Vec<String> {
+        let now = self.clock.now();
+        let mut reaped = Vec::new();
+        {
+            // The decision and the removal share one lock, so a prompt that finds its
+            // handle after this point spawns a fresh harness.
+            let mut handles = self.handles.lock().await;
+            let idle = self.idle_ids(&handles, now).await;
+            for id in idle {
+                if let Some(handle) = handles.remove(&id) {
+                    reaped.push((id, handle));
+                }
+            }
+        }
+        let mut ids = Vec::with_capacity(reaped.len());
+        for (id, handle) in reaped {
+            retire(&handle).await;
+            tracing::info!(session = %id, "closed the idle harness");
+            ids.push(id);
+        }
+        ids
+    }
+
+    async fn idle_ids(&self, handles: &HashMap<String, Arc<Handle>>, now: Instant) -> Vec<String> {
+        let mut idle = Vec::new();
+        for (id, handle) in handles {
+            let activity = Activity {
+                turn_running: handle.queue.is_turn_active(),
+                steers_pending: handle.queue.pending_len().await > 0,
+                background_running: tools::background::any_running(
+                    &self.data_root.session_spill_dir(id),
+                ),
+                last_active: handle.idle_since(),
+            };
+            if idle::reapable(activity, now, self.idle_timeout) {
+                idle.push(id.clone());
+            }
+        }
+        idle
+    }
+
+    /// Starts the idle watcher. It is the only caller of `reap_idle` outside tests.
+    #[allow(clippy::disallowed_methods)]
+    pub fn watch_idle(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let runner = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                runner.reap_idle().await;
+                tokio::time::sleep(IDLE_CHECK_EVERY).await;
+            }
+        })
+    }
+
+    /// Forgets a handle the runner no longer trusts and closes its harness, so the next
+    /// message spawns a new one. The handle is removed only while it is still the current one.
+    async fn evict(&self, session_id: &str, handle: &Arc<Handle>) {
+        let removed = {
+            let mut handles = self.handles.lock().await;
+            match handles.get(session_id) {
+                Some(current) if Arc::ptr_eq(current, handle) => handles.remove(session_id),
+                _ => None,
+            }
+        };
+        if let Some(removed) = removed {
+            retire(&removed).await;
         }
     }
 
@@ -229,7 +363,9 @@ impl SessionRunner {
     }
 
     async fn ensure(&self, session_id: &str) -> Result<Arc<Handle>, String> {
-        if let Some(handle) = self.handles.lock().await.get(session_id).cloned() {
+        let existing = self.handles.lock().await.get(session_id).cloned();
+        if let Some(handle) = existing {
+            handle.touch();
             return Ok(handle);
         }
         let meta = self
@@ -252,15 +388,18 @@ impl SessionRunner {
         );
         self.settle_conversation(session_id, &meta, session.as_ref())
             .await;
-        let handle = Arc::new(Handle {
+        let handle = Arc::new(Handle::new(
             session,
-            queue: self.steers.queue(session_id),
-            stop: tokio::sync::Notify::new(),
-        });
+            self.steers.queue(session_id),
+            Arc::clone(&self.clock),
+        ));
 
         let mut handles = self.handles.lock().await;
-        if let Some(existing) = handles.get(session_id) {
-            return Ok(existing.clone());
+        if let Some(existing) = handles.get(session_id).cloned() {
+            // Another prompt spawned first; this harness is never used, so close it.
+            drop(handles);
+            retire(&handle).await;
+            return Ok(existing);
         }
         handles.insert(session_id.to_string(), handle.clone());
         drop(handles);
@@ -349,6 +488,7 @@ impl SessionDriver for SessionRunner {
         handle.queue.set_turn_active(true);
         if let Err(error) = handle.session.send(text, images).await {
             handle.queue.set_turn_active(false);
+            self.evict(session_id, &handle).await;
             return Err(self.fail_turn(session_id, error.to_string()).await);
         }
         // The CLI reports its conversation id only once the first message is out.
@@ -387,6 +527,7 @@ impl SessionDriver for SessionRunner {
         let woken = handle.session.wake(text, images).await;
         if woken.is_err() {
             handle.queue.set_turn_active(false);
+            self.evict(session_id, &handle).await;
         } else {
             let status_ev = SessionEvent::new(
                 session_id,
@@ -422,8 +563,9 @@ impl SessionDriver for SessionRunner {
         }
         if crate::harness_kind(Some(&meta.model)) != crate::harness_kind(Some(model)) {
             // The next prompt spawns the new harness; the proxy carries the history over.
-            if let Some(handle) = self.handles.lock().await.remove(session_id) {
-                handle.stop.notify_one();
+            let removed = self.handles.lock().await.remove(session_id);
+            if let Some(handle) = removed {
+                retire(&handle).await;
             }
             return Ok(());
         }
@@ -477,14 +619,12 @@ async fn pump(
             () = handle.stop.notified() => None,
         };
         let Some(event) = next else { break };
-        let turn_over = matches!(event, HarnessEvent::TurnFinished { .. });
-        if turn_over || matches!(event, HarnessEvent::Error(_)) {
-            handle.queue.set_turn_active(false);
-        }
+        let turn_over = note_turn_state(&handle, &event);
         if let Some(mapped) = map_event(&session_id, event, &mut tracker, &project_root) {
             publish_mapped(&events, &logs, &events_dir, &session_id, &data_root, mapped).await;
         }
         if turn_over {
+            handle.touch();
             drain_notices(&data_root, &steers, &session_id).await;
             apply_pending_update(&data_root, &handles, &events, Some(&session_id)).await;
             turn_end_todos(
@@ -508,6 +648,31 @@ async fn pump(
             };
             let _ = deliver_idle(&handle.queue, &waker, &events, &session_id).await;
         }
+    }
+    forget_handle(&handles, &session_id, &handle).await;
+}
+
+/// Clears the running-turn flag when the event ends a turn or fails it; true when the turn finished.
+fn note_turn_state(handle: &Handle, event: &HarnessEvent) -> bool {
+    let finished = matches!(event, HarnessEvent::TurnFinished { .. });
+    if finished || matches!(event, HarnessEvent::Error(_)) {
+        handle.queue.set_turn_active(false);
+    }
+    finished
+}
+
+/// The harness ended or was closed: forget its handle so the next message spawns one.
+async fn forget_handle(
+    handles: &Mutex<HashMap<String, Arc<Handle>>>,
+    session_id: &str,
+    handle: &Arc<Handle>,
+) {
+    let mut handles = handles.lock().await;
+    if handles
+        .get(session_id)
+        .is_some_and(|current| Arc::ptr_eq(current, handle))
+    {
+        handles.remove(session_id);
     }
 }
 

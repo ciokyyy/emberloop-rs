@@ -81,6 +81,7 @@ async fn a_claude_turn_searches_a_skill_and_writes_one_through_the_daemon() {
     );
 
     let config = Config {
+        idle_timeout: emberloop_daemon::idle::DEFAULT_IDLE_TIMEOUT,
         port: 0,
         host: "127.0.0.1".to_string(),
         data_root: base.join("data"),

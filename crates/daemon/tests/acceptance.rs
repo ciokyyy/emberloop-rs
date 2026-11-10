@@ -28,6 +28,7 @@ async fn harness(upstream: Option<String>) -> Harness {
         global_skills: dir.path().join("home/.agents/skills"),
         upstream,
         allow_remote: false,
+        idle_timeout: emberloop_daemon::idle::DEFAULT_IDLE_TIMEOUT,
     };
     let daemon = Daemon::open(config).await.unwrap();
     Harness { _dir: dir, daemon }
@@ -470,6 +471,7 @@ async fn pi_sessions_and_catalogue_run_on_the_pi_harness_without_an_agy_account(
         global_skills: dir.path().join("home/.agents/skills"),
         upstream: None,
         allow_remote: false,
+        idle_timeout: emberloop_daemon::idle::DEFAULT_IDLE_TIMEOUT,
     };
     let daemon = Daemon::open(config).await.unwrap();
     let app = daemon.router();

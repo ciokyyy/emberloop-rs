@@ -42,6 +42,8 @@ pub struct AcpLaunch {
 }
 
 enum Command {
+    /// Ends the connection; the SDK stops the agent process and waits for it.
+    Close,
     Prompt(Vec<ContentBlock>),
     Cancel,
     Resume(String),
@@ -57,7 +59,12 @@ pub struct AcpSession {
     resumed: bool,
     commands: mpsc::UnboundedSender<Command>,
     events: broadcast::Sender<HarnessEvent>,
+    /// The task that owns the connection and its agent process.
+    driver: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
+
+/// How long `close` waits for the agent to exit before the connection task is aborted.
+const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How long `session/new` may take. agy makes three Google calls (token refresh, onboarding,
 /// model list) on a cold start, 7s each on a slow network, so 10s was never enough.
@@ -207,6 +214,7 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
 
                     while let Some(command) = receiver.recv().await {
                         match command {
+                            Command::Close => break,
                             Command::Prompt(content) => {
                                 let connection = connection.clone();
                                 let session_id = session_id.clone();
@@ -299,6 +307,7 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
         resumed,
         commands,
         events,
+        driver: tokio::sync::Mutex::new(Some(driver)),
     })
 }
 
@@ -485,6 +494,18 @@ impl HarnessSession for AcpSession {
 
     fn events(&self) -> EventStream {
         Box::pin(BroadcastStream::new(self.events.subscribe()).filter_map(|event| event.ok()))
+    }
+
+    async fn close(&self) -> Result<(), HarnessError> {
+        // A closed connection has nothing to send to; the process is gone either way.
+        let _ = self.commands.send(Command::Close);
+        let driver = self.driver.lock().await.take();
+        if let Some(mut driver) = driver {
+            if tokio::time::timeout(CLOSE_TIMEOUT, &mut driver).await.is_err() {
+                driver.abort();
+            }
+        }
+        Ok(())
     }
 
     async fn cancel(&self) -> Result<(), HarnessError> {

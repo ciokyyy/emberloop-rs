@@ -717,6 +717,16 @@ impl HarnessSession for ClaudeSession {
         Ok(())
     }
 
+    /// Kills the CLI and waits for it to exit, so no zombie is left behind.
+    async fn close(&self) -> Result<(), HarnessError> {
+        let mut state = self.state.lock().await;
+        state.stdin = None;
+        if let Some(mut child) = state.child.take() {
+            let _ = child.kill().await;
+        }
+        Ok(())
+    }
+
     async fn resume(&self, token: &str) -> Result<(), HarnessError> {
         let mut state = self.state.lock().await;
         state.resume = Some(token.to_string());

@@ -20,6 +20,10 @@ FigCraft uses matching upstream 0.16.0 native binaries and web assets installed 
 - `HarnessPlugin` wires both `AgyHarness` (`EMBERLOOP_AGY_BIN` or `<data root>/agy-acp/1.4.5/agy_acp_server.par`) and `PiHarness` (`EMBERLOOP_PI_BIN` or `<data root>/pi/v0.12.11/pi`), routing `opencode-go/*`, `openai-codex/*` and registry-provider models (`emberloop_core::providers`) to `PiHarness` and others to `AgyHarness`; `PiSource` feeds pi’s offline RPC metadata (per-model efforts, image support and context windows) into `ModelCatalogue`, the pi HOME rewrites signed OAuth endpoints and pins full-context SSE on each connect, and `AgyLogin::with_keys` manages `<config root>/keys.json` (`providers()` lists every registry provider with `auth: key`).
 - `serve` binds the configured host, serves until SIGINT or SIGTERM, and the watcher stops when the daemon drops.
 
+Each Session's harness handle lives in `SessionRunner.handles` only while it is usable. The pump removes its handle when its event stream ends, and a failed `send`/`wake` evicts it; the next message then spawns a new harness and resumes the stored token. Every removal goes through `retire`, which stops the pump and awaits `HarnessSession::close`, so no child is left unwaited.
+
+The idle reaper (`idle.rs`, `SessionRunner::reap_idle`, `watch_idle` every 30 s) closes a Session's harness and tool server once it has no running turn, no pending steer, no live background job (`tools::background::any_running`) and has been quiet for `Config.idle_timeout` (`--idle-timeout-minutes`, default 10). Quiet time counts from the last use or turn end. The clock is injected (`Clock`, `ManualClock` in tests), so tests never sleep.
+
 Model settings go through `SessionRunner::configure_model`: working turns are refused, a harness-family change requires a new Session, and a live same-harness change awaits ACP acknowledgment. A refusal attempts to restore the prior model/effort and leaves API metadata unchanged. A Session not yet connected uses the saved settings on its next spawn.
 
 ## Versioning and update
