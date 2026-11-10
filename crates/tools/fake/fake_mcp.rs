@@ -29,6 +29,22 @@ fn main() {
         }
         return;
     }
+    if let Some(log) = std::env::var_os("FAKE_MCP_ARGV_LOG") {
+        let argv: Vec<String> = std::env::args().skip(1).collect();
+        let _ = std::fs::write(log, argv.join(" "));
+    }
+    if let Some(path) = std::env::var_os("FAKE_MCP_CHILD_PID_FILE") {
+        // A grandchild that stays in this process group, as a real server's helper would.
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if let Ok(child) = child {
+            let _ = std::fs::write(path, child.id().to_string());
+        }
+    }
     if std::env::var_os("FAKE_MCP_EXIT").is_some() {
         std::process::exit(1);
     }

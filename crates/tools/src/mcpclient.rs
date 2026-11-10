@@ -3,6 +3,7 @@
 //! fixed, so a server is never visible as a tool of its own.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -68,6 +69,17 @@ struct Server {
 struct Connected {
     service: Arc<RunningService<RoleClient, ()>>,
     tools: Vec<Tool>,
+    /// The server's process group: its leader is the direct child and its helpers share it.
+    group: Option<u32>,
+}
+
+impl Drop for Connected {
+    fn drop(&mut self) {
+        // A dropped server takes everything it started with it; rmcp only kills the leader.
+        if let Some(group) = self.group {
+            crate::bash::kill_group(group);
+        }
+    }
 }
 
 /// One MCP tool as `execute` sees it.
@@ -93,6 +105,11 @@ pub struct McpRegistry {
 
 impl McpRegistry {
     pub fn load(root: &Path, file: Option<&Path>) -> Self {
+        Self::load_with(root, file, &graph::default_bin_dirs())
+    }
+
+    /// `bin_dirs` is searched for a native codebase-memory-mcp that replaces the npx fallback.
+    pub fn load_with(root: &Path, file: Option<&Path>, bin_dirs: &[PathBuf]) -> Self {
         let mut registry = Self {
             root: root.to_path_buf(),
             servers: Vec::new(),
@@ -101,7 +118,7 @@ impl McpRegistry {
             projects: RwLock::new(BTreeMap::new()),
         };
         if let Some(file) = file {
-            if let Err(error) = registry.read(file) {
+            if let Err(error) = registry.read(file, bin_dirs) {
                 registry.error = Some(error);
             }
         } else if let Ok(entry) = serde_json::from_value::<Entry>(figcraft::default_entry()) {
@@ -114,7 +131,7 @@ impl McpRegistry {
         registry
     }
 
-    fn read(&mut self, file: &Path) -> Result<(), String> {
+    fn read(&mut self, file: &Path, bin_dirs: &[PathBuf]) -> Result<(), String> {
         let raw = std::fs::read_to_string(file)
             .map_err(|error| format!("{}: {error}", file.display()))?;
         let parsed: Value =
@@ -124,8 +141,16 @@ impl McpRegistry {
             .and_then(Value::as_object)
             .ok_or_else(|| format!("{}: no mcpServers object", file.display()))?;
         for (name, value) in servers {
-            let entry: Entry = serde_json::from_value(value.clone())
+            let mut entry: Entry = serde_json::from_value(value.clone())
                 .map_err(|error| format!("{}: server {name:?}: {error}", file.display()))?;
+            if name == graph::SERVER
+                && graph::is_npx_fallback(entry.command.as_deref(), &entry.args)
+            {
+                if let Some(native) = graph::native_binary(bin_dirs) {
+                    entry.command = Some(native.to_string_lossy().into_owned());
+                    entry.args.clear();
+                }
+            }
             if !entry.enabled {
                 continue;
             }
@@ -275,10 +300,29 @@ fn exposes(entry: &Entry, tool: &str) -> bool {
         && !entry.exclude.iter().any(|it| it == tool)
 }
 
-/// Best effort: a setup step that fails costs the log line, not the server.
-/// shortcut: setup reruns on every connect (once per process); a marker file
-/// would drop the repeat cost, upgrade when a session start stall matters.
+/// The marker that records a finished setup. It lives in the server's cache dir, because
+/// codebase-memory keeps its configuration there, and holds the setup it applied.
+const SETUP_MARKER: &str = "emberloop-setup.json";
+
+fn setup_marker(server: &Server) -> Option<PathBuf> {
+    let cache = server.entry.env.get("CBM_CACHE_DIR")?;
+    Some(PathBuf::from(cache).join(SETUP_MARKER))
+}
+
+/// Best effort: a setup step that fails costs the log line, not the server. A setup that
+/// finished once for this cache dir is not repeated by later Sessions; a failed one reruns.
 async fn run_setup(root: &Path, server: &Server) {
+    if server.entry.setup.is_empty() {
+        return;
+    }
+    let record = serde_json::to_string(&server.entry.setup).unwrap_or_default();
+    let marker = setup_marker(server);
+    if let Some(marker) = &marker {
+        if fs::read_to_string(marker).ok().as_deref() == Some(record.as_str()) {
+            return;
+        }
+    }
+    let mut finished = true;
     for extra in &server.entry.setup {
         let mut command =
             tokio::process::Command::new(server.entry.command.clone().unwrap_or_default());
@@ -292,13 +336,28 @@ async fn run_setup(root: &Path, server: &Server) {
             .stderr(Stdio::null());
         match tokio::time::timeout(CONNECT_TIMEOUT, command.status()).await {
             Ok(Ok(status)) if status.success() => {}
-            Ok(Ok(status)) => eprintln!(
-                "mcp server {:?}: setup {extra:?} gave {status}",
-                server.name
-            ),
-            Ok(Err(error)) => eprintln!("mcp server {:?}: setup {extra:?}: {error}", server.name),
-            Err(_) => eprintln!("mcp server {:?}: setup {extra:?} timed out", server.name),
+            Ok(Ok(status)) => {
+                finished = false;
+                eprintln!(
+                    "mcp server {:?}: setup {extra:?} gave {status}",
+                    server.name
+                );
+            }
+            Ok(Err(error)) => {
+                finished = false;
+                eprintln!("mcp server {:?}: setup {extra:?}: {error}", server.name);
+            }
+            Err(_) => {
+                finished = false;
+                eprintln!("mcp server {:?}: setup {extra:?} timed out", server.name);
+            }
         }
+    }
+    if let (true, Some(marker)) = (finished, marker) {
+        if let Some(dir) = marker.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let _ = fs::write(marker, record);
     }
 }
 
@@ -311,8 +370,11 @@ async fn connect(root: &Path, server: &Server) -> ToolResult<Connected> {
         .envs(&server.entry.env)
         // codebase-memory auto-indexes its cwd; the Project root, not the Session work dir.
         .current_dir(root);
+    #[cfg(unix)]
+    command.process_group(0);
     let transport = TokioChildProcess::new(command)
         .map_err(|error| ToolError::msg(format!("mcp server {:?}: {error}", server.name)))?;
+    let group = transport.id();
     let service = tokio::time::timeout(CONNECT_TIMEOUT, ().serve(transport))
         .await
         .map_err(|_| {
@@ -338,7 +400,11 @@ async fn connect(root: &Path, server: &Server) -> ToolResult<Connected> {
         .into_iter()
         .filter(|tool| exposes(&server.entry, &tool.name))
         .collect();
-    Ok(Connected { service, tools })
+    Ok(Connected {
+        service,
+        tools,
+        group,
+    })
 }
 
 async fn raw_call(

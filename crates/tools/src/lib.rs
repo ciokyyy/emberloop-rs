@@ -89,6 +89,8 @@ pub struct ToolConfig {
     /// A harness cuts an MCP call that blocks longer (Antigravity: 3 minutes) and then dies, so
     /// every blocking tool wait is clamped to this many seconds. `None` keeps each tool's own cap.
     pub max_call_secs: Option<u64>,
+    /// Directories searched for a native codebase-memory-mcp before the npx fallback runs.
+    pub bin_dirs: Vec<PathBuf>,
 }
 impl ToolConfig {
     pub fn new(root: impl Into<PathBuf>, spill_dir: impl Into<PathBuf>) -> Self {
@@ -106,6 +108,7 @@ impl ToolConfig {
             session_url: None,
             reviewer: false,
             max_call_secs: None,
+            bin_dirs: graph::default_bin_dirs(),
         }
     }
 }
@@ -145,9 +148,10 @@ impl Toolbox {
             jail = jail.with_extra_root(global);
         }
         let background = Arc::new(background::BackgroundManager::new(spill_dir, &config.root));
-        let mcp = Arc::new(mcpclient::McpRegistry::load(
+        let mcp = Arc::new(mcpclient::McpRegistry::load_with(
             &config.root,
             config.mcp_file.as_deref(),
+            &config.bin_dirs,
         ));
         Ok(Self {
             background,

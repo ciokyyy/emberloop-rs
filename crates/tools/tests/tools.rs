@@ -521,7 +521,7 @@ fn bash_kills_a_detached_child_left_after_the_command_exits() {
         .expect("pid line");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while !process_is_dead(pid) && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::yield_now();
     }
     let dead = process_is_dead(pid);
     let _ = std::process::Command::new("kill")

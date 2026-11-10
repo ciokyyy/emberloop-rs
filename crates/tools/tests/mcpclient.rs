@@ -115,6 +115,124 @@ async fn setup_commands_run_before_the_server_starts() {
     );
 }
 
+/// A fake `npx` and a fake native `codebase-memory-mcp`, both the scripted server, in `dir`.
+#[cfg(unix)]
+fn fake_graph_binaries(dir: &Path) -> PathBuf {
+    fs::create_dir_all(dir).expect("bin dir");
+    let server = PathBuf::from(env!("CARGO_BIN_EXE_fake-mcp"));
+    std::os::unix::fs::symlink(&server, dir.join("codebase-memory-mcp")).expect("native link");
+    let npx = dir.join("npx");
+    std::os::unix::fs::symlink(&server, &npx).expect("npx link");
+    npx
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_graph_setup_runs_once_for_a_cache_dir_across_sessions() {
+    let fixture = setup();
+    let log = fixture.root.join("setup.log");
+    let cache = fixture.root.parent().expect("parent").join("cache");
+    let servers = fake(
+        "graph",
+        json!({
+            "env": {
+                "FAKE_MCP_SETUP_LOG": log.to_string_lossy(),
+                "CBM_CACHE_DIR": cache.to_string_lossy(),
+            },
+            "setup": [["config", "set", "auto_index", "true"]],
+        }),
+    );
+    for _session in 0..2 {
+        let toolbox = toolbox_with(&fixture, servers.clone());
+        toolbox
+            .call("graph.echo", &json!({"x": 1}))
+            .await
+            .expect("graph call");
+    }
+    let written = fs::read_to_string(&log).expect("setup log");
+    assert_eq!(
+        written, "set auto_index true\n",
+        "setup ran once, not per Session"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_npx_fallback_launches_the_native_binary_when_it_is_installed() {
+    let fixture = setup();
+    let bin = fixture.root.parent().expect("parent").join("bin");
+    let npx = fake_graph_binaries(&bin);
+    let argv = fixture.root.parent().expect("parent").join("argv.log");
+    fs::write(
+        &fixture.mcp,
+        json!({"mcpServers": {"graph": {
+            "command": npx.to_string_lossy(),
+            "args": ["-y", "codebase-memory-mcp@0.12.1"],
+            "env": {"FAKE_MCP_ARGV_LOG": argv.to_string_lossy()},
+            "include": ["echo"],
+        }}})
+        .to_string(),
+    )
+    .expect("mcp config");
+    let config = ToolConfig {
+        mcp_file: Some(fixture.mcp.clone()),
+        bin_dirs: vec![bin],
+        ..ToolConfig::new(&fixture.root, fixture.root.join("spill"))
+    };
+    let toolbox = Toolbox::new(config).expect("toolbox");
+    toolbox
+        .call("graph.echo", &json!({"x": 1}))
+        .await
+        .expect("graph call");
+    let launched = fs::read_to_string(&argv).expect("argv log");
+    assert_eq!(launched, "", "the native binary runs with no npx arguments");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_dropped_server_takes_its_process_group_with_it() {
+    let fixture = setup();
+    let pid_file = fixture.root.parent().expect("parent").join("child.pid");
+    let toolbox = toolbox_with(
+        &fixture,
+        fake(
+            "graph",
+            json!({"env": {"FAKE_MCP_CHILD_PID_FILE": pid_file.to_string_lossy()}}),
+        ),
+    );
+    toolbox
+        .call("graph.echo", &json!({"x": 1}))
+        .await
+        .expect("graph call");
+    let pid: i32 = fs::read_to_string(&pid_file)
+        .expect("child pid")
+        .trim()
+        .parse()
+        .expect("pid");
+    drop(toolbox);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !is_dead(pid) && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let dead = is_dead(pid);
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status();
+    assert!(dead, "the server's child {pid} outlived its tool server");
+}
+
+/// Gone from /proc, or a zombie nobody reaped: the process has exited.
+#[cfg(unix)]
+fn is_dead(pid: i32) -> bool {
+    match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(stat) => stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.trim_start().chars().next())
+            .is_some_and(|state| state == 'Z'),
+    }
+}
+
 #[tokio::test]
 async fn mcp_config_exposes_included_tools_only() {
     let fixture = setup();
