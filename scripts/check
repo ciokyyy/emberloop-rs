@@ -10,11 +10,11 @@ fi
 
 # The stages below each fan out over every core; on a small VPS that is how the
 # check exhausts RAM. Cap build jobs and test workers at what memory can hold
-# beyond a 4 GiB reserve for the daemon and its Sessions, 2 GiB per job.
+# beyond a 4 GiB reserve for the daemon and its Sessions, 1.5 GiB per job.
 jobs=1
 if [ -r /proc/meminfo ]; then
     total_mb=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
-    jobs=$(( (total_mb - 4096) / 2048 ))
+    jobs=$(( (total_mb - 4096) * 2 / 3072 ))
     cores=$(nproc)
     [ "$jobs" -lt 1 ] && jobs=1
     [ "$jobs" -gt "$cores" ] && jobs=$cores
