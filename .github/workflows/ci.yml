@@ -37,9 +37,13 @@ jobs:
         with:
           tool: nextest,cargo-deny,cargo-machete
 
-      # The OpenAPI drift check regenerates a web source, so it runs before the
-      # bundle: a source touched after the build makes it stale for the
-      # web_bundle staleness test.
+      - name: Web install
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      # The OpenAPI drift check regenerates a web source and needs the web
+      # dependencies, so it runs after install and before the bundle: a source
+      # touched after the build makes it stale for the web_bundle test.
       - name: OpenAPI client is current
         run: |
           cargo run -p api --bin dump_openapi
@@ -50,7 +54,6 @@ jobs:
       - name: Web bundle
         working-directory: web
         run: |
-          bun install --frozen-lockfile
           bunx svelte-kit sync
           bunx svelte-check --tsconfig ./tsconfig.json
           bun run test
