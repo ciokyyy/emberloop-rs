@@ -2,6 +2,7 @@
 pub mod background;
 pub mod bash;
 mod bm25;
+pub mod browser;
 pub mod ctxsearch;
 pub mod edit;
 pub mod execute;
@@ -86,6 +87,8 @@ pub struct ToolConfig {
     pub prompts_dir: Option<PathBuf>,
     pub session_url: Option<String>,
     pub reviewer: bool,
+    /// False when the Session's model takes no image input: `read` then refuses image files.
+    pub image_input: bool,
     /// A harness cuts an MCP call that blocks longer (Antigravity: 3 minutes) and then dies, so
     /// every blocking tool wait is clamped to this many seconds. `None` keeps each tool's own cap.
     pub max_call_secs: Option<u64>,
@@ -108,6 +111,7 @@ impl ToolConfig {
             session_url: None,
             reviewer: false,
             max_call_secs: None,
+            image_input: true,
             bin_dirs: graph::default_bin_dirs(),
         }
     }
@@ -227,6 +231,9 @@ impl Toolbox {
     pub fn background(&self) -> &background::BackgroundManager {
         &self.background
     }
+    pub fn image_input(&self) -> bool {
+        self.config.image_input
+    }
 
     pub fn max_read_bytes(&self) -> usize {
         self.config.max_read_bytes
@@ -260,13 +267,16 @@ impl Toolbox {
         }
     }
 
-    /// The shell prelude that loads the runtime env file; empty when there is none.
+    /// The shell prelude that loads the runtime env file and resolves the browser. Empty only
+    /// when there is neither.
     pub fn env_prelude(&self) -> String {
-        let Some(path) = &self.config.env_file else {
-            return String::new();
-        };
-        let path = path.display().to_string().replace('\'', "'\\''");
-        format!("[ -f '{path}' ] && . '{path}'\n")
+        let mut prelude = String::new();
+        if let Some(path) = &self.config.env_file {
+            let path = path.display().to_string().replace('\'', "'\\''");
+            prelude.push_str(&format!("[ -f '{path}' ] && . '{path}'\n"));
+        }
+        prelude.push_str(&browser::env_prelude());
+        prelude
     }
 
     pub fn max_output_bytes(&self) -> usize {
