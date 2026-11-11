@@ -49,6 +49,17 @@ flowchart LR
   P --> U[(store: transcripts, usage)]
 ```
 
+## How it works
+
+Four subsystems carry the behaviour: the **proxy** owns the model wire
+(translation, compression, steering, usage), the **tool server** serves the
+workspace tools over MCP, the **skill system** discovers and edits `SKILL.md`
+skills, and the **prompt store** holds every model-facing text under one id.
+
+[docs/architecture.md](docs/architecture.md) explains each one with diagrams,
+including the compression system, what it was adapted from, and how the four fit
+together.
+
 ## Requirements
 
 - Rust (current stable) and `cargo`
