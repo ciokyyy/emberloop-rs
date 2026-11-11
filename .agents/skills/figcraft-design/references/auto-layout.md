@@ -14,6 +14,8 @@ Depth behind the rules in SKILL.md. Read when a frame's geometry does not match 
 - Reference an earlier step with `{"$ref": "stepName"}`; a bare string is read as a node id and rejected.
 - Reference an existing layer by its raw id.
 - `edit.duplicate {ids, dx, dy, map:true}` answers `{ids, map}` where `map` is a flat original-id to copy-id dictionary covering descendants. Keep it: the next edits address the copies by those ids, and a copy's tree can always be re-read by name.
+- The MCP call wraps those steps: `figcraft.batch {commands:[{as, command, params}]}`. Keep the list short, about a dozen steps: a hundred-step call can roll back wholesale with no failing entry to read, so build one tile or row at a time.
+- With `onError:"continue"` each entry comes back as `{step, command, ok, result}`; without it they are bare results. Check `ok` after every batch, and parse the answer when it arrives as a JSON string instead of a list.
 
 ## Sizing
 

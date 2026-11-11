@@ -19,6 +19,17 @@ Depth behind the reusable-components rules in SKILL.md. Read when building a com
 
 A control made of other components (`Tabs` holding two `Tab` instances) is itself a `type:"component"` whose children are instances. Build it like any frame, then `instance.create` the children into it. Changing the set later updates the compound master and every instance of it.
 
+## Converting drawn frames into a set
+
+When the control already exists as full frames on many boards (a sidebar, a header), convert one finished frame and sweep the copies — never redraw it as a master or fork hand-edited copies:
+
+1. Unlock the source frame, `edit.duplicate {ids:[src]*N, dx:0, dy:0}` (one copy per state), reparent the copies to the components page, then `node.set` their x (40 + 320*i) and y.
+2. `component.createMultiple {ids}` makes each copy a main. Name each `Active=<value>` before `component.combineVariants {ids}`; the set's property values are the states.
+3. Set each variant's state by editing its main: a main component accepts `node.set` like a frame (row `fill`, label `fill`, icon `stroke`; cleared paints use `fill:null`). Read colours from `fills`/`strokes`, never a `fill` field.
+4. Replace every old copy: `instance.create {component:<variant id>, x, y, parent}`, then `node.set {name, width, height, clip:true}`, then `edit.delete` the old frames. A top-level frame that IS the control has no child to find — match the frame's own name too, or the sweep leaves it behind.
+5. Prove the variants match with a tree diff: flatten each to `(index-path, type, x, y, w, h, characters, fill, stroke, visible)` and compare. Only the variant's own x/y inside the set and its state nodes (row fill, label fill, icon stroke) may differ.
+6. Re-export every board and sample the active-tab row at frame-local ×scale: each instance must show its own variant's tab, not the default one.
+
 ## Specimen page
 
 - One card per control class, x=40, width 560, `fill:#262626`, `stroke:#3B3B3B`, radius 16, padding 16, vertical layout, gap 12; a card that holds a variant set needs width 600 or more.

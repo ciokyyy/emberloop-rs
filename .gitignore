@@ -3,3 +3,8 @@
 *.log
 /.svelte-kit
 /.svelte-check
+/.tmp
+/.scratch
+/.claude
+/.agents/skills/.backup
+/.agents/skills/.locks
