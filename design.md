@@ -56,9 +56,36 @@ not a drawer: full width, top corners rounded, rises with the same
 
 `design.figcraft` (repo root) holds the 1:1 FigCraft mocks: the chat composer,
 `Project tools · right rail` (280 px, `#171717`) and `Agent · phone drawer`.
+Every screen's sidebar is an instance of the `Sidebar` component set on the
+Components page: four variants (`Active=Usage|Skills|Providers|Settings`) that
+differ only in the active bottom-nav tab, so a master edit reaches every board.
 The Skills screens (`Skills · desktop`, `Skill · desktop`) sit on the same shell:
 the chrome sidebar with its Skills tab active, the session header as the top bar,
 and a 720 px body — the list groups skills by scope, a row opens the detail.
+The `Usage, Providers & Settings · Astryx dark` page reworks the three bottom-nav
+views on that same shell: `Usage · desktop`, `Providers · desktop` and
+`Settings · desktop`, each with its own tab active and a 720 px body.
+`Usage · desktop` leads with a toolbar (refresh caption plus a secondary Refresh
+button), then one card per surface: a subscription card with a head row per
+provider and a meter (label, 6 px track, reset caption) per window, and a balance
+card for API-key providers. `Providers · desktop` is a list, not a grid: connected
+rows carry the provider mark, its kind and `Manage` with a chevron, and available
+rows carry a Connect button. `Settings · desktop` is one column of cards — a 14
+SemiBold section title, then 56 px rows split by a hairline, with a value pill,
+segmented control or toggle on the right — under a 52 px sticky save bar
+(`All changes saved`, Discard, Save) that overlaps the clipped bottom as a scroll
+cue. Two usage-only alternatives sit beside it on the same page, exploring
+per-family limits instead of a top-down list: `Usage · rings · desktop` puts one
+card per provider in a single row, left to right — a rounded chip with the
+provider mark and its name, then 32 px percentage rings
+(green under 70%, amber above, red from 90%) each labelled with its window
+underneath: Claude (5h, Week, a Fable family probe), Antigravity (5h, Week,
+Gemini, Argon) and ChatGPT (5h, Week). The card-per-provider shape is what lets
+the row reflow on narrower screens; rings and labels shrink before the card
+would wrap. `Usage · windows · desktop`
+lays three provider columns side by side (Claude, ChatGPT, Antigravity, the last
+four meters tall) with 4 px tracks, so the 5-hour, weekly and quota windows read
+left to right rather than stacked.
 The design editor (`Editor · desktop`, `Editor · phone`) puts the agent in a docked
 340 px rail (`#171717`) instead of a corner pill: header, feed with the last turns,
 and a composer card with a context chip. `Rail · collapsed` is the 48 px slim state;

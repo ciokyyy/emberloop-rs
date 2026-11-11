@@ -498,10 +498,6 @@
     padding: 0;
   }
 
-  .switch[data-state="checked"] {
-    background: var(--brand-strong);
-  }
-
   .switch-thumb {
     position: absolute;
     top: 3px;
@@ -509,13 +505,17 @@
     width: 16px;
     height: 16px;
     border-radius: 999px;
-    background: var(--fg-2);
+    background: var(--fg-3);
     transition: transform var(--dur-standard) var(--ease-smooth);
+  }
+
+  .switch[data-state="checked"] {
+    background: var(--brand);
   }
 
   .switch[data-state="checked"] .switch-thumb {
     transform: translateX(16px);
-    background: #fff;
+    background: var(--on-accent);
   }
 
   .switch:disabled {
