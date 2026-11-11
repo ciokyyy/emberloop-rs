@@ -47,7 +47,8 @@ impl McpServer {
             .into_iter()
             .filter_map(|spec| {
                 let name = spec.get("name")?.as_str()?.to_string();
-                if !self.toolbox.tool_available(&name) {
+                // The todo tool is switched off for now; its code and tests stay.
+                if name == "todo" || !self.toolbox.tool_available(&name) {
                     return None;
                 }
                 let description = self.descriptions.get(&name).cloned().unwrap_or_default();
@@ -60,6 +61,18 @@ impl McpServer {
 
     pub async fn call(&self, name: &str, arguments: Option<Map<String, Value>>) -> CallToolResult {
         let args = arguments.map_or_else(|| json!({}), Value::Object);
+        if name == "read" {
+            if let Some(found) = crate::read::image(&self.toolbox, &args) {
+                return match found {
+                    Ok((mime, data)) => {
+                        CallToolResult::success(vec![ContentBlock::image(data, mime)])
+                    }
+                    Err(error) => {
+                        CallToolResult::error(vec![ContentBlock::text(error.to_string())])
+                    }
+                };
+            }
+        }
         match self.toolbox.call(name, &args).await {
             Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),

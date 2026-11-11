@@ -124,20 +124,36 @@ impl api::models::Source for ClaudeSource {
 
     async fn fetch(&self) -> Result<Vec<api::models::ModelEntry>, api::models::CatalogueError> {
         const ALL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+        const LEGACY: &[&str] = &["low", "medium", "high", "max"];
+        // shortcut: snapshot of CLI 2.1.319 initialize.models, use discovery when the CLI catalogue changes.
         Ok([
-            ("opus", "Claude Opus"),
-            ("sonnet", "Claude Sonnet"),
-            ("haiku", "Claude Haiku"),
+            ("opus", "Claude Opus 5.5", ALL),
+            ("sonnet", "Claude Sonnet 5.5", ALL),
+            ("claude-fable-5-2", "Claude Fable 5.2", ALL),
+            ("haiku", "Claude Haiku 5.5", ALL),
+            ("fable", "Claude Fable 5.1", ALL),
+            ("claude-haiku-4-5-20251001", "Claude Haiku 4.5", &[]),
+            ("claude-sonnet-5", "Claude Sonnet 5", ALL),
+            ("claude-opus-5", "Claude Opus 5", ALL),
+            ("claude-fable-5", "Claude Fable 5", ALL),
+            ("claude-opus-4-8", "Claude Opus 4.8", ALL),
+            ("claude-opus-4-7", "Claude Opus 4.7", ALL),
+            ("claude-opus-4-6", "Claude Opus 4.6", LEGACY),
+            ("claude-sonnet-4-6", "Claude Sonnet 4.6", LEGACY),
         ]
         .into_iter()
-        .map(|(alias, label)| api::models::ModelEntry {
+        .map(|(alias, label, efforts)| api::models::ModelEntry {
             id: format!("claude/{alias}"),
             provider: "claude".to_string(),
             label: label.to_string(),
             kind: "chat".to_string(),
-            efforts: ALL.iter().map(ToString::to_string).collect(),
+            efforts: efforts.iter().map(ToString::to_string).collect(),
             image_input: true,
-            context_window: 1_000_000,
+            context_window: if alias == "claude-haiku-4-5-20251001" {
+                200_000
+            } else {
+                1_000_000
+            },
             source: "claude".to_string(),
             stale: false,
             updated_at: 0,
@@ -500,6 +516,7 @@ impl Daemon {
                 keys_file,
                 pi_auth,
             ))
+            .with_models(Arc::clone(&app_state.models))
             .with_config_root(config.config_root.clone())
             .with_global_skills(config.global_skills.clone())
             .with_prompts(Arc::clone(&prompts))
@@ -591,6 +608,13 @@ impl Daemon {
                 self.config.host, self.config.port
             )),
             reviewer: meta.reviewer.is_some(),
+            image_input: self
+                .app_state
+                .models
+                .image_input(&meta.model)
+                .await
+                .unwrap_or(true),
+            ctx_spill_enabled: self.app_state.settings.read().await.ctx_spill_enabled,
             ..ToolConfig::new(project.root, self.data_root.session_spill_dir(session_id))
         })?;
         toolbox.flush_notices().await?;
@@ -648,6 +672,30 @@ impl Daemon {
                 (
                     "EMBERLOOP_REVIEWER".into(),
                     if meta.reviewer.is_some() { "1" } else { "0" }.into(),
+                ),
+                (
+                    "EMBERLOOP_IMAGE_INPUT".into(),
+                    if self
+                        .app_state
+                        .models
+                        .image_input(&meta.model)
+                        .await
+                        .unwrap_or(true)
+                    {
+                        "1"
+                    } else {
+                        "0"
+                    }
+                    .into(),
+                ),
+                (
+                    "EMBERLOOP_CTX_SPILL".into(),
+                    if self.app_state.settings.read().await.ctx_spill_enabled {
+                        "1"
+                    } else {
+                        "0"
+                    }
+                    .into(),
                 ),
             ],
             model: Some(meta.model.clone()),
@@ -781,9 +829,11 @@ pub fn mcp_tool_config(
         prompts_dir: Some(config_root.join("prompts")),
         session_url: std::env::var("EMBERLOOP_SESSION_URL").ok(),
         reviewer: std::env::var("EMBERLOOP_REVIEWER").as_deref() == Ok("1"),
+        image_input: std::env::var("EMBERLOOP_IMAGE_INPUT").as_deref() != Ok("0"),
         max_call_secs: std::env::var("EMBERLOOP_MAX_CALL_SECS")
             .ok()
             .and_then(|value| value.parse().ok()),
+        ctx_spill_enabled: std::env::var("EMBERLOOP_CTX_SPILL").as_deref() == Ok("1"),
         ..ToolConfig::new(root, spill)
     }
 }
@@ -1051,13 +1101,45 @@ mod exe_tests {
     }
 
     #[tokio::test]
-    async fn claude_aliases_expose_the_cli_window_and_efforts() {
+    async fn claude_catalogue_exposes_the_cli_models_and_their_efforts() {
         use api::models::Source;
         let entries = ClaudeSource.fetch().await.unwrap();
-        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "claude/opus",
+                "claude/sonnet",
+                "claude/claude-fable-5-2",
+                "claude/haiku",
+                "claude/fable",
+                "claude/claude-haiku-4-5-20251001",
+                "claude/claude-sonnet-5",
+                "claude/claude-opus-5",
+                "claude/claude-fable-5",
+                "claude/claude-opus-4-8",
+                "claude/claude-opus-4-7",
+                "claude/claude-opus-4-6",
+                "claude/claude-sonnet-4-6",
+            ]
+        );
         for entry in entries {
-            assert_eq!(entry.context_window, 1_000_000);
-            assert_eq!(entry.efforts, ["low", "medium", "high", "xhigh", "max"]);
+            let context_window = if entry.id == "claude/claude-haiku-4-5-20251001" {
+                200_000
+            } else {
+                1_000_000
+            };
+            assert_eq!(entry.context_window, context_window);
+            let efforts: &[&str] = match entry.id.as_str() {
+                "claude/claude-haiku-4-5-20251001" => &[],
+                "claude/claude-opus-4-6" | "claude/claude-sonnet-4-6" => {
+                    &["low", "medium", "high", "max"]
+                }
+                _ => &["low", "medium", "high", "xhigh", "max"],
+            };
+            assert_eq!(entry.efforts, efforts);
         }
     }
 }

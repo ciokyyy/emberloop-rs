@@ -665,12 +665,17 @@ export interface components {
             key: string;
         };
         Settings: {
+            /**
+             * @description Whether oversized tool output spills to `ctx:` handles and CCR replacement runs.
+             * @default false
+             */
+            ctx_spill_enabled: boolean;
             /** @default gemini-3.8-flash */
             default_model: string;
             /**
              * Format: int32
              * @description Reference `compress.emergencyThresholdPercent`.
-             * @default 95
+             * @default 25
              */
             emergency_threshold_percent: number;
             /**
@@ -686,7 +691,7 @@ export interface components {
             /**
              * Format: int32
              * @description Reference `compress.maxContextLimit`, a percent of the window.
-             * @default 75
+             * @default 20
              */
             max_context_limit: number;
             /**

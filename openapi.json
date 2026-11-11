@@ -1885,6 +1885,11 @@
       "Settings": {
         "type": "object",
         "properties": {
+          "ctx_spill_enabled": {
+            "type": "boolean",
+            "description": "Whether oversized tool output spills to `ctx:` handles and CCR replacement runs.",
+            "default": false
+          },
           "default_model": {
             "type": "string",
             "default": "gemini-3.8-flash"
@@ -1893,7 +1898,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Reference `compress.emergencyThresholdPercent`.",
-            "default": 95,
+            "default": 25,
             "minimum": 0
           },
           "inject_nudge": {
@@ -1910,7 +1915,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Reference `compress.maxContextLimit`, a percent of the window.",
-            "default": 75,
+            "default": 20,
             "minimum": 0
           },
           "min_pressure_benefit_tokens": {

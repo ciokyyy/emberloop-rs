@@ -46,6 +46,8 @@ pub struct Settings {
     pub tier3_trigger: u32,
     /// Background skill review starts after this many tool-calling rounds since the last `skill_manage`; 0 turns it off.
     pub skills_review_interval: u32,
+    /// Whether oversized tool output spills to `ctx:` handles and CCR replacement runs.
+    pub ctx_spill_enabled: bool,
 }
 
 impl Default for Settings {
@@ -62,9 +64,9 @@ impl Default for Settings {
             todo_reminders_max: 3,
             todo_auto_expand: true,
             todo_hide_when_done: true,
-            max_context_limit: 75,
+            max_context_limit: 20,
             min_pressure_benefit_tokens: 0,
-            emergency_threshold_percent: 95,
+            emergency_threshold_percent: 25,
             preserve_recent_messages: 3,
             protected_tools: Vec::new(),
             inject_tool: true,
@@ -72,6 +74,7 @@ impl Default for Settings {
             tier2_trigger: 1000,
             tier3_trigger: 2000,
             skills_review_interval: 5,
+            ctx_spill_enabled: false,
         }
     }
 }

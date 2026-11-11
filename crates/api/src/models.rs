@@ -82,6 +82,15 @@ impl ModelCatalogue {
         self.merge().await
     }
 
+    /// Whether a known model takes image input; `None` when no source lists it.
+    pub async fn image_input(&self, model: &str) -> Option<bool> {
+        self.merge()
+            .await
+            .into_iter()
+            .find(|entry| entry.id == model)
+            .map(|entry| entry.image_input)
+    }
+
     /// The context window a model id is known to have; `None` when no source
     /// lists it or the window is unknown.
     pub async fn window(&self, model: &str) -> Option<usize> {

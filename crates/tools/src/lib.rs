@@ -92,8 +92,9 @@ pub struct ToolConfig {
     /// A harness cuts an MCP call that blocks longer (Antigravity: 3 minutes) and then dies, so
     /// every blocking tool wait is clamped to this many seconds. `None` keeps each tool's own cap.
     pub max_call_secs: Option<u64>,
-    /// Directories searched for a native codebase-memory-mcp before the npx fallback runs.
     pub bin_dirs: Vec<PathBuf>,
+    /// Whether oversized tool output spills to `ctx:` handles and `ctx_search` is available.
+    pub ctx_spill_enabled: bool,
 }
 impl ToolConfig {
     pub fn new(root: impl Into<PathBuf>, spill_dir: impl Into<PathBuf>) -> Self {
@@ -113,6 +114,7 @@ impl ToolConfig {
             max_call_secs: None,
             image_input: true,
             bin_dirs: graph::default_bin_dirs(),
+            ctx_spill_enabled: false,
         }
     }
 }
@@ -295,6 +297,7 @@ impl Toolbox {
     pub(crate) fn tool_available(&self, name: &str) -> bool {
         match name {
             "edit" => !self.config.reviewer,
+            "ctx_search" => self.config.ctx_spill_enabled,
             "spawn" | "steer" | "stop" | "result" | "submit" => self.config.session_url.is_some(),
             _ => true,
         }
@@ -318,7 +321,12 @@ impl Toolbox {
             }
             "todo" => todo::run(self, args),
             "grep" => grep::run(self, args),
-            "ctx_search" => ctxsearch::run(self, args),
+            "ctx_search" => {
+                if !self.config.ctx_spill_enabled {
+                    return Err(ToolError::msg("ctx_search is currently disabled"));
+                }
+                ctxsearch::run(self, args)
+            }
             "skill_search" => skillsearch::run(self, args),
             "skill_manage" => skillmanage::run(self, args),
             "prompt_propose" => promptpropose::run(self, args),
@@ -347,6 +355,9 @@ impl Toolbox {
     }
 
     pub(crate) fn maybe_spill(&self, content: String, origin: &str) -> ToolResult<String> {
+        if !self.config.ctx_spill_enabled {
+            return Ok(content);
+        }
         // A script inside `execute` filters its own data; a spill stub would hide the content.
         if IN_SCRIPT.try_with(|_| ()).is_ok() {
             return Ok(content);

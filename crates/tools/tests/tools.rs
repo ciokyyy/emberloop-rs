@@ -35,6 +35,7 @@ fn fixture_with_threshold(threshold: usize) -> Fixture {
     let spill = dir.path().join("spill");
     let config = ToolConfig {
         overflow_threshold: threshold,
+        ctx_spill_enabled: true,
         ..ToolConfig::new(&root, spill)
     };
     let toolbox = Arc::new(Toolbox::new(config).expect("toolbox"));
@@ -635,9 +636,7 @@ fn mcp_serves_tools_and_errors() {
             "background",
             "write",
             "find",
-            "todo",
             "websearch",
-            "ctx_search",
             "skill_search",
             "skill_manage",
             "prompt_propose",

@@ -40,6 +40,7 @@ pub struct SessionRunner {
     settings: Arc<RwLock<Settings>>,
     reminders: Arc<Mutex<HashMap<String, Cycle>>>,
     titles: Option<crate::titles::Titles>,
+    models: Option<Arc<api::models::ModelCatalogue>>,
     config_root: Option<std::path::PathBuf>,
     global_skills: Option<std::path::PathBuf>,
     prompts: Option<Arc<PromptStore>>,
@@ -131,6 +132,7 @@ impl SessionRunner {
             settings,
             reminders: Arc::new(Mutex::new(HashMap::new())),
             titles: None,
+            models: None,
             config_root: None,
             global_skills: None,
             prompts: None,
@@ -237,6 +239,11 @@ impl SessionRunner {
         self
     }
 
+    pub(crate) fn with_models(mut self, models: Arc<api::models::ModelCatalogue>) -> Self {
+        self.models = Some(models);
+        self
+    }
+
     pub(crate) fn with_titles(mut self, titles: crate::titles::Titles) -> Self {
         self.titles = Some(titles);
         self
@@ -256,6 +263,8 @@ impl SessionRunner {
         session_id: &str,
         root: &std::path::Path,
         meta: &SessionMeta,
+        image_input: bool,
+        ctx_spill_enabled: bool,
     ) -> HarnessWiring {
         let spill = self.data_root.session_spill_dir(session_id);
         let mcp_command = crate::daemon_exe().map(|exe| {
@@ -297,6 +306,14 @@ impl SessionRunner {
                 (
                     "EMBERLOOP_REVIEWER".into(),
                     if meta.reviewer.is_some() { "1" } else { "0" }.into(),
+                ),
+                (
+                    "EMBERLOOP_IMAGE_INPUT".into(),
+                    if image_input { "1" } else { "0" }.into(),
+                ),
+                (
+                    "EMBERLOOP_CTX_SPILL".into(),
+                    if ctx_spill_enabled { "1" } else { "0" }.into(),
                 ),
             ],
             model: Some(meta.model.clone()),
@@ -378,7 +395,18 @@ impl SessionRunner {
             .get(&meta.project_id)
             .await
             .ok_or_else(|| "Project not found".to_string())?;
-        let wiring = self.wiring(session_id, &project.root, &meta);
+        let image_input = match &self.models {
+            Some(models) => models.image_input(&meta.model).await.unwrap_or(true),
+            None => true,
+        };
+        let ctx_spill_enabled = self.settings.read().await.ctx_spill_enabled;
+        let wiring = self.wiring(
+            session_id,
+            &project.root,
+            &meta,
+            image_input,
+            ctx_spill_enabled,
+        );
         self.freeze_catalog(session_id, &project.root);
         let session = Arc::<dyn HarnessSession>::from(
             self.harness

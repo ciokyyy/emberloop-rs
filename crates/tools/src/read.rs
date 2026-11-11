@@ -16,6 +16,67 @@ struct ReadArgs {
     limit: usize,
 }
 
+/// Image file a `read` call names: MIME type and base64 data, so the model sees the picture.
+/// `None` when the path is not an image extension; checked after the jail and size limit.
+pub fn image(toolbox: &Toolbox, args: &Value) -> Option<ToolResult<(&'static str, String)>> {
+    let raw = args.get("path")?.as_str()?;
+    let mime = match raw.rsplit('.').next()?.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    if !toolbox.image_input() {
+        return Some(Err(ToolError::msg(format!(
+            "{raw} is an image and the current model takes no image input"
+        ))));
+    }
+    Some((|| {
+        let path = toolbox_jail(toolbox).resolve(raw)?;
+        let meta = fs::metadata(&path)?;
+        if meta.len() > toolbox.max_read_bytes() as u64 {
+            return Err(ToolError::msg(format!(
+                "{} is {} bytes, over the {} byte read limit",
+                path.display(),
+                meta.len(),
+                toolbox.max_read_bytes()
+            )));
+        }
+        Ok((mime, base64(&fs::read(&path)?)))
+    })())
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod image_tests {
+    #[test]
+    fn base64_pads() {
+        assert_eq!(super::base64(b"Man"), "TWFu");
+        assert_eq!(super::base64(b"Ma"), "TWE=");
+        assert_eq!(super::base64(b"M"), "TQ==");
+        assert_eq!(super::base64(b""), "");
+    }
+}
+
 /// `ctx:<handle>` optionally followed by `:<start>-<end>`, `:<line>` or `:<line>+<count>`.
 fn parse_ctx(raw: &str) -> Option<(&str, Option<&str>)> {
     let rest = raw.strip_prefix("ctx:")?;
