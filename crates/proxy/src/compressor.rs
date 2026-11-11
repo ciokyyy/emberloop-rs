@@ -597,15 +597,22 @@ impl Compressor for NativeCompressor {
     }
     fn fold_report(&self, contents: &[Value], skip: &[Value]) -> Option<String> {
         let skip_ids = turn_ids(skip);
-        let block = self
-            .blocks
-            .iter()
-            .filter(|block| !block.restored && !block.originals.is_empty())
-            .max_by_key(|block| block.originals.len())?;
-        if contents
-            .iter()
-            .any(|turn| turnkeys::same_turn(turn, &block.summary_turn))
-        {
+        let live = || {
+            self.blocks
+                .iter()
+                .filter(|block| !block.restored && !block.originals.is_empty())
+        };
+        // The newest block is the one the agent just asked for. A fold of the same start or later
+        // in the request means it, or a wider twin, applied; otherwise report it even when older
+        // blocks still apply, because that miss silently undoes the agent's last compress.
+        let block = live()
+            .max_by_key(|block| block.id.trim_start_matches('b').parse::<u64>().unwrap_or(0))?;
+        let applied = |other: &Block| {
+            contents
+                .iter()
+                .any(|turn| turnkeys::same_turn(turn, &other.summary_turn))
+        };
+        if live().any(|other| other.start >= block.start && applied(other)) {
             return None;
         }
         let wanted = wanted_turns(block, skip, &skip_ids);

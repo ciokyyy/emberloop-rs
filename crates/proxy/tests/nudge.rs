@@ -58,6 +58,7 @@ fn a_nudge_repeats_once_the_context_grew_by_fifty_thousand_tokens() {
         observe(&mut state, 100_000, window).map(|n| n.kind),
         Some(NudgeKind::First)
     );
+    state.reset_after_compress(); // an answered nudge waits the full step
     assert_eq!(
         observe(&mut state, 125_000, window),
         None,
@@ -67,6 +68,7 @@ fn a_nudge_repeats_once_the_context_grew_by_fifty_thousand_tokens() {
     assert_eq!(again.kind, NudgeKind::First);
     assert_eq!(again.since_last, 50_000);
     assert!(!again.over_limit);
+    state.reset_after_compress();
     assert_eq!(
         observe(&mut state, 175_000, window),
         None,
@@ -461,12 +463,31 @@ fn reference_first(name: &str) -> Option<(u64, u64)> {
 /// - `blocks` 47: the first nudge at 32592 tokens, after the compress at 30, which left the
 ///   gate shut but less than the growth step behind the last nudge.
 /// - `compress-reset` 42: the session's first nudge at 32555 tokens.
+/// - Steady scenarios never compress, so the pending re-nudge (15000 tokens, unanswered nudge)
+///   fires again at `200k` 60 and every few frames of `1m-steady`: deliberate, not parity misses.
 /// - `200k` 50: the first nudge at 76255 tokens; the reference fired at 51855 and 74730.
 const KNOWN_EARLY: &[(&str, u64, &str)] = &[
     ("window-64k-pressure", 42, "first"),
     ("window-64k-blocks", 47, "first"),
     ("window-64k-compress-reset", 42, "first"),
     ("window-200k-steady", 50, "first"),
+    ("window-200k-steady", 60, "first"),
+    ("window-1m-steady", 23, "first"),
+    ("window-1m-steady", 26, "first"),
+    ("window-1m-steady", 29, "first"),
+    ("window-1m-steady", 32, "first"),
+    ("window-1m-steady", 38, "first"),
+    ("window-1m-steady", 41, "first"),
+    ("window-1m-steady", 44, "first"),
+    ("window-1m-steady", 47, "first"),
+    ("window-1m-steady", 53, "first"),
+    ("window-1m-steady", 56, "first"),
+    ("window-1m-steady", 59, "first"),
+    ("window-1m-steady", 62, "first"),
+    ("window-1m-steady", 68, "first"),
+    ("window-1m-steady", 71, "first"),
+    ("window-1m-steady", 74, "first"),
+    ("window-1m-steady", 77, "first"),
 ];
 
 #[test]

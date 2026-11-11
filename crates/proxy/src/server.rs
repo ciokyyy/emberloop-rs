@@ -798,19 +798,17 @@ fn prepare_request(
     if !carried.is_empty() {
         contents = carry::join(carried, contents);
     }
-    // Arrival replacement runs first: a fold stores the `ctx` handle, so a later request must
+    // Arrival replacement runs first when enabled: a fold stores the `ctx` handle, so a later request must
     // carry the handle again before the fold's stored turns can be matched.
-    lock(&runtime.ctx)?.apply(&mut contents);
+    if settings.ctx_spill_enabled {
+        lock(&runtime.ctx)?.apply(&mut contents);
+    }
     // A fold was chosen over the history as the model saw it, steers and proxy pairs included, so
     // its stored turns include them. The harness resends its own history without them: the block
     // is looked for ignoring the turns the splice store would put back.
     let spliced = lock(&runtime.splices)?.turns();
-    let folded = lock(&runtime.compressor)?.apply_skipping(&mut contents, &spliced);
-    let unmatched = if folded == 0 {
-        lock(&runtime.compressor)?.fold_report(&contents, &spliced)
-    } else {
-        None
-    };
+    let _ = lock(&runtime.compressor)?.apply_skipping(&mut contents, &spliced);
+    let unmatched = lock(&runtime.compressor)?.fold_report(&contents, &spliced);
     // The same miss on every request is noise: report it once until the text changes.
     let unmatched = {
         let mut last = lock(&runtime.last_fold_miss)?;

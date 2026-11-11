@@ -1500,6 +1500,7 @@ async fn a_large_tool_result_goes_upstream_as_a_ctx_handle_with_stable_bytes() {
         config.with_opencode_upstream(format!("http://{addr}/inference/go"))
     })
     .await;
+    fixture.settings.write().await.ctx_spill_enabled = true;
     let big = "ignored target file line\n".repeat(1200);
     let req_body = json!({
         "model": "glm-5",
@@ -3157,7 +3158,7 @@ async fn a_nudge_is_silent_when_the_latest_user_message_blocks_the_only_mass() {
     );
 
     // Control: the same mass with the latest message at the end is compressible, so a nudge
-    // fires (pressure, as the usage is over 75 percent of this window).
+    // fires (emergency, as the usage is over 25 percent of this window).
     let control = vec![
         json!({"role": "user", "parts": [{"text": "first prompt"}]}),
         json!({"role": "model", "parts": [{"text": "a".repeat(2_000)}]}),
@@ -3169,7 +3170,7 @@ async fn a_nudge_is_silent_when_the_latest_user_message_blocks_the_only_mass() {
     ];
     let mut outgoing = Cow::Borrowed(control.as_slice());
     let (nudge, _) = inject_nudge(&runtime, &mut outgoing, 100_000, &settings).unwrap();
-    assert_eq!(nudge.map(|report| report.kind), Some("pressure"));
+    assert_eq!(nudge.map(|report| report.kind), Some("emergency"));
 }
 
 #[tokio::test]
@@ -3743,7 +3744,7 @@ async fn prefix_is_stable_across_the_first_nudge() {
     let fixture = fixture_with(echoed_usage_fake()).await;
     // Thirty-four steps are warm (about 102000 tokens); the first nudge fires within the run, at
     // the 100000-token gate a 1M window now uses. Fewer driven requests keep the run short.
-    let requests = drive_growing(&fixture, 34, 6, |_, _| None).await;
+    let requests = drive_growing(&fixture, 34, 4, |_, _| None).await;
     let fired: Vec<usize> = requests
         .iter()
         .enumerate()

@@ -28,6 +28,8 @@ pub const MIN_COMPRESS_RANGE: u64 = 5_000;
 /// Context growth that earns another nudge while nothing is folded (reference
 /// `nudgeGrowthTokens`).
 pub const NUDGE_GROWTH_TOKENS: u64 = 50_000;
+/// Growth that repeats a nudge the agent has not answered with a compress yet.
+pub const RENUDGE_GROWTH_TOKENS: u64 = 15_000;
 
 /// Rounds in a row a band nudge waits on an estimate reading (reference `maxEstimateHoldRounds`).
 pub const MAX_ESTIMATE_HOLD_ROUNDS: u64 = 2;
@@ -97,6 +99,9 @@ pub struct NudgeState {
     first_fired: bool,
     #[serde(default)]
     last_nudge_tokens: u64,
+    /// A nudge fired and no compress followed; cleared by `reset_after_compress`.
+    #[serde(default)]
+    pending: bool,
     #[serde(default)]
     tier2_fired: bool,
     #[serde(default)]
@@ -157,7 +162,12 @@ impl NudgeState {
             }
             NudgeKind::First
         } else if compressible >= floor
-            && tokens.saturating_sub(self.last_nudge_tokens) >= NUDGE_GROWTH_TOKENS
+            && tokens.saturating_sub(self.last_nudge_tokens)
+                >= if self.pending {
+                    RENUDGE_GROWTH_TOKENS
+                } else {
+                    NUDGE_GROWTH_TOKENS
+                }
         {
             NudgeKind::First
         } else if compressible >= floor
@@ -177,6 +187,7 @@ impl NudgeState {
         };
         let since_last = tokens.saturating_sub(self.last_nudge_tokens);
         self.first_fired = true;
+        self.pending = true;
         self.last_nudge_tokens = tokens;
         Some(Nudge {
             kind,
@@ -192,6 +203,7 @@ impl NudgeState {
     /// nudge leaves behind. Otherwise every step over the threshold would fold again and
     /// restart the provider cache from turn 1.
     pub fn reset_after_compress(&mut self) {
+        self.pending = false;
         self.tier2_fired = false;
         self.tier3_fired = false;
     }
@@ -258,5 +270,18 @@ mod tests {
         assert!(NudgeState::default()
             .observe_with(160_000, 200_000, 100_000, 0, &billed)
             .is_some());
+    }
+
+    #[test]
+    fn unanswered_nudge_repeats_sooner_than_a_compressed_one() {
+        let config = NudgeConfig::default();
+        let mut state = NudgeState::default();
+        let w = 1_000_000;
+        assert!(state.observe_with(100_000, w, 90_000, 0, &config).is_some());
+        assert!(state.observe_with(110_000, w, 90_000, 0, &config).is_none());
+        assert!(state.observe_with(115_000, w, 90_000, 0, &config).is_some());
+        state.reset_after_compress();
+        assert!(state.observe_with(131_000, w, 90_000, 0, &config).is_none());
+        assert!(state.observe_with(165_000, w, 90_000, 0, &config).is_some());
     }
 }
