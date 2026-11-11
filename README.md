@@ -11,9 +11,8 @@ browser UI on loopback, runs agent Sessions through pluggable harnesses, and
 proxies every model request so that context compression, steering, tool policy
 and usage metering happen in one place instead of in each harness.
 
-It is a rewrite, not a port: the Go implementation at
-[ciokyyy/emberloop](https://github.com/ciokyyy/emberloop) is the behavioural
-reference.
+Every capability is owned by one crate, so a behaviour is declared once and
+read by every harness instead of being re-implemented per agent.
 
 ## Status
 

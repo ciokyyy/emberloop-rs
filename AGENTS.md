@@ -1,6 +1,6 @@
 # AGENTS.md — emberloop-rs
 
-Project preamble: emberloop-rs is a Rust rewrite of Emberloop, started fresh and not a port. Tools are served over MCP, and one proxy owns everything on the model wire (billion context, Ponytail text, steering). Every harness plugs into both through one small trait. Phase 1 is `agy` only, with Projects, Sessions, `read`/`edit`/`bash`/`background`/`grep` and a trimmed copy of the Emberloop UI (SvelteKit, Tailwind v4, shadcn-svelte). The Go Emberloop at `~/Projects/emberloop` is the reference for behaviour and is not changed from here. The spec is the source of truth; implementation lives in `crates/` and `web/`.
+Project preamble: emberloop-rs is a Rust rewrite of Emberloop, started fresh and not a port. Tools are served over MCP, and one proxy owns everything on the model wire (billion context, Ponytail text, steering). Every harness plugs into both through one small trait. Phase 1 is `agy` only, with Projects, Sessions, `read`/`edit`/`bash`/`background`/`grep` and a trimmed copy of the Emberloop UI (SvelteKit, Tailwind v4, shadcn-svelte). The spec is the source of truth; implementation lives in `crates/` and `web/`.
 
 Web tooling is bun: `bun`, `bunx` and `bun.lock` everywhere, never npm or another package manager. Every control in `web/` is a shadcn-svelte component over `bits-ui`: add one with `bunx shadcn-svelte add <name>` and use it as generated, never a native `<select>`-style widget or a hand-rolled one.
 
