@@ -37,6 +37,15 @@ jobs:
         with:
           tool: nextest,cargo-deny,cargo-machete
 
+      # The OpenAPI drift check regenerates a web source, so it runs before the
+      # bundle: a source touched after the build makes it stale for the
+      # web_bundle staleness test.
+      - name: OpenAPI client is current
+        run: |
+          cargo run -p api --bin dump_openapi
+          (cd web && bun run generate:api)
+          git diff --exit-code -- openapi.json web/src/lib/api/schema.d.ts
+
       # The daemon embeds web/build at compile time, so the bundle comes first.
       - name: Web bundle
         working-directory: web
@@ -57,12 +66,6 @@ jobs:
         run: |
           cargo deny check
           cargo machete
-
-      - name: OpenAPI client is current
-        run: |
-          cargo run -p api --bin dump_openapi
-          (cd web && bun run generate:api)
-          git diff --exit-code -- openapi.json web/src/lib/api/schema.d.ts
 
       - name: Tests
         run: cargo nextest run --workspace
