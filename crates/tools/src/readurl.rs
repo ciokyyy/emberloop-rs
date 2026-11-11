@@ -58,6 +58,14 @@ pub async fn read_url(
             .await
             .map_err(|_| direct_err)?,
     };
+    // Same cap as a file read: the first 300 lines, unless `:raw` asks for all of it.
+    let limit = if raw_mode {
+        limit
+    } else if limit == 0 {
+        crate::read::DEFAULT_LINES
+    } else {
+        limit
+    };
     let lines = lines_of(&body);
     let start = (offset.max(1) - 1).min(lines.len());
     let end = if limit == 0 {
@@ -78,7 +86,7 @@ pub async fn read_url(
         out.push_str(line);
         out.push('\n');
     }
-    toolbox.maybe_spill(out, &format!("readurl {normalized}"))
+    Ok(out)
 }
 
 fn split_url_modifiers(raw: &str) -> (String, bool) {

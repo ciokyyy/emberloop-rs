@@ -14,6 +14,7 @@ use crate::{ToolError, ToolResult, Toolbox};
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 600;
 const VIEW_LINES: usize = 10;
+const REWRITE_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Deserialize)]
 struct BashArgs {
@@ -51,11 +52,41 @@ pub async fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     toolbox.maybe_spill(output, &format!("bash {:?}", args.command))
 }
 
+/// Asks `rtk rewrite` for the token-compressed form of the command. Exit 0 or 3 means rtk has one
+/// and prints it; anything else (rtk missing, a timeout, an empty answer) leaves the command as
+/// written.
+async fn rtk_rewrite(command: &str) -> String {
+    let trimmed = command.trim();
+    if trimmed.is_empty() || trimmed == "rtk" || trimmed.starts_with("rtk ") {
+        return command.to_string();
+    }
+    let asked = tokio::process::Command::new("rtk")
+        .arg("rewrite")
+        .arg(trimmed)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let Ok(Ok(asked)) = tokio::time::timeout(REWRITE_TIMEOUT, asked).await else {
+        return command.to_string();
+    };
+    if !matches!(asked.status.code(), Some(0) | Some(3)) {
+        return command.to_string();
+    }
+    let rewritten = String::from_utf8_lossy(&asked.stdout).trim().to_string();
+    if rewritten.is_empty() {
+        command.to_string()
+    } else {
+        rewritten
+    }
+}
+
 pub(crate) async fn foreground(
     toolbox: &Toolbox,
     command: &str,
     timeout_secs: u64,
 ) -> ToolResult<String> {
+    let command = rtk_rewrite(command).await;
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c")
         .arg(format!("{}exec 2>&1\n{command}", toolbox.env_prelude()))
@@ -246,5 +277,16 @@ fn record(toolbox: &Toolbox, raw: &str, lines: Vec<u32>) {
             &hash,
             lines.into_iter().filter(|line| *line <= count),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn rtk_rewrite_leaves_rtk_empty_and_missing_rtk_alone() {
+        // rtk is not installed in the check, and these guards hold whether it is or not.
+        for command in ["", "  ", "rtk git status", "rtk bypass git diff"] {
+            assert_eq!(super::rtk_rewrite(command).await, command);
+        }
     }
 }

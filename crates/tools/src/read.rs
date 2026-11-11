@@ -42,23 +42,41 @@ fn parse_ctx_range(range: &str) -> Option<(usize, usize)> {
     Some((line, line))
 }
 
+/// Lines a plain read shows; `path:raw` asks for the whole file. Skills are never capped.
+pub(crate) const DEFAULT_LINES: usize = 300;
+
+/// Splits the `:raw` suffix off a path; the URL reader has the same suffix for its own raw mode.
+fn split_raw(raw: &str) -> (String, bool) {
+    match raw.strip_suffix(":raw") {
+        Some(base) if !base.is_empty() => (base.to_string(), true),
+        _ => (raw.to_string(), false),
+    }
+}
+
 pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     let args: ReadArgs = serde_json::from_value(args.clone())?;
-    if let Some((handle, range)) = parse_ctx(&args.path) {
+    let (path_arg, raw) = split_raw(&args.path);
+    if let Some((handle, range)) = parse_ctx(&path_arg) {
         return read_ctx(toolbox, handle, range, args.offset, args.limit);
     }
-    if let Some(target) = parse_skill_target(&args.path) {
+    if let Some(target) = parse_skill_target(&path_arg) {
         return read_skill(toolbox, target, args.offset, args.limit);
     }
-    let path = toolbox_jail(toolbox).resolve(&args.path)?;
-    let rendered = if path.is_dir() {
-        render_dir(&path, args.offset, args.limit)?
+    let path = toolbox_jail(toolbox).resolve(&path_arg)?;
+    if path.is_dir() {
+        return render_dir(&path, args.offset, args.limit);
+    }
+    let limit = if raw {
+        0
+    } else if args.limit == 0 {
+        DEFAULT_LINES
     } else {
-        let rendered = render_file(toolbox, &path, args.offset, args.limit)?;
-        skillstore::log_view(toolbox, &args.path);
-        rendered
+        args.limit
     };
-    toolbox.maybe_spill(rendered, &format!("read {}", args.path))
+    let rendered = render_file(toolbox, &path, args.offset, limit)?;
+    skillstore::log_view(toolbox, &path_arg);
+    // No spill: read answers with its own lines, and `:raw` is how a model asks for all of them.
+    Ok(rendered)
 }
 
 fn toolbox_jail(toolbox: &Toolbox) -> &crate::ProjectJail {
@@ -169,7 +187,7 @@ fn read_skill(
         SkillTarget::Catalog => {
             let skills = skills::discover(toolbox.global_skills(), toolbox.root());
             if skills.is_empty() {
-                return toolbox.maybe_spill("No skills found.\n".to_string(), "read el://skills");
+                return Ok("No skills found.\n".to_string());
             }
             let mut out = String::from("Available skills:\n\n");
             for skill in skills {
@@ -179,7 +197,7 @@ fn read_skill(
                     skill.name, skill.origin, scope, skill.description
                 ));
             }
-            toolbox.maybe_spill(out, "read el://skills")
+            Ok(out)
         }
         SkillTarget::Item { name, subpath } => {
             let skill = skills::locate(toolbox.global_skills(), toolbox.root(), name)
@@ -191,18 +209,13 @@ fn read_skill(
                 Some(sub) => safe_skill_subpath(skill_dir, sub)?,
                 None => skill.path.clone(),
             };
-            let rendered = if target_path.is_dir() {
-                render_dir(&target_path, offset, limit)?
-            } else {
-                let rendered = render_file(toolbox, &target_path, offset, limit)?;
-                skillstore::log_view(toolbox, &target_path.display().to_string());
-                rendered
-            };
-            let label = match subpath {
-                Some(sub) => format!("read el://skills/{name}/{sub}"),
-                None => format!("read el://skills/{name}"),
-            };
-            toolbox.maybe_spill(rendered, &label)
+            if target_path.is_dir() {
+                return render_dir(&target_path, offset, limit);
+            }
+            // A skill reads whole: a capped body is a skill the model cannot follow.
+            let rendered = render_file(toolbox, &target_path, offset, 0)?;
+            skillstore::log_view(toolbox, &target_path.display().to_string());
+            Ok(rendered)
         }
     }
 }

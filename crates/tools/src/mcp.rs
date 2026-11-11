@@ -147,7 +147,7 @@ fn tool_specs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File, directory, http(s) URL, ctx:<handle> pointer or el://skills/<name>."},
+                    "path": {"type": "string", "description": "File, directory, http(s) URL, ctx:<handle> pointer or el://skills/<name>. Append :raw to a file or URL path to read it whole; without it the first 300 lines."},
                     "offset": {"type": "integer", "description": "First line, 1-based."},
                     "limit": {"type": "integer", "description": "Maximum lines."}
                 },

@@ -116,28 +116,25 @@ fn read_offset_limit_and_directory_listing() {
 }
 
 #[test]
-fn read_overflow_spills_and_ctx_pages() {
+fn read_caps_at_300_lines_and_raw_reads_the_whole_file() {
     let fixture = fixture_with_threshold(50);
-    let content = (1..=100)
+    let content = (1..=400)
         .map(|n| format!("line {n}"))
         .collect::<Vec<_>>()
         .join("\n");
     let path = write(&fixture, "big.txt", &content);
+    // No spill: a read answers with its own lines, even over the overflow threshold.
     let output = read(&fixture, &path, 1, 0);
-    assert!(output.contains("[overflow]"), "{output}");
-    let handle = output
-        .split_whitespace()
-        .find(|word| word.starts_with("ctx:"))
-        .expect("ctx handle")
-        .split(':')
-        .nth(1)
-        .expect("handle id")
-        .to_string();
-    let paged = read(&fixture, Path::new(&format!("ctx:{handle}:2-3")), 1, 0);
-    // Spill line 1 is the read header, so rendered lines 2-3 are content lines 1-2.
-    assert!(paged.contains("line 1"), "{paged}");
-    assert!(paged.contains("line 2"), "{paged}");
-    assert!(!paged.contains("line 3"), "{paged}");
+    assert!(!output.contains("[overflow]"), "{output}");
+    assert!(output.contains("line 300\n"), "{output}");
+    assert!(!output.contains("line 301"), "{output}");
+    let raw = read(
+        &fixture,
+        Path::new(&format!("{}:raw", path.display())),
+        1,
+        0,
+    );
+    assert!(raw.contains("line 400"), "{raw}");
 }
 
 #[test]
@@ -147,8 +144,8 @@ fn read_ctx_forgives_a_dropped_or_added_c_prefix() {
         .map(|n| format!("line {n}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let path = write(&fixture, "big.txt", &content);
-    let output = read(&fixture, &path, 1, 0);
+    write(&fixture, "big.txt", &content);
+    let output = call(&fixture, "bash", json!({"command": "cat big.txt"})).expect("bash spill");
     let handle = output
         .split_whitespace()
         .find(|word| word.starts_with("ctx:"))
@@ -184,6 +181,20 @@ fn read_skill_uri_catalog_and_item() {
         call(&fixture, "read", json!({"path": "el://skills/my-skill"})).expect("skill read");
     assert!(skill_out.contains("Do test"), "{skill_out}");
     assert!(skill_out.contains("my-skill/SKILL.md#"), "{skill_out}");
+
+    // A skill reads whole: no 300-line cap.
+    let long_body = (1..=320)
+        .map(|n| format!("skill line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    write(&fixture, ".agents/skills/my-skill/wrap.md", &long_body);
+    let whole = call(
+        &fixture,
+        "read",
+        json!({"path": "el://skills/my-skill/wrap.md"}),
+    )
+    .expect("whole skill file");
+    assert!(whole.contains("skill line 320"), "{whole}");
 
     // Read skill via skills:// and skill:
     let alt1 = call(&fixture, "read", json!({"path": "skills://my-skill"})).expect("skills://");

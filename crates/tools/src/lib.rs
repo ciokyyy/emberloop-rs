@@ -273,7 +273,9 @@ impl Toolbox {
         let mut prelude = String::new();
         if let Some(path) = &self.config.env_file {
             let path = path.display().to_string().replace('\'', "'\\''");
-            prelude.push_str(&format!("[ -f '{path}' ] && . '{path}'\n"));
+            prelude.push_str(&format!(
+                "export EMBERLOOP_ENV_FILE='{path}'\n[ -f '{path}' ] && . '{path}'\n"
+            ));
         }
         prelude.push_str(&browser::env_prelude());
         prelude
