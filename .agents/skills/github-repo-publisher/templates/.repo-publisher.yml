@@ -1,0 +1,62 @@
+version: 1
+mode: new-repo
+profile: internal-tool
+owner: OWNER_OR_ORG
+repo: REPO_NAME
+visibility: private
+default_branch: main
+description: SHORT_DESCRIPTION
+homepage: ""
+topics: []
+license: ""
+gitignore_template: ""
+maintainers:
+  owner_team: ""
+  technical_owner: ""
+  business_owner: ""
+contacts:
+  support: ""
+  security: ""
+data:
+  classification: ""
+  production_write_paths: []
+  secrets_location: "Reference only; never commit secret values."
+features:
+  issues: true
+  wiki: false
+  discussions: false
+  projects: false
+hardening:
+  ruleset: light
+  codeowners_required: true
+  dependabot: true
+  codeql: false
+  scorecard: false
+release:
+  strategy: none
+  initial_tag: ""
+  current_tag: ""
+  version_scheme: semver
+  version_file: ""
+  changelog_file: CHANGELOG.md
+  release_workflow: ""
+  artifact_expectations: []
+  draft_required: true
+repo_polish:
+  maintenance_status: active # active | maintenance-only | deprecated | archived | experimental | internal-only
+  support_channel: ""
+  security_contact: ""
+  governance_model: none # none | maintainer-led | foundation | steering-committee | internal-owner
+  screenshots_required: false
+  demo_media_required: false
+  social_preview_required: false
+  citation_required: false
+  funding_required: false
+  releases_required: false
+  changelog_style: none # none | keep-a-changelog | generated-notes | release-please | custom
+  badge_policy: profile-default # none | profile-default | strict | package
+  issue_policy:
+    blank_issues_enabled: false
+    security_reports_external: true
+skips:
+  # item: reason

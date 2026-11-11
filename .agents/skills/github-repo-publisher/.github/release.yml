@@ -1,0 +1,31 @@
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+      - duplicate
+      - invalid
+    authors:
+      - dependabot
+  categories:
+    - title: Skill workflow changes
+      labels:
+        - skill
+        - enhancement
+    - title: Documentation
+      labels:
+        - documentation
+        - docs
+    - title: Templates and examples
+      labels:
+        - template
+    - title: Scripts and validation
+      labels:
+        - validation
+        - bug
+    - title: Maintenance
+      labels:
+        - chore
+        - dependencies
+    - title: Other changes
+      labels:
+        - "*"

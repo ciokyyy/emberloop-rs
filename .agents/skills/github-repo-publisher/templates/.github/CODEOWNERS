@@ -1,0 +1,5 @@
+# Replace placeholder teams/users before committing.
+* @OWNER_OR_TEAM
+.github/ @OWNER_OR_SECURITY_TEAM
+.github/workflows/ @OWNER_OR_SECURITY_TEAM
+

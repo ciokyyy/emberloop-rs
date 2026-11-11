@@ -1,0 +1,51 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: bash -n scripts/secret-preflight.sh
+
+      - name: Python syntax
+        run: python3 -m py_compile scripts/readme-completeness.py
+
+      - name: JSON templates
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          for path in Path("templates/api").glob("*.json"):
+              json.loads(path.read_text())
+              print(f"ok {path}")
+          PY
+
+      - name: Markdown fence balance
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          failed = False
+          for path in Path(".").rglob("*.md"):
+              if ".git" in path.parts:
+                  continue
+              count = path.read_text(errors="replace").count("```")
+              if count % 2:
+                  print(f"unbalanced fences: {path}")
+                  failed = True
+          raise SystemExit(1 if failed else 0)
+          PY
+
+      - name: README completeness
+        run: python3 scripts/readme-completeness.py README.md

@@ -1,0 +1,67 @@
+mode: new-repo
+profile: public-oss
+owner: MJWNA
+repo_name: github-repo-publisher
+visibility: public
+description: "Codex skill for publishing complete, well-documented, secure GitHub repositories."
+homepage: ""
+source_path: "."
+default_branch: main
+license: mit
+gitignore_template: ""
+topics:
+  - codex
+  - github
+  - repository-automation
+  - readme
+  - developer-tools
+  - github-cli
+maintainers:
+  - "@MJWNA"
+support:
+  issues: true
+  security_policy: SECURITY.md
+settings:
+  issues: true
+  wiki: false
+  discussions: false
+  projects: false
+  delete_branch_on_merge: true
+  squash_merge: true
+  merge_commit: false
+  rebase_merge: true
+security:
+  dependabot: true
+  codeql: false
+  scorecard: true
+  secret_scanning: true
+  push_protection: true
+release:
+  strategy: manual
+  current_tag: v0.2.0
+  version_scheme: semver
+  version_file: VERSION
+  changelog_file: CHANGELOG.md
+  release_workflow: ""
+  artifact_expectations: []
+  draft_required: true
+verification:
+  readme_completeness: true
+  secret_preflight: true
+  github_readback: true
+repo_polish:
+  maintenance_status: active
+  support_channel: GitHub issues
+  security_contact: SECURITY.md
+  governance_model: maintainer-led
+  screenshots_required: false
+  demo_media_required: false
+  social_preview_required: true
+  citation_required: false
+  funding_required: false
+  releases_required: true
+  changelog_style: generated-notes
+  badge_policy: profile-default
+  issue_policy:
+    blank_issues_enabled: false
+    security_reports_external: true

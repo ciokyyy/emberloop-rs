@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this repository in research or published work, please cite it using the metadata below."
+title: "PROJECT_NAME"
+authors:
+  - family-names: "FAMILY_NAME"
+    given-names: "GIVEN_NAME"
+version: "0.1.0"
+date-released: "YYYY-MM-DD"
+url: "https://github.com/OWNER/REPO"

@@ -120,6 +120,13 @@
       "computedHash": "6397731ced114f3657aa88b55ed13d1344a56d77ca449c568e3200c21740fa99",
       "installMode": "copy"
     },
+    "open-sourcing": {
+      "source": "trailofbits/skills",
+      "sourceType": "github",
+      "skillPath": "plugins/open-sourcing/skills/open-sourcing/SKILL.md",
+      "computedHash": "2274e2b09904d5585cfbbf25aa83762a231cfa3f8f62a2515d7f6b86448e8e0e",
+      "installMode": "copy"
+    },
     "pr": {
       "source": "mattpocock/skills",
       "sourceType": "github",
@@ -132,6 +139,13 @@
       "sourceType": "github",
       "skillPath": "skills/engineering/prototype/SKILL.md",
       "computedHash": "d3fc74689bd993e39c44bfae510d014eecffbeec2922764b065377fd1327c0f6",
+      "installMode": "copy"
+    },
+    "repository-documentation": {
+      "source": "JanSzewczyk/claude-plugins",
+      "sourceType": "github",
+      "skillPath": "plugins/code-quality/skills/repository-documentation/SKILL.md",
+      "computedHash": "06ea1e3873fff7bc5a965697ae93476f2acfc775b9828864e79ce9ce944415c7",
       "installMode": "copy"
     },
     "research": {
@@ -174,6 +188,13 @@
       "sourceType": "github",
       "skillPath": "skills/in-progress/setup-ts-deep-modules/SKILL.md",
       "computedHash": "61508216ede38d8cfa712879197a76f75f4896615dbf7abc3f62571f8f5923cc",
+      "installMode": "copy"
+    },
+    "stageshow": {
+      "source": "benjitaylor/skills",
+      "sourceType": "github",
+      "skillPath": "stageshow/SKILL.md",
+      "computedHash": "e4df76406d63644d5051d79855c3f7931d48fdbe9aec15b3d5c12a2601aa2de6",
       "installMode": "copy"
     },
     "tdd": {
@@ -265,13 +286,6 @@
       "sourceType": "github",
       "skillPath": "skills/in-progress/writing-shape/SKILL.md",
       "computedHash": "0d0ac1150c4d65f8370ad194fc097ee17855247f6e5943d05f075806980e7401",
-      "installMode": "copy"
-    },
-    "stageshow": {
-      "source": "benjitaylor/skills",
-      "sourceType": "github",
-      "skillPath": "stageshow/SKILL.md",
-      "computedHash": "e4df76406d63644d5051d79855c3f7931d48fdbe9aec15b3d5c12a2601aa2de6",
       "installMode": "copy"
     }
   }

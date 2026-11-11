@@ -1,0 +1,20 @@
+# Optional settings-as-code example. Do not enable without protecting this file
+# with CODEOWNERS and branch rules, because settings files can control
+# admin-level repository behavior.
+repository:
+  has_issues: true
+  has_projects: false
+  has_wiki: false
+  delete_branch_on_merge: true
+  allow_squash_merge: true
+  allow_merge_commit: false
+  allow_rebase_merge: true
+
+branches:
+  - name: main
+    protection:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+        require_code_owner_reviews: true
+      enforce_admins: false
+      restrictions: null
