@@ -53,7 +53,15 @@ fn the_embedded_web_bundle_is_newer_than_its_sources() {
 /// that never receives a push.
 #[test]
 fn the_bundle_ships_the_manifest_and_the_push_worker() {
-    for name in ["manifest.webmanifest", "sw.js", "icon-192.png"] {
+    for name in [
+        "manifest.webmanifest",
+        "sw.js",
+        "icon-192.png",
+        "icon-512.png",
+        "icon-maskable-512.png",
+        "apple-touch-icon.png",
+        "favicon.ico",
+    ] {
         let path = web().join("build").join(name);
         assert!(path.is_file(), "web/build/{name} is missing");
     }

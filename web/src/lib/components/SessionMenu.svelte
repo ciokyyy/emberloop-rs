@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Popover } from 'bits-ui';
+  import * as Popover from '$lib/components/ui/popover';
   import { holdToLift } from '$lib/hold';
   import type { Project, Session } from '$lib/api/types';
 

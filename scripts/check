@@ -104,6 +104,12 @@ echo "==> generated files are committed"
 run_stage generated git diff --exit-code -- openapi.json web/src/lib/api/schema.d.ts
 wait_stage
 
+# The installable app's icons are rendered, never exported by hand: a committed PNG that no longer
+# matches docs/logo.png is a brand image the User edited and never saw in the app.
+echo "==> icons match docs/logo.png"
+run_stage icons scripts/gen-icons --check
+wait_stage
+
 # The web stage is the slowest (install, type-check, tests, build) and its whole input is one
 # directory tree, so an unchanged tree reuses the green run before it. The stamp is only written
 # after the stage passes, and a missing build always runs it, because the daemon embeds web/build.
