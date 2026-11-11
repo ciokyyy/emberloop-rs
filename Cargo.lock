@@ -126,7 +126,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "api"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "async-trait",
  "axum",
@@ -750,7 +750,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "emberloop-core"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "async-trait",
  "serde",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "emberloop-daemon"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "anyhow",
  "api",
@@ -1046,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "async-trait",
  "futures",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "harness-acp"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "harness-agy"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -1084,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "harness-claude"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "async-trait",
  "harness",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "harness-pi"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -1884,7 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "prompts"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "hex",
  "serde",
@@ -1912,7 +1912,7 @@ dependencies = [
 
 [[package]]
 name = "proxy"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "api",
  "async-trait",
@@ -2610,7 +2610,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "store"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "emberloop-core",
  "hex",
@@ -2899,7 +2899,7 @@ dependencies = [
 
 [[package]]
 name = "tools"
-version = "0.0.12"
+version = "0.0.40"
 dependencies = [
  "clap",
  "glob",

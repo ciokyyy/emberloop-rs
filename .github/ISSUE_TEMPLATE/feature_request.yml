@@ -1,0 +1,30 @@
+name: Feature request
+description: A capability you want emberloop-rs to have.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what blocks it today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: The behaviour you want. Name the area if you know it (proxy, tools, harness, daemon API, web UI).
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, or another design that would also work.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This changes a documented contract in `AGENTS.md` or `specs/`
+        - label: I am willing to open a pull request for it

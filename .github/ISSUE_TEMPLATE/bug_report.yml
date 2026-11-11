@@ -1,0 +1,51 @@
+name: Bug report
+description: A defect in the daemon, the proxy, the tools or the web UI.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security issues go to SECURITY.md, never a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Output of `emberloop-daemon --version`, or the tag/commit you built.
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The exact command, or the UI page and the Session it concerns.
+      placeholder: |
+        1. Run `emberloop-daemon --data-root /tmp/emberloop-dev`
+        2. Open http://127.0.0.1:3000 and start a Session with ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: harness
+    attributes:
+      label: Harness
+      description: Which harness the Session used.
+      placeholder: agy / pi / claude / other ACP agent
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Rust and bun versions, and any non-default flags.
+      placeholder: Ubuntu 24.04, rustc 1.99, bun 1.2
+  - type: textarea
+    id: logs
+    attributes:
+      label: Daemon output
+      description: The daemon's stderr around the failure, and any `target/<stage>.failed` output.
+      render: shell

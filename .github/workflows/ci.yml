@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: nextest,cargo-deny,cargo-machete
+
+      # The daemon embeds web/build at compile time, so the bundle comes first.
+      - name: Web bundle
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bunx svelte-check --tsconfig ./tsconfig.json
+          bun run test
+          bun run build
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Dependencies
+        run: |
+          cargo deny check
+          cargo machete
+
+      - name: Tests
+        run: cargo nextest run --workspace
+
+      - name: Doc tests
+        run: cargo test --doc
