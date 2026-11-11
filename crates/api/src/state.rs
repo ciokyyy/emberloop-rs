@@ -137,6 +137,8 @@ pub struct AppState {
     pub global_skills: Option<PathBuf>,
     pub designs: Arc<crate::design::Designs>,
     pub subagent_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Web Push: the VAPID keypair and the browsers that subscribed.
+    pub push: Arc<crate::push::Push>,
 }
 
 impl AppState {
@@ -163,6 +165,7 @@ impl AppState {
         ));
         let steers = SteerQueues::with_dir(data_root.sessions_dir());
         let settings = load_settings(data_root.root());
+        let push = Arc::new(crate::push::Push::load(data_root.root()));
         Self {
             data_root,
             projects,
@@ -180,6 +183,7 @@ impl AppState {
             groq: None,
             designs: Arc::new(crate::design::Designs::default()),
             subagent_gate: Arc::new(tokio::sync::Mutex::new(())),
+            push,
         }
     }
 

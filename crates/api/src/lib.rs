@@ -5,6 +5,7 @@ pub mod models;
 pub mod persist;
 pub mod project_clone;
 pub mod providers;
+pub mod push;
 pub mod routes;
 mod session_setup;
 pub mod skills;

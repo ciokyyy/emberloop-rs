@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Render the installable-app icons (see gen-icons.ts). Pass --check to verify the committed ones.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec bun scripts/gen-icons.ts "$@"

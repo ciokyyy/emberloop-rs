@@ -20,6 +20,9 @@ serde_json = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
+web-push = { workspace = true }
+jwt-simple = { workspace = true }
+ct-codecs = { workspace = true }
 tokio-tungstenite = "0.30"
 
 [dev-dependencies]

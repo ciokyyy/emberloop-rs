@@ -11,3 +11,4 @@ Phase 2 ticket definitions, moved out of `spec.md` when each starts.
 - `folded-proxy-splice-replay.md` — prevent folded proxy-tool exchanges from replaying after compression
 - `reviewer-update-resume.md` — resume active reviewer Sessions through the ordinary planned-update continuation path
 - `prompt-proposals.md` — the background review stages prompt edits; the User approves or rejects them in Settings
+- `pwa-app-and-push-alerts.md` — install the web UI as an app; icon generation, push alerts, header copy menu, FigCraft in its own window

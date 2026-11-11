@@ -3,6 +3,7 @@
   import { api } from '$lib/api';
   import type { Model, Settings, ToolKey } from '$lib/api/types';
   import { rise } from '$lib/motion';
+  import { disablePush, pushSubscribed, sendTestPush } from '$lib/notify';
   import ModelPicker from './ModelPicker.svelte';
   import Prompts from './Prompts.svelte';
   import Button from './ui/button.svelte';
@@ -57,7 +58,37 @@
   let drafts = $state<Record<string, string>>({});
   let toolError = $state('');
   let toolSaving = $state('');
-  onMount(() => void loadToolKeys());
+  // Alerts are per browser: the daemon keeps one subscription per installed app.
+  let subscribed = $state(false);
+  let pushBusy = $state(false);
+  let pushMessage = $state('');
+  onMount(() => {
+    void loadToolKeys();
+    void pushSubscribed().then((on) => (subscribed = on));
+  });
+
+  async function requestAlerts() {
+    pushBusy = true;
+    const result = await sendTestPush();
+    pushMessage =
+      result === 'ok'
+        ? 'Test alert sent.'
+        : result === 'denied'
+          ? 'This browser blocked notifications.'
+          : result === 'unsupported'
+            ? 'This browser cannot show push alerts.'
+            : 'The test alert could not be sent.';
+    subscribed = await pushSubscribed();
+    pushBusy = false;
+  }
+
+  async function silenceAlerts() {
+    pushBusy = true;
+    await disablePush();
+    subscribed = false;
+    pushMessage = '';
+    pushBusy = false;
+  }
 
   async function loadToolKeys() {
     try {
@@ -123,6 +154,31 @@
           <div class="px-3.5 py-2">
             <ModelPicker label="Title model" models={titleModels} value={settings.title_model}
               onchange={(title_model) => change({ title_model })} />
+          </div>
+        </div>
+      </section>
+
+      <section class="flex flex-col gap-2" aria-labelledby="g-notifications">
+        <h3 id="g-notifications" class="px-1 text-[14px] font-semibold text-fg-1">Notifications</h3>
+        <div class="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface-1">
+          <div class="flex min-h-14 items-center justify-between gap-4 px-3.5 py-2">
+            <div>
+              <div class="text-[13px] text-fg-2">Alerts for this browser</div>
+              <div class="text-[12px] text-fg-3">
+                {subscribed
+                  ? 'A sound and a notice while the app is open, a system alert when it is closed.'
+                  : 'Off. The app asks for permission when you turn this on.'}
+              </div>
+              {#if pushMessage}
+                <div class="text-[12px] text-fg-3">{pushMessage}</div>
+              {/if}
+            </div>
+            <div class="flex shrink-0 gap-2">
+              <Button disabled={pushBusy} onclick={() => void requestAlerts()}>Send test</Button>
+              <Button disabled={pushBusy} onclick={() => void (subscribed ? silenceAlerts() : requestAlerts())}>
+                {subscribed ? 'Turn off' : 'Turn on'}
+              </Button>
+            </div>
           </div>
         </div>
       </section>

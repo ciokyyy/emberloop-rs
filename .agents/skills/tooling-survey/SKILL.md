@@ -64,6 +64,20 @@ behind it.
   its own cgroup (`memory.max`, `memory.swap.max=0`), then read `memory.peak`
   and `memory.events` (`oom_kill`). A cap that kills the tree at the limit is
   also the fix to recommend when a page or build can loop without bound.
+- When the user names a library from memory ("X or something like that"),
+  resolve the name before answering. A one-letter near-miss is a different
+  package with a different mechanism, so a name match alone never settles the
+  fit: query the index for the fuzzy name, then read what the package consumes
+  (synthesized in code vs supplied asset files). Telling the user it does not
+  exist, or proposing a hand-rolled substitute, costs a round they already
+  tried to close. Index metadata one call per candidate:
+  `https://registry.npmjs.org/-/v1/search?text=<terms>&size=8` for ranking,
+  `https://registry.npmjs.org/<name>` for version, deps, license, README.
+- Never rank on a registry's `unpackedSize`. Packages ship assets for other
+  platforms or runtimes; a 9.5 MB npm package can be 42 kB of browser runtime
+  plus 1872 audio files behind an unused subpath export. Measure the import
+  graph instead, filtering out the asset folders: download the tarball, list
+  the non-asset files by size, and report runtime bytes, not install bytes.
 
 See `references/integration-paths.md` for the paths a tool can be reached by
 in this repo.

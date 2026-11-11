@@ -76,6 +76,12 @@ ignore = [
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
     "RUSTSEC-2026-0429",
+    # `rsa` and `crypto-bigint` reach us only through `jwt-simple` > `superboring`, which Web Push
+    # pulls for VAPID. Both advisory paths are RSA PKCS#1 v1.5 *decryption*; this tree only signs
+    # ES256 (P-256 ECDSA) and never decrypts with RSA, so neither code path runs. Drop these two
+    # once `web-push` updates `jwt-simple` to a build without `superboring`'s RSA.
+    "RUSTSEC-2023-0071",
+    "RUSTSEC-2026-0387",
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -103,6 +109,8 @@ allow = [
     "OpenSSL",
     "Zlib",
     "CDLA-Permissive-2.0",
+    # `ece` (Web Push payload encryption, RFC 8188); file-level copyleft, linked unmodified.
+    "MPL-2.0",
 ]
 # The higher the value, the more closely the license text must be to the
 # canonical license text of a valid SPDX license file.

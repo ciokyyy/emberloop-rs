@@ -13,6 +13,7 @@
     Settings as SettingsDto
   } from '$lib/api/types';
   import { fadeAt, slideDown } from '$lib/motion';
+  import { playAlert, registerWorker, reportVisible, unlockSound } from '$lib/notify';
   import SessionDialog from '$lib/components/SessionDialog.svelte';
   import CacheView from '$lib/components/CacheView.svelte';
   import Composer from '$lib/components/Composer.svelte';
@@ -27,8 +28,9 @@
   import Settings from '$lib/components/Settings.svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import WorkingIndicator from '$lib/components/WorkingIndicator.svelte';
-  import ProjectDrawer from '$lib/components/ProjectDrawer.svelte';
   import FigcraftView from '$lib/components/FigcraftView.svelte';
+  import ProjectDrawer from '$lib/components/ProjectDrawer.svelte';
+  import SessionMenu from '$lib/components/SessionMenu.svelte';
   import { PanelsTopLeft } from '@lucide/svelte';
   import { applyEvent, applySnapshot, emptyFeedState, type FeedState } from '$lib/feed';
   import { chosenWindow } from '$lib/contextMeter';
@@ -86,6 +88,8 @@
   let drawer = $state(false);
   let projectDrawerOpen = $state(false);
   let settingsSaving = $state(false);
+  // The turn-finished or error line the page heard while it was open; the daemon stays quiet then.
+  let notice = $state<{ title: string; failed: boolean; sessionId: string } | null>(null);
 
   let source: EventSource | null = null;
   let retry: ReturnType<typeof setTimeout> | null = null;
@@ -132,7 +136,16 @@
 
   onMount(() => {
     void boot();
-    return () => closeStream();
+    void registerWorker();
+    // A focused page plays its own alert; the daemon needs to know it is here, not gone.
+    const gesture = () => unlockSound();
+    window.addEventListener('pointerdown', gesture, { once: true });
+    window.addEventListener('keydown', gesture, { once: true });
+    return () => {
+      closeStream();
+      window.removeEventListener('pointerdown', gesture);
+      window.removeEventListener('keydown', gesture);
+    };
   });
 
   async function boot() {
@@ -175,6 +188,9 @@
   function openStream(id: string, startAfter = 0) {
     closeStream();
     let after = startAfter;
+    // A replay carries the Session's whole tail window; only an event that lands after the page
+    // opened is news, or opening a finished Session would alert every time.
+    const openedAt = Date.now();
     // A replay arrives as hundreds of frames in one network task. Fold them into one update per
     // frame instead of one per event, so opening a long Session does not stall the main thread.
     let pending: SessionEvent[] = [];
@@ -196,8 +212,15 @@
         void api.listSessions().then((updated) => { sessions = updated; }).catch((cause) => { error = String(cause); });
       }
       log = [...log, ...batch];
+      const finished = batch.find(
+        (event) => event.at >= openedAt && (event.kind === 'error' || (event.kind === 'status' && event.data.state === 'idle'))
+      );
+      if (finished && document.visibilityState === 'visible') {
+        const failed = finished.kind === 'error';
+        notice = { title: failed ? 'The turn failed.' : 'The turn finished.', failed, sessionId: id };
+        playAlert(failed);
+      }
       feed = batch.reduce(applyEvent, feed);
-      statuses = { ...statuses, [id]: feed.status };
     };
     const schedule = () => {
       if (flush) return;
@@ -277,6 +300,11 @@
     detailsOpen = false;
     void goto(cachePath(current.projectId, current.id));
   }
+  // The daemon pushes only for a Session no open page is showing, so the page reports its own.
+  $effect(() => {
+    reportVisible(selected);
+    return () => reportVisible(null);
+  });
 
   // The stream follows the URL: a new Session id tears the old stream down and starts a new one.
   $effect(() => {
@@ -473,7 +501,7 @@
   <main class="flex min-w-0 flex-1 flex-col">
     <header class="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
       <button class="btn {view === 'design' ? '' : 'md:hidden'}" aria-label="Open sessions" onclick={() => (drawer = true)}>☰</button>
-      <div class="min-w-0 flex-1">
+      <SessionMenu session={current} project={projectOf}>
         <h1 class="truncate text-[14px] font-semibold tracking-[-0.01em] text-fg-1">
           {view === 'new'
             ? 'New session'
@@ -500,7 +528,7 @@
               ? `${activeProject.name} · ${activeProject.root}`
               : view === 'session' && projectOf ? `${projectOf.name} · ${projectOf.root}` : ''}
         </div>
-      </div>
+      </SessionMenu>
 
       {#if activeProject}
         <button
@@ -523,6 +551,22 @@
       >
         <span class="flex-1">{error}</span>
         <button class="text-[12px] underline" onclick={() => (error = '')}>Dismiss</button>
+      </div>
+    {/if}
+
+    {#if notice}
+      <div
+        class="flex items-center gap-3 border-b px-4 py-2 text-[13px]"
+        class:border-status-failed={notice.failed}
+        class:border-border={!notice.failed}
+        style={notice.failed ? 'background:#2a2222;color:#ffb3ad' : 'background:#20221f;color:#dfe3d8'}
+        transition:slideDown
+      >
+        <span class="flex-1">{notice.title}</span>
+        {#if notice.sessionId !== selected}
+          <button class="text-[12px] underline" onclick={() => select(notice?.sessionId ?? '')}>Open</button>
+        {/if}
+        <button class="text-[12px] underline" onclick={() => (notice = null)}>Dismiss</button>
       </div>
     {/if}
 
@@ -619,7 +663,8 @@
     open={projectDrawerOpen}
     onclose={() => (projectDrawerOpen = false)}
     onopendesign={() => {
-      window.location.assign(designPath(activeProject.id, selected ?? designSession));
+      // The design canvas owns its own window: the installed app has no URL bar to come back with.
+      window.open(designPath(activeProject.id, selected ?? designSession), '_blank', 'noopener');
     }}
   />
 {/if}

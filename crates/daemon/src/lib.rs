@@ -543,6 +543,7 @@ impl Daemon {
         app_state = app_state.with_driver(runner).with_provider_login(login);
         api::persist::spawn_persister(app_state.clone());
         api::subagents::watch_errors(app_state.clone());
+        api::push::watch(app_state.clone());
 
         spawn_archival_sweep(data_root.clone(), sessions.clone());
 
@@ -920,11 +921,10 @@ fn content_type(path: &str) -> &'static str {
         Some("html") => "text/html; charset=utf-8",
         Some("js") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
+        Some("webmanifest") => "application/manifest+json",
         Some("json") => "application/json",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("webp") => "image/webp",
         Some("ico") => "image/x-icon",
         Some("woff2") => "font/woff2",
         Some("woff") => "font/woff",
@@ -1088,6 +1088,16 @@ fn install_local_update(
 #[cfg(test)]
 mod exe_tests {
     use super::*;
+
+    #[test]
+    fn the_installed_app_is_served_with_its_own_media_types() {
+        assert_eq!(
+            content_type("manifest.webmanifest"),
+            "application/manifest+json"
+        );
+        assert_eq!(content_type("sw.js"), "text/javascript; charset=utf-8");
+        assert_eq!(content_type("icon-192.png"), "image/png");
+    }
 
     #[test]
     fn a_replaced_binary_keeps_its_launchable_path() {
