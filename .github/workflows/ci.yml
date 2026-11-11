@@ -42,6 +42,7 @@ jobs:
         working-directory: web
         run: |
           bun install --frozen-lockfile
+          bunx svelte-kit sync
           bunx svelte-check --tsconfig ./tsconfig.json
           bun run test
           bun run build
