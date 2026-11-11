@@ -58,6 +58,12 @@ jobs:
           cargo deny check
           cargo machete
 
+      - name: OpenAPI client is current
+        run: |
+          cargo run -p api --bin dump_openapi
+          (cd web && bun run generate:api)
+          git diff --exit-code -- openapi.json web/src/lib/api/schema.d.ts
+
       - name: Tests
         run: cargo nextest run --workspace
 

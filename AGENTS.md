@@ -15,7 +15,7 @@ Web tooling is bun: `bun`, `bunx` and `bun.lock` everywhere, never npm or anothe
 
 ## Check
 
-One command, `scripts/check`, is the repo check and must pass before any change is done; CI runs the same script. It runs, in order:
+One command, `scripts/check`, is the repo check and must pass before any change is done. `.github/workflows/ci.yml` runs the same stages on a fresh checkout, except the Fallow complexity check and the time budgets (both are development-host checks). It runs, in order:
 
 - `cargo fmt --check`, `cargo deny check` and `cargo machete`, then `cargo clippy --workspace --all-targets -- -D warnings` with the `[workspace.lints]` table (including `cognitive_complexity`, its threshold in `clippy.toml`);
 - the OpenAPI document is dumped, the TypeScript client regenerated, and `git diff --exit-code` passes; an unchanged client keeps its modification time;
