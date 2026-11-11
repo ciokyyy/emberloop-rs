@@ -15,5 +15,8 @@ export default defineConfig({
     environment: "jsdom",
     include: ["src/**/*.test.ts"],
     setupFiles: ["src/test-setup.ts"],
+    // Threads instead of the default forked processes: the suite is Svelte compile, and a fork per
+    // worker file re-pays it (138 s forked, 106 s threaded on the development host).
+    pool: "threads",
   },
 });

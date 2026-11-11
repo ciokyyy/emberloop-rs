@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as Popover from '$lib/components/ui/popover';
+  import Button from '$lib/components/ui/button.svelte';
   import { holdToLift } from '$lib/hold';
   import type { Project, Session } from '$lib/api/types';
 
@@ -67,19 +68,11 @@
     {/snippet}
   </Popover.Trigger>
   <Popover.Content side="bottom" align="start" class="w-64 gap-2 p-2">
-    <button
-      type="button"
-      class="w-full rounded-lg px-2.5 py-2 text-left text-[13px] text-fg-1 hover:bg-surface-3"
-      onclick={() => void copy(link, 'link')}
-    >
+    <Button class="w-full justify-start text-left text-fg-1" onclick={() => void copy(link, 'link')}>
       {copied === 'link' ? 'Copied link' : 'Copy link'}
-    </button>
-    <button
-      type="button"
-      class="w-full rounded-lg px-2.5 py-2 text-left text-[13px] text-fg-1 hover:bg-surface-3"
-      onclick={() => void copy(reference, 'reference')}
-    >
+    </Button>
+    <Button class="w-full justify-start text-left text-fg-1" onclick={() => void copy(reference, 'reference')}>
       {copied === 'reference' ? 'Copied reference' : 'Copy session reference'}
-    </button>
+    </Button>
   </Popover.Content>
 </Popover.Root>

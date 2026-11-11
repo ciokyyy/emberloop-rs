@@ -1,3 +1,4 @@
+// fallow-ignore-file unused-file
 // Push only: no `fetch` handler, so nothing is cached and a new shell is never hidden behind an
 // old service worker. The page owns in-app notices; this owns the alert while the app is closed.
 self.addEventListener('push', (event) => {

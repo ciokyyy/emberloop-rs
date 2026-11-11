@@ -48,7 +48,7 @@ function keyBytes(encoded: string): Uint8Array<ArrayBuffer> {
 }
 
 /** Asks for permission and stores this browser's subscription; must run from a user gesture. */
-export async function enablePush(): Promise<'ok' | 'denied' | 'unsupported' | 'failed'> {
+async function enablePush(): Promise<'ok' | 'denied' | 'unsupported' | 'failed'> {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return 'unsupported';
   void registerWorker();
   const permission = await Notification.requestPermission();
