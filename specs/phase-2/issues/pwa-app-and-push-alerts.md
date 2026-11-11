@@ -33,4 +33,6 @@ Out of scope: caching or offline use (the worker has no `fetch` handler), custom
 
 ## Verification
 
-`scripts/check` passes cleanly (fmt, deny, machete, clippy, openapi, web, nextest, doc, slowest). Install and push delivery still need the real device: one install, one test push from Settings with the app closed, and one turn finished with the app open.
+`scripts/check` passes cleanly (fmt, deny, machete, clippy, openapi, web, nextest, doc, slowest) in 193 s, web stage 163 s inside its 180 s budget — the test pool runs `threads` because the forked pool re-paid the Svelte compile per worker file, which had put the stage at 224 s and the check at 254 s. The Fallow gate passes at `88 A` (floor 87.9); the `unit size -10.0` deduction is the pre-existing 671-line `+layout.svelte` and the generated `schema.d.ts`, and splitting the layout is follow-up work, not this ticket.
+
+Release `0.0.87` is built, installed and serving: `readlink <data root>/current` is `releases/0.0.87`, `--version` and `/api/version` both report `0.0.87`, the daemon answers `/manifest.webmanifest` as `application/manifest+json`, and `/sw.js`, the icons and the favicon each with their own media type. The served `_app/immutable/nodes/0.CSmRzDzT.js` is byte-identical to `web/build` and carries `Copy session reference`; a live `127.0.0.1:3000` page registers `/sw.js` at scope `/`, and that worker is `activated` with `pushManager`. Install and push delivery still need the real device: one install, one test push from Settings with the app closed, and one turn finished with the app open.
