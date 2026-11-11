@@ -48,7 +48,7 @@ SvelteKit SPA for phase 1: Projects sidebar, Session feed, composer and Settings
 ## Workflow
 
 - `bun` only: `bun run check`, `bun run test`, `bun run build`. `bun.lock` is committed; `npm` and `package-lock.json` are gone. The root `scripts/check` runs the first two when `web/` exists.
-- Tests are Vitest; jsdom is the environment. Reducer, image limits, tool hues, Markdown sanitising, composer routing and the model picker are covered.
+- Tests are Vitest; jsdom is the environment, and `vite.config.ts` runs them in the `threads` pool because the suite is Svelte compile and a fork per worker file re-pays it (138 s forked, 106 s threaded on the development host, which is what keeps the web stage inside its budget). `--no-isolate` is faster still but breaks 30 tests, so it is not used. Reducer, image limits, tool hues, Markdown sanitising, composer routing and the model picker are covered.
 - The static output is `web/build/`, embedded by the daemon through `rust-embed`.
 
 ## Model selection, drafts and usage
