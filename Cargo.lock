@@ -2295,8 +2295,8 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pi-ai"
-version = "0.12.11"
-source = "git+https://github.com/ciokyyy/pi-rust?rev=0dd48c646cac3fc321151f7b474495630bfa53be#0dd48c646cac3fc321151f7b474495630bfa53be"
+version = "0.12.13"
+source = "git+https://github.com/ciokyyy/pi-rust?rev=f56313f44ab78c6ee762d904dbf90d0fa0bffeaf#f56313f44ab78c6ee762d904dbf90d0fa0bffeaf"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2322,8 +2322,8 @@ dependencies = [
 
 [[package]]
 name = "pi-schema"
-version = "0.12.11"
-source = "git+https://github.com/ciokyyy/pi-rust?rev=0dd48c646cac3fc321151f7b474495630bfa53be#0dd48c646cac3fc321151f7b474495630bfa53be"
+version = "0.12.13"
+source = "git+https://github.com/ciokyyy/pi-rust?rev=f56313f44ab78c6ee762d904dbf90d0fa0bffeaf#f56313f44ab78c6ee762d904dbf90d0fa0bffeaf"
 dependencies = [
  "regex",
  "serde_json",
@@ -2331,8 +2331,8 @@ dependencies = [
 
 [[package]]
 name = "pi-telemetry"
-version = "0.12.11"
-source = "git+https://github.com/ciokyyy/pi-rust?rev=0dd48c646cac3fc321151f7b474495630bfa53be#0dd48c646cac3fc321151f7b474495630bfa53be"
+version = "0.12.13"
+source = "git+https://github.com/ciokyyy/pi-rust?rev=f56313f44ab78c6ee762d904dbf90d0fa0bffeaf#f56313f44ab78c6ee762d904dbf90d0fa0bffeaf"
 dependencies = [
  "futures",
  "serde",
@@ -3522,7 +3522,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

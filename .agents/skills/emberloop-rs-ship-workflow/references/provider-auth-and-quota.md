@@ -18,3 +18,10 @@ Use when a Session idles, refuses to resume, or one agent 401s while another wor
 
 - Read `<data root>` paths (`sessions/<id>/meta.json`, home dirs, the `current` symlink) with `cat`/`head` from bash; the `read` tool resolves only inside the project root and refuses them.
 - Check the running version before debugging a symptom the fix already covers: `readlink <data root>/current` and `curl localhost:3000/api/version`.
+
+## Usage response shapes
+
+- Probe the live endpoint with the daemon's own credential before editing a parser; providers add and null out fields without a version change.
+- Parse each window independently and skip a null or absent one. Requiring a sibling window fails the whole card: Codex sends `rate_limit.secondary_window: null` while the primary window is valid.
+- Claude's `limits` array is current (`session`, `weekly_all`, and `weekly_scoped` with `scope.model.display_name`); keep the legacy `five_hour`/`seven_day*` fields as fallback. Label Codex windows from `limit_window_seconds`, and include `additional_rate_limits` plus `code_review_rate_limit`.
+- `web/src/lib/components/Usage.svelte` renders every `usage.windows` entry, so one more window needs a parser test, not a template edit. Use the live body as the fixture.

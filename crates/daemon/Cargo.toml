@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-pi-ai = { git = "https://github.com/ciokyyy/pi-rust", rev = "0dd48c646cac3fc321151f7b474495630bfa53be" }
+pi-ai = { git = "https://github.com/ciokyyy/pi-rust", rev = "f56313f44ab78c6ee762d904dbf90d0fa0bffeaf" }
 emberloop-core = { workspace = true }
 store = { workspace = true }
 prompts = { workspace = true }
