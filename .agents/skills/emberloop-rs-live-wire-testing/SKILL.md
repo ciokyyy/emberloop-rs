@@ -21,6 +21,12 @@ metadata:
 - Verified live both ways: DeepSeek chat, Haiku (Anthropic), and gpt Responses accept each other's translated tool-call history. DeepSeek accepts a history with `reasoning_content` stripped.
 - Not covered yet: images, Google wire, undeclared old tool names, ID format rules.
 
+## ACP session config options
+- Never hardcode a config option id. Read the ones the harness advertises in its `session/new` response and send a level under the advertised id; agy advertises `thinking_level` (`acp_server/config_options.py`: `MODEL_ID = "model"`, `MODE_ID = "mode"`, `THINKING_LEVEL_ID = "thinking_level"`), while other harnesses use `thought_level`, and pi's fake harness advertises only `model`.
+- An unknown id is a hard error, not ignored: agy answers `Protocol error: Unknown config option id: thought_level: null` and the Session setup maps it to 409. So model-only changes must still succeed when no level id is advertised: set `model` first (propagate its error) and send the level best-effort.
+- Discover ids without running the harness: the agy server is a zip/PEX at `<data root>/agy-acp/<version>/agy_acp_server.par`; unzip it and grep `config_options.py` and the `Unknown config option id` raise site. Its levels are `minimal, low, medium, high, xhigh, extra_high, max` and are not guaranteed to contain every level this repo's catalogue lists, which is another reason the level send must be best-effort.
+- Verify the wire shape with a unit test on the serialized request (`configId` and a string `value`, not null) and a live switch both ways on a real Session (PATCH `/api/sessions/<id>` with `model` + `thoughtLevel`), restoring the original pair afterwards.
+
 ## Capturing real harness histories
 - Run a capture+forward HTTP proxy (script under `target/scratch/`, started with `bash background: true`; absolute paths) that saves each POST body and forwards upstream. Point `claude` at it with `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` (`claude -p --model haiku --permission-mode dontAsk --allowedTools Bash`). Point pi at it via a scratch `HOME` with `.pi/agent/models.json` (`{providers:{opencode-go:{baseUrl,apiKey}}}`, mode 0600) and `settings.json` `{"transport":"sse"}`; run `pi -p --no-session --offline --tools bash --model opencode-go/<id>`.
 - The forwarder must add `x-opencode-session` for opencode-go upstream.

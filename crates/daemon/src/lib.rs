@@ -92,8 +92,7 @@ impl harness::Harness for MultiHarness {
 /// The harness plugin constructs the agy and pi drivers and publishes the
 /// composite harness service on the Context tree.
 struct HarnessPlugin {
-    agy_bin: PathBuf,
-    agy_home: PathBuf,
+    agy: Arc<AgyHarness>,
     pi: Arc<PiHarness>,
     claude: Arc<ClaudeHarness>,
 }
@@ -104,7 +103,7 @@ impl Plugin for HarnessPlugin {
     }
 
     fn apply(&self, ctx: &Context) -> Result<(), ContextError> {
-        let agy = Arc::new(AgyHarness::new(self.agy_bin.clone(), self.agy_home.clone()));
+        let agy = Arc::clone(&self.agy);
         let pi: Arc<dyn harness::Harness> = self.pi.clone();
         let claude: Arc<dyn harness::Harness> = self.claude.clone();
         ctx.provide::<Arc<dyn harness::Harness>>(Arc::new(MultiHarness { agy, pi, claude }));
@@ -159,6 +158,40 @@ impl api::models::Source for ClaudeSource {
             updated_at: 0,
         })
         .collect())
+    }
+}
+
+struct AgySource {
+    harness: Arc<AgyHarness>,
+}
+
+#[async_trait::async_trait]
+impl api::models::Source for AgySource {
+    fn name(&self) -> &'static str {
+        "agy"
+    }
+
+    async fn fetch(&self) -> Result<Vec<api::models::ModelEntry>, api::models::CatalogueError> {
+        let models = self
+            .harness
+            .models()
+            .await
+            .map_err(|error| api::models::CatalogueError::new(error.to_string()))?;
+        Ok(models
+            .into_iter()
+            .map(|model| api::models::ModelEntry {
+                id: model.id,
+                provider: "agy".to_string(),
+                label: model.label,
+                kind: "chat".to_string(),
+                efforts: model.efforts,
+                image_input: model.image_input,
+                context_window: model.context_window,
+                source: "agy".to_string(),
+                stale: false,
+                updated_at: 0,
+            })
+            .collect())
     }
 }
 
@@ -397,7 +430,6 @@ impl Daemon {
         let watcher = prompts::watch(Arc::clone(&prompts), Duration::from_millis(500), |error| {
             tracing::warn!(%error, "prompt reload failed; keeping last good text");
         });
-
         let events = Arc::new(EventBus::default());
         let agy_bin = resolve_bin(
             "EMBERLOOP_AGY_BIN",
@@ -405,6 +437,11 @@ impl Daemon {
             "agy-acp/1.4.5/agy_acp_server.par",
             "agy",
         );
+        let accounts_dir = config.config_root.join("accounts/agy");
+        let agy_harness = Arc::new(AgyHarness::new(
+            agy_bin.clone(),
+            accounts_dir.join("default"),
+        ));
         let pi_bin = resolve_bin(
             "EMBERLOOP_PI_BIN",
             &config.data_root,
@@ -428,7 +465,9 @@ impl Daemon {
         let models = Arc::new(api::models::ModelCatalogue::new(
             data_root.model_catalogue_file(),
             vec![
-                Arc::new(api::models::AgySource),
+                Arc::new(AgySource {
+                    harness: Arc::clone(&agy_harness),
+                }),
                 Arc::new(PiSource {
                     harness: Arc::clone(&pi_harness),
                 }),
@@ -476,11 +515,9 @@ impl Daemon {
             Arc::clone(&app_state.settings),
         );
 
-        let accounts_dir = config.config_root.join("accounts/agy");
         let ctx = Context::new();
         ctx.plugin(HarnessPlugin {
-            agy_bin: agy_bin.clone(),
-            agy_home: accounts_dir.join("default"),
+            agy: agy_harness,
             pi: pi_harness,
             claude: claude_harness,
         });

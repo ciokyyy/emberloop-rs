@@ -1139,6 +1139,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/sessions/{id}/steer", post(steer_session))
         .route("/api/sessions/{id}/cancel", post(cancel_session))
         .route("/api/sessions/{id}/subagents", post(crate::subagents::action))
+        .route("/api/sessions/{id}/file", get(crate::files::session_file))
         .route(
             "/api/sessions/{id}/events",
             get(

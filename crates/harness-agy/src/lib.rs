@@ -67,6 +67,136 @@ impl AgyHarness {
     }
 }
 
+/// One model the agent advertises; the catalogue maps it to a model entry.
+#[derive(Debug)]
+pub struct ModelDetails {
+    pub id: String,
+    pub label: String,
+    pub efforts: Vec<String>,
+    pub image_input: bool,
+    pub context_window: usize,
+}
+
+impl AgyHarness {
+    /// Reads the models agy discovers from Google at `session/new`, then selects each
+    /// one to learn the efforts it accepts.
+    pub async fn models(&self) -> Result<Vec<ModelDetails>, HarnessError> {
+        let cwd = tempfile::tempdir().map_err(HarnessError::Io)?;
+        let launch = AcpLaunch {
+            config: AcpAgentConfig::new(&self.server_bin)
+                .arg("--uid=")
+                .env("GEMINI_HOME", self.account_home.display().to_string()),
+            cwd: cwd.path().to_path_buf(),
+            mcp_servers: Vec::new(),
+            meta: None,
+            model: None,
+            thought_level: None,
+            client_name: "zed",
+            label: "agy",
+            forward_thoughts: false,
+            resume: None,
+        };
+        let session = start(launch, "_catalogue").await?;
+        let choices = model_choices(&session.config_options);
+        if choices.is_empty() {
+            let _ = session.close().await;
+            return Err(HarnessError::Protocol("agy listed no models".to_string()));
+        }
+        let mut models = Vec::with_capacity(choices.len());
+        for (id, label) in choices {
+            let efforts = match session.select_model(&id).await {
+                Ok(options) => effort_choices(&options),
+                Err(_) => Vec::new(),
+            };
+            models.push(ModelDetails {
+                id,
+                label,
+                efforts,
+                image_input: true,
+                context_window: 1_048_576,
+            });
+        }
+        let _ = session.close().await;
+        Ok(models)
+    }
+}
+
+fn model_choices(config_options: &serde_json::Value) -> Vec<(String, String)> {
+    let Some(model) = config_options
+        .as_array()
+        .and_then(|options| options.iter().find(|option| option["id"] == "model"))
+    else {
+        return Vec::new();
+    };
+    select_choices(&model["options"])
+}
+
+fn effort_choices(config_options: &serde_json::Value) -> Vec<String> {
+    let Some(level) = config_options.as_array().and_then(|options| {
+        options.iter().find(|option| {
+            matches!(
+                option["id"].as_str(),
+                Some("thinking_level" | "thought_level")
+            )
+        })
+    }) else {
+        return Vec::new();
+    };
+    select_choices(&level["options"])
+        .into_iter()
+        .map(|(value, _)| value)
+        .collect()
+}
+
+fn select_choices(options: &serde_json::Value) -> Vec<(String, String)> {
+    options
+        .as_array()
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|option| {
+                    let value = option["value"].as_str()?;
+                    let name = option["name"].as_str().unwrap_or(value);
+                    Some((value.to_string(), name.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::*;
+
+    #[test]
+    fn model_select_drives_the_dynamic_list() {
+        let options = serde_json::json!([
+            {"id": "model", "options": [
+                {"value": "gemini-4-hydrogen", "name": "Gemini 4 Hydrogen"},
+                {"value": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)"}
+            ]},
+            {"id": "thinking_level", "options": [
+                {"value": "low", "name": "Low"},
+                {"value": "xhigh", "name": "Extra High"}
+            ]}
+        ]);
+        assert_eq!(
+            model_choices(&options),
+            [
+                ("gemini-4-hydrogen".into(), "Gemini 4 Hydrogen".into()),
+                ("gpt-oss-120b-medium".into(), "GPT-OSS 120B (Medium)".into()),
+            ]
+        );
+        assert_eq!(effort_choices(&options), ["low", "xhigh"]);
+    }
+
+    #[test]
+    fn a_model_without_a_level_picker_has_no_efforts() {
+        let options = serde_json::json!([{"id": "model"}]);
+        assert!(model_choices(&options).is_empty());
+        assert!(effort_choices(&options).is_empty());
+    }
+}
 #[async_trait]
 impl Harness for AgyHarness {
     async fn spawn(

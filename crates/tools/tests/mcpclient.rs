@@ -272,6 +272,28 @@ async fn mcp_call_reaches_the_server_and_returns_its_text() {
 }
 
 #[tokio::test]
+async fn a_killed_server_is_started_again_for_the_next_call() {
+    let fixture = setup();
+    let toolbox = toolbox_with(
+        &fixture,
+        fake("fake", json!({"env": {"FAKE_MCP_EXIT_AFTER": "1"}})),
+    );
+    toolbox
+        .call("fake.echo", &json!({"x": 1}))
+        .await
+        .expect("first call");
+    let mut settle = tokio::time::interval(std::time::Duration::from_millis(25));
+    for _ in 0..8 {
+        settle.tick().await;
+    }
+    let out = toolbox
+        .call("fake.echo", &json!({"x": 2}))
+        .await
+        .expect("a fresh server answers the next call");
+    assert_eq!(out, "echo:{\"x\":2}");
+}
+
+#[tokio::test]
 async fn url_servers_are_refused_and_unknown_servers_stay_unknown() {
     let fixture = setup();
     let toolbox = toolbox_with(

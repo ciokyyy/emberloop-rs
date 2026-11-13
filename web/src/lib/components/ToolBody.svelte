@@ -37,7 +37,8 @@
   const lang = $derived(tooBig ? '' : language || (isDiff ? 'diff' : CODE_PATH.test(path) ? 'code' : ''));
 
   function rowClass(body: string): string {
-    if (!isDiff && !/^(?:[+-]|@@)/.test(body)) return '';
+    // Only a diff tints its +/- rows: a markdown list or a source line can start with the same mark.
+    if (!isDiff) return '';
     const kind = diffLineKind(body);
     return kind === 'add' ? 'diff-add' : kind === 'del' ? 'diff-del' : kind === 'hunk' ? 'diff-hunk' : '';
   }

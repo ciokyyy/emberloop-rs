@@ -3,6 +3,8 @@
   import { get } from 'svelte/store';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
   import type { FeedItem, FeedState } from '$lib/feed';
+  import { sessionFileBase } from '$lib/api';
+  import { fileEmbeds } from '$lib/fileEmbeds';
   import { renderMarkdown } from '$lib/markdown';
   import { fadeAt, rise, slideUp } from '$lib/motion';
   import { segments } from '$lib/toolRuns';
@@ -13,12 +15,14 @@
   let {
     feed,
     projectId = '',
+    sessionId = '',
     hasMore = false,
     loadingMore = false,
     onloadmore = null
   }: {
     feed: FeedState;
     projectId?: string;
+    sessionId?: string;
     hasMore?: boolean;
     loadingMore?: boolean;
     onloadmore?: (() => Promise<void>) | null;
@@ -194,7 +198,7 @@
     {#if item.kind === 'user'}
       <div class="my-1.5 self-end" in:slideUp|global={{ skip: !arrived.has(item.id) }}>
         <div class="max-w-[85vw] rounded-2xl bg-surface-3 px-4 py-2.5 sm:max-w-[85%]">
-          <p class="whitespace-pre-wrap">{item.text}</p>
+          <p class="whitespace-pre-wrap [overflow-wrap:anywhere]">{item.text}</p>
           {#if item.imagesCount}
             <div class="mt-2 flex gap-2">
               <div
@@ -205,11 +209,13 @@
         </div>
       </div>
     {:else if item.kind === 'assistant'}
+      {@const html = renderMarkdown(item.text ?? '', sessionId ? sessionFileBase(sessionId) : '')}
       <div
         class="md my-1.5 max-w-[92%] text-[15px]"
         in:rise|global={{ skip: !arrived.has(item.id) }}
+        use:fileEmbeds={html}
       >
-        {@html renderMarkdown(item.text ?? '')}
+        {@html html}
         {#if item.live}<span class="pulse text-fg-3">▍</span>{/if}
       </div>
     {:else if item.kind === 'compression'}
@@ -268,8 +274,8 @@
   {#if item.report}
     <SubagentReport report={item.report} route={item.route} {projectId} />
   {:else}
-  <div class="my-1.5 self-end text-right" in:slideUp|global={{ skip: !arrived.has(item.id) }}>
-    <div class="inline-block max-w-[85%] rounded-2xl bg-surface-3 px-4 py-2 text-left">
+  <div class="my-1.5 max-w-[85%] self-end text-right" in:slideUp|global={{ skip: !arrived.has(item.id) }}>
+    <div class="inline-block rounded-2xl bg-surface-3 px-4 py-2 text-left whitespace-pre-wrap [overflow-wrap:anywhere]">
       {item.text}
       {#if item.imagesCount}
         <div class="mt-1 text-[11px] text-fg-3">

@@ -78,11 +78,17 @@
     harness === 'claude' ? '#d6a87b' : harness === 'pi' ? '#8b7cf6' : '#5b9ac6';
   type ProjectGroup = {
     project: Project;
-    hasWorking: boolean;
     sessions: Session[];
   };
+  type Band = {
+    key: string;
+    /** Null on the current Project's band: its group headers already name it. */
+    label: string | null;
+    groups: ProjectGroup[];
+  };
 
-  const projectGroups = $derived.by(() => {
+  // One Project's Sessions: working first, newest next, reviewer children after their parent.
+  const ordered = $derived.by(() => {
     const groups: ProjectGroup[] = [];
     for (const project of projects) {
       const projSessions = sessions
@@ -93,22 +99,49 @@
           if (aWorking !== bWorking) return aWorking ? -1 : 1;
           return b.updatedAt - a.updatedAt;
         });
-      if (projSessions.length > 0) {
-        groups.push({
-          project,
-          hasWorking: projSessions.some((session) => statusOf(session.id) === 'working'),
-          sessions: projSessions
-            .filter((session) => !session.parentId || !projSessions.some((parent) => parent.id === session.parentId))
-            .flatMap((parent) => [parent, ...projSessions.filter((child) => child.parentId === parent.id)])
-        });
-      }
+      if (projSessions.length === 0) continue;
+      groups.push({
+        project,
+        sessions: projSessions
+          .filter((session) => !session.parentId || !projSessions.some((parent) => parent.id === session.parentId))
+          .flatMap((parent) => [parent, ...projSessions.filter((child) => child.parentId === parent.id)])
+      });
     }
     return groups.sort((a, b) => {
-      if (a.hasWorking !== b.hasWorking) return a.hasWorking ? -1 : 1;
+      const aWorking = a.sessions.some((session) => statusOf(session.id) === 'working');
+      const bWorking = b.sessions.some((session) => statusOf(session.id) === 'working');
+      if (aWorking !== bWorking) return aWorking ? -1 : 1;
       if (projectId && a.project.id === projectId) return -1;
       if (projectId && b.project.id === projectId) return 1;
       return a.project.name.localeCompare(b.project.name);
     });
+  });
+
+  const RECENT_MS = 10 * 60 * 1000;
+  // Every Session lands in the first band that claims it: working at the top,
+  // then touched in the last 10 minutes, then the rest of the current Project.
+  const bands = $derived.by(() => {
+    const now = Date.now();
+    const claimed = new Set<string>();
+    const take = (key: string, label: string | null, claim: (session: Session) => boolean): Band => ({
+      key,
+      label,
+      groups: ordered
+        .map((group) => ({
+          project: group.project,
+          sessions: group.sessions.filter((session) => {
+            if (claimed.has(session.id) || !claim(session)) return false;
+            claimed.add(session.id);
+            return true;
+          })
+        }))
+        .filter((group) => group.sessions.length > 0)
+    });
+    return [
+      take('active', 'Active', (session) => statusOf(session.id) === 'working'),
+      take('recent', 'Recent', (session) => now - session.updatedAt < RECENT_MS),
+      take('current', null, (session) => !projectId || session.projectId === projectId)
+    ].filter((band) => band.groups.length > 0);
   });
 
   function pick(value: string) {
@@ -245,10 +278,21 @@
         </button>
       </div>
     {/if}
-    {#each projectGroups as group (group.project.id)}
-      <div data-testid="project-header" class="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-3">
-        {group.project.name}
-      </div>
+    {#each bands as band (band.key)}
+      {#if band.label}
+        <div data-testid="section-header" class="px-2 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-2">
+          {band.label}
+        </div>
+      {/if}
+      {#each band.groups as group (group.project.id)}
+        <div
+          data-testid="project-header"
+          class={band.label
+            ? 'px-2 pb-1 text-[11px] text-fg-3'
+            : 'px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-3'}
+        >
+          {group.project.name}
+        </div>
       {#each group.sessions as session (session.id)}
         {@const status = statusOf(session.id)}
         {@const harness = harnessOf(session.model)}
@@ -304,6 +348,7 @@
             </button>
           {/if}
         </div>
+        {/each}
       {/each}
     {/each}
     {#if projects.length === 0}

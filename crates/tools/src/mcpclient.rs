@@ -196,6 +196,28 @@ impl McpRegistry {
 
     /// Calls `server.tool`; a server's own error text becomes our error.
     pub async fn call(&self, name: &str, args: &Value) -> ToolResult<String> {
+        let server = name.split_once('.').map_or(name, |(server, _)| server);
+        match self.attempt(name, args).await {
+            // A killed stdio child never restarts by itself. Start it once more for the next call.
+            Err(error) if self.transport_closed(server, &error).await => {
+                self.connected.write().await.remove(server);
+                self.attempt(name, args).await
+            }
+            other => other,
+        }
+    }
+
+    async fn transport_closed(&self, server: &str, error: &ToolError) -> bool {
+        error.to_string().contains("Transport closed")
+            || self
+                .connected
+                .read()
+                .await
+                .get(server)
+                .is_some_and(|ready| ready.service.is_closed())
+    }
+
+    async fn attempt(&self, name: &str, args: &Value) -> ToolResult<String> {
         self.loaded()?;
         let Some((server_name, tool)) = name.split_once('.') else {
             return Err(ToolError::msg(format!("unknown tool {name:?}")));
@@ -275,6 +297,12 @@ impl McpRegistry {
 
     async fn ensure(&self, name: &str) -> ToolResult<Arc<Connected>> {
         let mut connected = self.connected.write().await;
+        if connected
+            .get(name)
+            .is_some_and(|ready| ready.service.is_closed())
+        {
+            connected.remove(name);
+        }
         if let Some(ready) = connected.get(name) {
             return Ok(Arc::clone(ready));
         }

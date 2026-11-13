@@ -50,6 +50,7 @@ enum Command {
     Forget(String),
     SetThoughtLevel(String),
     Configure(String, Option<String>, oneshot::Sender<Result<(), String>>),
+    ModelOptions(String, oneshot::Sender<Result<serde_json::Value, String>>),
 }
 
 pub struct AcpSession {
@@ -159,7 +160,11 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
                     // Kept alive for the life of the connection when a new
                     // session had to be opened.
                     let mut opened_new = None;
-                    let (session_id, options, resumed) = match loaded {
+                    let (session_id, options, resumed): (
+                        agent_client_protocol::v1::schema::SessionId,
+                        serde_json::Value,
+                        bool,
+                    ) = match loaded {
                         Some(options) => (
                             agent_client_protocol::v1::schema::SessionId::new(
                                 resume.clone().unwrap_or_default(),
@@ -200,11 +205,14 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
                             return Ok(());
                         }
                     }
+                    let level_id = level_option(&options)
+                        .unwrap_or("thought_level")
+                        .to_string();
                     if let Some(level) = thought_level.filter(|l| !l.trim().is_empty()) {
                         let _ = connection
                             .send_request(SetSessionConfigOptionRequest::new(
                                 session_id.clone(),
-                                "thought_level",
+                                level_id.clone(),
                                 SessionConfigOptionValue::value_id(level),
                             ))
                             .block_task()
@@ -261,6 +269,7 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
                                     &session_id.to_string(),
                                     &model,
                                     effort.as_deref(),
+                                    &level_id,
                                 )
                                 .await;
                                 let _ = reply.send(result);
@@ -269,11 +278,28 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
                                 let _ = connection
                                     .send_request(SetSessionConfigOptionRequest::new(
                                         session_id.clone(),
-                                        "thought_level",
+                                        level_id.clone(),
                                         SessionConfigOptionValue::value_id(level),
                                     ))
                                     .block_task()
                                     .await;
+                            }
+                            Command::ModelOptions(model, reply) => {
+                                let picked = connection
+                                    .send_request(SetSessionConfigOptionRequest::new(
+                                        session_id.clone(),
+                                        "model",
+                                        SessionConfigOptionValue::value_id(model),
+                                    ))
+                                    .block_task()
+                                    .await;
+                                let options = picked
+                                    .map(|response| {
+                                        serde_json::to_value(&response.config_options)
+                                            .unwrap_or_default()
+                                    })
+                                    .map_err(|error| error.to_string());
+                                let _ = reply.send(options);
                             }
                         }
                     }
@@ -289,16 +315,19 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
         }
     });
 
-    let (acp_session, config_options, resumed) =
-        tokio::time::timeout(SESSION_READY_TIMEOUT, ready_rx.recv())
-            .await
-            .map_err(|_| {
-                // A stalled start must not keep its agent process alive.
-                driver.abort();
-                HarnessError::Protocol(format!("{label} did not create session {session_id}"))
-            })?
-            .ok_or_else(|| HarnessError::Protocol(format!("{label} connection closed")))?
-            .map_err(HarnessError::Protocol)?;
+    let (acp_session, config_options, resumed): (
+        agent_client_protocol::v1::schema::SessionId,
+        serde_json::Value,
+        bool,
+    ) = tokio::time::timeout(SESSION_READY_TIMEOUT, ready_rx.recv())
+        .await
+        .map_err(|_| {
+            // A stalled start must not keep its agent process alive.
+            driver.abort();
+            HarnessError::Protocol(format!("{label} did not create session {session_id}"))
+        })?
+        .ok_or_else(|| HarnessError::Protocol(format!("{label} connection closed")))?
+        .map_err(HarnessError::Protocol)?;
 
     debug!(session_id = %acp_session, "{label} session ready");
     Ok(AcpSession {
@@ -330,24 +359,47 @@ async fn try_load(
     Some(serde_json::to_value(&response.config_options).unwrap_or_default())
 }
 
+/// The config option an agent lists for thinking effort: agy names it
+/// `thinking_level`, the older ACP servers `thought_level`. `None` means the
+/// agent offers no such picker, so effort is left to it instead of sending an
+/// option id it would reject with "Unknown config option id".
+fn level_option(config_options: &serde_json::Value) -> Option<&str> {
+    config_options
+        .as_array()?
+        .iter()
+        .find_map(|option| match option["id"].as_str() {
+            Some(id @ ("thought_level" | "thinking_level")) => Some(id),
+            _ => None,
+        })
+}
+
 async fn configure(
     connection: &ConnectionTo<Agent>,
     session: &str,
     model: &str,
     effort: Option<&str>,
+    level_id: &str,
 ) -> Result<(), String> {
-    for (id, value) in [("model", Some(model)), ("thought_level", effort)] {
-        if let Some(value) = value {
-            connection
-                .send_request(SetSessionConfigOptionRequest::new(
-                    session.to_string(),
-                    id,
-                    SessionConfigOptionValue::value_id(value.to_string()),
-                ))
-                .block_task()
-                .await
-                .map_err(|error| error.to_string())?;
-        }
+    connection
+        .send_request(SetSessionConfigOptionRequest::new(
+            session.to_string(),
+            "model",
+            SessionConfigOptionValue::value_id(model.to_string()),
+        ))
+        .block_task()
+        .await
+        .map_err(|error| error.to_string())?;
+    // The model change is what the caller asked for; a level the agent does not offer is
+    // best-effort, like the one applied when the session opens.
+    if let Some(level) = effort {
+        let _ = connection
+            .send_request(SetSessionConfigOptionRequest::new(
+                session.to_string(),
+                level_id.to_string(),
+                SessionConfigOptionValue::value_id(level.to_string()),
+            ))
+            .block_task()
+            .await;
     }
     Ok(())
 }
@@ -475,6 +527,21 @@ fn unwrap_raw_output(raw: &serde_json::Value) -> Option<String> {
     }
     None
 }
+impl AcpSession {
+    /// Picks a model and returns the `configOptions` the agent now advertises,
+    /// which is how a catalogue learns the efforts that model supports.
+    pub async fn select_model(&self, model: &str) -> Result<serde_json::Value, HarnessError> {
+        let (reply, received) = oneshot::channel();
+        self.commands
+            .send(Command::ModelOptions(model.to_string(), reply))
+            .map_err(|_| HarnessError::Process("ACP connection closed".into()))?;
+        tokio::time::timeout(std::time::Duration::from_secs(10), received)
+            .await
+            .map_err(|_| HarnessError::Protocol("model list timed out".into()))?
+            .map_err(|_| HarnessError::Process("ACP connection closed".into()))?
+            .map_err(HarnessError::Protocol)
+    }
+}
 
 #[async_trait]
 impl HarnessSession for AcpSession {
@@ -567,6 +634,30 @@ impl HarnessSession for AcpSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn level_option_follows_the_advertised_id() {
+        let options = serde_json::json!([
+            {"id": "model"},
+            {"id": "thinking_level"},
+        ]);
+        assert_eq!(level_option(&options), Some("thinking_level"));
+        let options = serde_json::json!([{"id": "thought_level"}]);
+        assert_eq!(level_option(&options), Some("thought_level"));
+        let options = serde_json::json!([{"id": "model"}]);
+        assert_eq!(level_option(&options), None);
+    }
+
+    #[test]
+    fn thought_level_request_carries_a_string_value() {
+        let request = SetSessionConfigOptionRequest::new(
+            "s1",
+            "thinking_level",
+            SessionConfigOptionValue::value_id("high"),
+        );
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["configId"], "thinking_level");
+        assert_eq!(json["value"], "high");
+    }
 
     #[test]
     fn initialize_carries_the_client_name() {

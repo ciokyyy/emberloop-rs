@@ -26,6 +26,10 @@ The proxy injects `compress`, `decompress`, `search_context` and `acp_status`. T
 
 A steer queued while you work arrives as an extra text part on the user turn that carries tool results. It is context, not a new tool result. A background notice arrives the same way.
 
+## Showing files
+
+The web UI renders a file you name in your answer. Link it as `[name](file:///absolute/path)`, or embed an image as `![alt](file:///absolute/path)`. Images show inline, HTML in a sandboxed frame, and text files (JSON, Markdown, logs, source) in a disclosure. Only files inside the Project root or your Session directory show; everything else stays a plain link. Never paste a large file body when a link shows it.
+
 ## Project
 
 Project: {{ project_name }}

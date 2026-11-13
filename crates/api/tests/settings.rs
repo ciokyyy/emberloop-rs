@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use api::state::Settings;
 use api::{build_router, AppState};
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use emberloop_core::events::EventBus;
@@ -16,15 +17,45 @@ fn skills_review_interval_defaults_to_five_and_stored_settings_without_it_load()
     assert_eq!(stored.skills_review_interval, 5);
 }
 
+struct Listed;
+
+#[async_trait]
+impl api::models::Source for Listed {
+    fn name(&self) -> &'static str {
+        "agy"
+    }
+    async fn fetch(&self) -> Result<Vec<api::models::ModelEntry>, api::models::CatalogueError> {
+        Ok(["gemini-3.8-flash", "claude-opus-5-5"]
+            .into_iter()
+            .map(|id| api::models::ModelEntry {
+                id: id.into(),
+                provider: "agy".into(),
+                label: id.into(),
+                kind: "chat".into(),
+                efforts: vec!["low".into(), "medium".into(), "high".into()],
+                image_input: true,
+                context_window: 1_048_576,
+                source: "agy".into(),
+                stale: false,
+                updated_at: 0,
+            })
+            .collect())
+    }
+}
+
 async fn state(root: &DataRoot) -> AppState {
-    let projects = ProjectsStore::load(root.projects_file()).await.unwrap();
-    let sessions = SessionsStore::load(root.clone()).await.unwrap();
+    let models = Arc::new(api::models::ModelCatalogue::new(
+        root.model_catalogue_file(),
+        vec![Arc::new(Listed)],
+    ));
+    models.refresh().await.unwrap();
     AppState::new(
         root.clone(),
-        projects,
-        sessions,
+        ProjectsStore::load(root.projects_file()).await.unwrap(),
+        SessionsStore::load(root.clone()).await.unwrap(),
         Arc::new(EventBus::default()),
     )
+    .with_models(models)
 }
 
 #[tokio::test]

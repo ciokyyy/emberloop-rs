@@ -64,6 +64,7 @@ it('names the Project in the header select instead of a brand heading', () => {
 });
 
 it('groups sessions by project, omitting projects with no sessions', () => {
+  const now = Date.now();
   render(Sidebar, {
     ...base,
     projects: [
@@ -73,8 +74,8 @@ it('groups sessions by project, omitting projects with no sessions', () => {
     ],
     projectId: 'p',
     sessions: [
-      { id: 'a', projectId: 'p', title: 'In Pi', model: 'x', createdAt: 0, updatedAt: 2 },
-      { id: 'b', projectId: 'q', title: 'In Other', model: 'x', createdAt: 0, updatedAt: 1 }
+      { id: 'a', projectId: 'p', title: 'In Pi', model: 'x', createdAt: 0, updatedAt: now - 1000 },
+      { id: 'b', projectId: 'q', title: 'In Other', model: 'x', createdAt: 0, updatedAt: now - 2000 }
     ],
     selectedId: null
   });
@@ -84,6 +85,31 @@ it('groups sessions by project, omitting projects with no sessions', () => {
   expect(headers).not.toContain('Empty Project');
   expect(screen.getByText('In Pi')).toBeTruthy();
   expect(screen.getByText('In Other')).toBeTruthy();
+});
+
+it('bands: working first, then the last 10 minutes, then the current Project', () => {
+  const now = Date.now();
+  render(Sidebar, {
+    ...base,
+    projects: [
+      { id: 'p', name: 'Pi', root: '/p' },
+      { id: 'q', name: 'Other', root: '/q' }
+    ],
+    projectId: 'p',
+    statuses: { running: 'working' },
+    sessions: [
+      { id: 'old-other', projectId: 'q', title: 'Old Other', model: 'x', createdAt: 0, updatedAt: 1 },
+      { id: 'fresh-other', projectId: 'q', title: 'Fresh Other', model: 'x', createdAt: 0, updatedAt: now - 1000 },
+      { id: 'old-pi', projectId: 'p', title: 'Old Pi', model: 'x', createdAt: 0, updatedAt: 2 },
+      { id: 'running', projectId: 'q', title: 'Running Other', model: 'x', createdAt: 0, updatedAt: now - 30 * 60 * 1000 }
+    ],
+    selectedId: null
+  });
+  const text = document.body.textContent ?? '';
+  expect(screen.getAllByTestId('section-header').map((el) => el.textContent?.trim())).toEqual(['Active', 'Recent']);
+  expect(text.indexOf('Running Other')).toBeLessThan(text.indexOf('Fresh Other'));
+  expect(text.indexOf('Fresh Other')).toBeLessThan(text.indexOf('Old Pi'));
+  expect(screen.queryByText('Old Other')).toBeNull();
 });
 
 it('renames on double-click, commits the title on Enter', async () => {

@@ -1807,6 +1807,90 @@ async fn openai_chat_streaming_proxy_tool_is_swallowed_and_followed_up() {
 }
 
 #[tokio::test]
+async fn a_nameless_stream_fragment_does_not_hand_a_proxy_call_to_the_harness() {
+    // Some gateways stream an empty tool call beside the real one, and stream an empty `name`
+    // delta after the name chunk. Either one used to count as a harness call, so the whole
+    // buffered stream went to the harness, which has no compress tool: "Tool compress not found".
+    type SeenJson = Arc<Mutex<Vec<Value>>>;
+    let seen: SeenJson = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = seen.clone();
+    async fn chat(AxumState(seen): AxumState<SeenJson>, Json(body): Json<Value>) -> Response {
+        let round = {
+            let mut seen = seen.lock().unwrap();
+            let round = seen.len();
+            seen.push(body);
+            round
+        };
+        let body = if round == 0 {
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_c1\",\"type\":\"function\",\"function\":{\"name\":\"compress\",\"arguments\":\"{\\\"start\\\":0,\\\"end\\\":1,\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"summary\\\":\\\"folded intro\\\"\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"\",\"arguments\":\"}\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n\
+             data: [DONE]\n\n"
+                .to_string()
+        } else {
+            "data: {\"choices\":[{\"delta\":{\"content\":\"done after compress\"}}]}\n\n\
+             data: [DONE]\n\n"
+                .to_string()
+        };
+        Response::builder()
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(body))
+            .unwrap()
+    }
+    let app = AxumRouter::new()
+        .route("/inference/go/openai/v1/chat/completions", post(chat))
+        .with_state(seen_clone);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_opencode_upstream(format!("http://{addr}/inference/go"))
+    })
+    .await;
+
+    let req_body = json!({
+        "model": "deepseek-v4.1-flash",
+        "stream": true,
+        "messages": [
+            {"role": "system", "content": "Base"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "more"},
+            {"role": "assistant", "content": "still"},
+            {"role": "user", "content": "latest"}
+        ]
+    });
+    let response = router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/proxy/{}/v1/chat/completions", fixture.token))
+                .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("done after compress"), "{text}");
+    assert!(!text.contains("tool_calls"), "proxy call leaked: {text}");
+    assert!(!text.contains("\"compress\""), "proxy name leaked: {text}");
+
+    let captured = seen.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    let second = serde_json::to_string(&captured[1]).unwrap();
+    assert!(
+        second.contains("Compressed turns 0–0 into block b1"),
+        "{second}"
+    );
+}
+
+#[tokio::test]
 async fn openai_streaming_publishes_usage_even_when_the_client_stops_reading() {
     type SeenJson = Arc<Mutex<Vec<Value>>>;
     let seen: SeenJson = Arc::new(Mutex::new(Vec::new()));

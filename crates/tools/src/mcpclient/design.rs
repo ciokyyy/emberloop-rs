@@ -58,15 +58,23 @@ impl McpRegistry {
                 let link = value["link"]
                     .as_str()
                     .ok_or_else(|| ToolError::msg("invalid FigCraft live metadata"))?;
-                command(
-                    server,
-                    ready,
-                    "collab.join",
-                    serde_json::json!({"link": link}),
-                )
-                .await?;
-                wait_live(server, ready).await?;
-                link.to_string()
+                let joined = async {
+                    command(
+                        server,
+                        ready,
+                        "collab.join",
+                        serde_json::json!({"link": link}),
+                    )
+                    .await?;
+                    wait_live(server, ready).await
+                }
+                .await;
+                if joined.is_ok() {
+                    link.to_string()
+                } else {
+                    // The server forgot this link (restart with an empty store); publish the disk document again.
+                    self.publish_design(server, ready).await?
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 self.publish_design(server, ready).await?

@@ -21,6 +21,7 @@ Model-facing text as files (`include_str!` defaults under `prompts/*.md`):
 - `ponytail_text`: that filter for the global `ponytail_default_level` setting; `off` yields empty text.
 - `caveman_text`: the emberloop-go voice register, always ultra: banner, the filtered `caveman.md` (a byte-for-byte copy of the `caveman` plugin's `SKILL.md`), then its one-line reminder.
 - `policy` owns the shared edit, required-check and spill-search workflow: hashline edits for existing files, sequential patches after batched reads, preserved check exit status, and `ctx_search` (spilled tool output) versus `search_context` (compressed history), the search-before-`decompress` rule and the protected-content rule for `compress` (system prompts and `<system-reminder>` content never fold), which only `policy` states. `tool.edit` demonstrates valid replacement syntax, the range-body counting rule, re-reading after each patch and whole-function repair of a damaged span; `tool.execute` routes mutations through `tools.edit` and distinguishes Python aliases from fully qualified MCP dispatch names. `compress.prompt` also tells the summary to keep the pending step, files still to edit, proven commands and open questions.
+- `policy` also has `Showing files`: agents name a file as a `file://` Markdown link or image so the web UI renders it (`crates/api/src/files.rs` serves it from the Project root or Session directory only).
 
 ## Attribution
 

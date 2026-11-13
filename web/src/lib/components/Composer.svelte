@@ -327,7 +327,7 @@
         bind:this={textarea}
         bind:value={text}
         rows="2"
-        class="w-full resize-none bg-transparent px-2 py-1 outline-none"
+        class="w-full resize-none bg-transparent px-2 py-1 text-base outline-none sm:text-[15px]"
         placeholder={working
           ? 'Steer the agent. It reaches the model with the next tool result.'
           : 'Message the agent. Enter sends, Shift+Enter adds a line.'}

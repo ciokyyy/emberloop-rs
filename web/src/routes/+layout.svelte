@@ -186,6 +186,10 @@
   }
 
   function openStream(id: string, startAfter = 0) {
+    // A reconnect timer can outlive the Session it was opened for; reopening then would close the
+    // current Session's stream, whose events the guard below drops, and the feed stays blank
+    // until a reload.
+    if (selected !== id) return;
     closeStream();
     let after = startAfter;
     // A replay carries the Session's whole tail window; only an event that lands after the page
@@ -604,7 +608,7 @@
           bind:model={draftModel} onsubmit={sendDraft} />
       {/key}
     {:else if current}
-      <Feed {feed} projectId={current.projectId} {hasMore} {loadingMore} onloadmore={loadEarlier} />
+      <Feed {feed} projectId={current.projectId} sessionId={current.id} {hasMore} {loadingMore} onloadmore={loadEarlier} />
       <!-- The plan card and the turn line sit in the composer's own column, right above it. -->
       <div class="px-4">
         <div class="mx-auto max-w-[760px] pb-1">

@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 pub mod design;
 pub mod driver;
+pub mod files;
 pub mod models;
 pub mod persist;
 pub mod project_clone;

@@ -42,6 +42,32 @@ impl SessionDriver for Driver {
         Ok(())
     }
 }
+
+struct Listed;
+
+#[async_trait]
+impl api::models::Source for Listed {
+    fn name(&self) -> &'static str {
+        "agy"
+    }
+    async fn fetch(&self) -> Result<Vec<api::models::ModelEntry>, api::models::CatalogueError> {
+        Ok(["gemini-3.8-flash", "claude-opus-5-5"]
+            .into_iter()
+            .map(|id| api::models::ModelEntry {
+                id: id.into(),
+                provider: "agy".into(),
+                label: id.into(),
+                kind: "chat".into(),
+                efforts: vec!["low".into(), "medium".into(), "high".into()],
+                image_input: true,
+                context_window: 1_048_576,
+                source: "agy".into(),
+                stale: false,
+                updated_at: 0,
+            })
+            .collect())
+    }
+}
 async fn setup(path: &std::path::Path) -> (AppState, Arc<Driver>) {
     let root = DataRoot::new(path.join("data"));
     let projects = ProjectsStore::load(root.projects_file()).await.unwrap();
@@ -68,9 +94,14 @@ async fn setup(path: &std::path::Path) -> (AppState, Arc<Driver>) {
         sessions: Some(sessions.clone()),
         ..Driver::default()
     });
+    let models = Arc::new(api::models::ModelCatalogue::new(
+        root.model_catalogue_file(),
+        vec![Arc::new(Listed)],
+    ));
+    models.refresh().await.unwrap();
     let state = AppState::new(root, projects, sessions, Arc::new(EventBus::default()))
-        .with_driver(driver.clone());
-    state.models.refresh().await.unwrap();
+        .with_driver(driver.clone())
+        .with_models(models);
     (state, driver)
 }
 async fn call(state: &AppState, id: &str, value: Value) -> (StatusCode, Value) {

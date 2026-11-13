@@ -61,10 +61,22 @@ async fn state(dir: &std::path::Path, driver: Arc<Driver>) -> AppState {
         })
         .await
         .unwrap();
-    let state =
-        AppState::new(root, projects, sessions, Arc::new(EventBus::default())).with_driver(driver);
-    state.models.refresh().await.unwrap();
-    state
+    let models = Arc::new(api::models::ModelCatalogue::new(
+        root.model_catalogue_file(),
+        vec![Arc::new(Listed(
+            "agy",
+            &[
+                ("gemini-3.8-flash", &["low", "medium", "high"]),
+                ("gemini-4", &["low", "medium", "high"]),
+                ("claude-opus-5-5", &["low", "medium", "high"]),
+                ("gpt-oss-120b", &["medium"]),
+            ],
+        ))],
+    ));
+    models.refresh().await.unwrap();
+    AppState::new(root, projects, sessions, Arc::new(EventBus::default()))
+        .with_driver(driver)
+        .with_models(models)
 }
 fn req(method: &str, path: &str, body: serde_json::Value) -> Request<Body> {
     Request::builder()
@@ -259,7 +271,10 @@ async fn new_sessions_use_the_default_model_and_reject_unknown_defaults() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-struct Listed(&'static str, &'static [&'static str]);
+struct Listed(
+    &'static str,
+    &'static [(&'static str, &'static [&'static str])],
+);
 
 #[async_trait]
 impl api::models::Source for Listed {
@@ -270,13 +285,13 @@ impl api::models::Source for Listed {
         Ok(self
             .1
             .iter()
-            .map(|id| api::models::ModelEntry {
+            .map(|(id, efforts)| api::models::ModelEntry {
                 id: (*id).into(),
                 provider: self.0.into(),
                 label: (*id).into(),
                 kind: "chat".into(),
-                efforts: Vec::new(),
-                image_input: false,
+                efforts: efforts.iter().map(|effort| (*effort).into()).collect(),
+                image_input: true,
                 context_window: 1000,
                 source: String::new(),
                 stale: false,
@@ -291,8 +306,11 @@ async fn a_model_from_another_harness_drops_the_old_resume_token_and_the_same_ha
     let dir = tempfile::tempdir().unwrap();
     let state = state(dir.path(), Arc::new(Driver::default())).await;
     let sources: Vec<Arc<dyn api::models::Source>> = vec![
-        Arc::new(Listed("agy", &["gemini-3.8-flash", "gemini-4"])),
-        Arc::new(Listed("claude", &["claude/haiku"])),
+        Arc::new(Listed(
+            "agy",
+            &[("gemini-3.8-flash", &[]), ("gemini-4", &[])],
+        )),
+        Arc::new(Listed("claude", &[("claude/haiku", &[])])),
     ];
     let models = Arc::new(api::models::ModelCatalogue::new(
         dir.path().join("catalogue.json"),

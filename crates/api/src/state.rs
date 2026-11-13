@@ -1,5 +1,5 @@
 use crate::driver::{NoopDriver, SessionDriver};
-use crate::models::{AgySource, ModelCatalogue};
+use crate::models::ModelCatalogue;
 use crate::providers::ProviderLogin;
 use emberloop_core::events::EventBus;
 use emberloop_core::steer::SteerQueues;
@@ -161,7 +161,7 @@ impl AppState {
     ) -> Self {
         let models = Arc::new(ModelCatalogue::new(
             data_root.model_catalogue_file(),
-            vec![Arc::new(AgySource)],
+            Vec::new(),
         ));
         let steers = SteerQueues::with_dir(data_root.sessions_dir());
         let settings = load_settings(data_root.root());

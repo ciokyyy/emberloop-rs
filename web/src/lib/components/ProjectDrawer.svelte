@@ -18,12 +18,16 @@
 {/if}
 
 <aside class="drawer-rail {open ? 'open' : ''}" aria-label="Project tools" aria-hidden={!open} inert={!open}>
-  <header class="flex flex-row items-center justify-between gap-1 px-2 pt-3 pb-2">
-    <h2 class="min-w-0 truncate text-[13px] font-semibold text-fg-1">{project.name}</h2>
+  <!-- 56px, the same height and hairline as the page header beside it. -->
+  <header class="flex h-14 shrink-0 flex-row items-center justify-between gap-1 border-b border-border px-3">
+    <div class="min-w-0">
+      <h2 class="truncate text-[13px] font-semibold text-fg-1">{project.name}</h2>
+      <p class="truncate text-[11px] text-fg-3">{project.root}</p>
+    </div>
     <button
       type="button"
       aria-label="Close"
-      class="grid size-8 shrink-0 place-items-center rounded-lg text-fg-2 hover:bg-surface-2 hover:text-fg-1"
+      class="icon-btn shrink-0 text-fg-2 hover:bg-surface-2 hover:text-fg-1"
       onclick={onclose}
     >
       <X class="size-4" />
@@ -33,7 +37,7 @@
     <p class="px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-3">Tools</p>
     <button
       type="button"
-      class="sel flex w-full min-w-0 items-center gap-2 rounded-[10px] px-2 py-1.5 text-left"
+      class="flex w-full min-w-0 items-center gap-2 rounded-[10px] px-2 py-1.5 text-left hover:bg-surface-3 focus-visible:bg-surface-3 focus-visible:outline-none"
       onclick={() => { onclose(); onopendesign(); }}
     >
       <PenTool class="size-4 shrink-0 text-fg-2" />

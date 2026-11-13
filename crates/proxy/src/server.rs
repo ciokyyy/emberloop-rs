@@ -2502,10 +2502,13 @@ impl SseState {
             .stream_calls
             .iter()
             .any(|call| PROXY_TOOLS.contains(&call.name.as_str()));
+        // A nameless fragment is no harness call: there is nothing the harness could run, and a
+        // gateway sometimes streams an empty entry beside the real call. Treating it as one handed
+        // the whole stream, proxy calls included, to the harness, which answered "Tool not found".
         let harness = self
             .stream_calls
             .iter()
-            .any(|call| !PROXY_TOOLS.contains(&call.name.as_str()));
+            .any(|call| !call.name.is_empty() && !PROXY_TOOLS.contains(&call.name.as_str()));
         if !proxy || harness {
             self.forwarded
                 .extend(self.stream_calls.iter().map(|call| call.name.clone()));
@@ -2625,7 +2628,11 @@ fn collect_openai_call(item: &Value, calls: &mut Vec<StreamCall>) {
     let Some(function) = item.get("function") else {
         return;
     };
-    if let Some(name) = function.get("name").and_then(Value::as_str) {
+    if let Some(name) = function
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+    {
         call.name = name.to_string();
     }
     call.args

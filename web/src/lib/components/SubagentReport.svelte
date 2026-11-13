@@ -22,7 +22,7 @@
   {#if report.report}
     <details class="mt-2">
       <summary class="cursor-pointer text-fg-3">Full report</summary>
-      <div class="prose mt-2 min-w-0 break-words">{@html renderMarkdown(report.report)}</div>
+      <div class="md mt-2 min-w-0">{@html renderMarkdown(report.report)}</div>
     </details>
   {/if}
 </section>

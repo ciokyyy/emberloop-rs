@@ -20,6 +20,9 @@ import type {
 } from './types';
 
 const base = String(import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '');
+/** The daemon route that serves a file of the Session's Project, for `renderMarkdown`. */
+export const sessionFileBase = (sessionId: string) =>
+  `${base}/api/sessions/${encodeURIComponent(sessionId)}/file`;
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(base + path, {

@@ -58,6 +58,10 @@ fn main() {
         .ok()
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .unwrap_or_else(default_tools);
+    let exit_after = std::env::var("FAKE_MCP_EXIT_AFTER")
+        .ok()
+        .and_then(|raw| raw.parse::<u32>().ok());
+    let mut calls = 0u32;
     let projects = std::env::var("FAKE_MCP_PROJECTS").unwrap_or_else(|_| "[]".to_string());
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
@@ -79,19 +83,9 @@ fn main() {
             }),
             "tools/list" => json!({ "tools": tools }),
             "tools/call" => {
+                calls += 1;
                 let name = params["name"].as_str().unwrap_or_default();
-                if name == "broken" {
-                    json!({"content": [{"type": "text", "text": "boom"}], "isError": true})
-                } else if name == "list_projects" {
-                    let text = format!("{{\"projects\":{projects}}}");
-                    json!({"content": [{"type": "text", "text": text}]})
-                } else if name == "pwd" {
-                    let cwd = std::env::current_dir().unwrap_or_default();
-                    json!({"content": [{"type": "text", "text": cwd.to_string_lossy()}]})
-                } else {
-                    let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                    json!({"content": [{"type": "text", "text": format!("{name}:{args}")}]})
-                }
+                call_reply(name, params, &projects)
             }
             _ => json!({}),
         };
@@ -99,5 +93,25 @@ fn main() {
         if writeln!(out, "{frame}").is_err() || out.flush().is_err() {
             break;
         }
+        if exit_after == Some(calls) {
+            // Let the client read this reply before the transport goes away.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            break;
+        }
+    }
+}
+
+fn call_reply(name: &str, params: &Value, projects: &str) -> Value {
+    if name == "broken" {
+        json!({"content": [{"type": "text", "text": "boom"}], "isError": true})
+    } else if name == "list_projects" {
+        let text = format!("{{\"projects\":{projects}}}");
+        json!({"content": [{"type": "text", "text": text}]})
+    } else if name == "pwd" {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        json!({"content": [{"type": "text", "text": cwd.to_string_lossy()}]})
+    } else {
+        let args = params.get("arguments").cloned().unwrap_or(json!({}));
+        json!({"content": [{"type": "text", "text": format!("{name}:{args}")}]})
     }
 }
