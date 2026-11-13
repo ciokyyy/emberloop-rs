@@ -7,7 +7,7 @@ Session `parentId` and `reviewerRole` metadata keep openable reviewer rows after
 
 ## Purpose
 
-SvelteKit SPA for phase 1: Projects sidebar, Session feed, composer and Settings. Built with `adapter-static` (fallback `index.html`, SSR off), Tailwind CSS v4 and shadcn-svelte components over `bits-ui`. Every control is a shadcn-svelte component: add one with `bunx shadcn-svelte add <name>`; the generated files are only trimmed of what nothing imports. The daemon serves the static build at its own origin; `VITE_API_BASE` overrides the API origin in development.
+SvelteKit SPA for phase 1: Projects sidebar, Session feed, composer and Settings. Built with `adapter-static` (fallback `index.html`, SSR off), Tailwind CSS v4 and shadcn-svelte components over `bits-ui`. Every control is a shadcn-svelte component: add one with `bunx shadcn-svelte add <name>`; the generated files are only trimmed of what nothing imports. The daemon serves the static build at its own origin; `VITE_API_BASE` overrides the API origin in development. SvelteKit 3 keeps its config (`adapter`, preprocess, `$lib` alias) in `vite.config.ts`; `svelte.config.js` is gone and must not come back.
 
 ## Layout
 

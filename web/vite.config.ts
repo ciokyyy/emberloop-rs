@@ -1,5 +1,7 @@
+import adapter from "@sveltejs/adapter-static";
 import { sveltekit } from "@sveltejs/kit/vite";
 import { svelteTesting } from "@testing-library/svelte/vite";
+import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vitest/config";
 
@@ -9,7 +11,15 @@ const devApi = (
 ).process?.env.EMBERLOOP_DEV_API;
 
 export default defineConfig({
-  plugins: [tailwindcss(), sveltekit(), svelteTesting()],
+  plugins: [
+    tailwindcss(),
+    sveltekit({
+      alias: { $lib: "src/lib" },
+      adapter: adapter({ fallback: "index.html" }),
+      preprocess: vitePreprocess(),
+    }),
+    svelteTesting(),
+  ],
   server: devApi ? { proxy: { "/api": { target: devApi, ws: true }, "/figcraft": devApi, "/health": devApi } } : {},
   test: {
     environment: "jsdom",

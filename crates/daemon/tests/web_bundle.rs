@@ -29,7 +29,7 @@ fn the_embedded_web_bundle_is_newer_than_its_sources() {
         "src",
         "static",
         "package.json",
-        "svelte.config.js",
+        "tsconfig.json",
         "vite.config.ts",
     ]
     .iter()

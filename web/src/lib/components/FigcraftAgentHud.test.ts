@@ -72,5 +72,5 @@ it('leaves the full-width phone sheet flush with the viewport edges', async () =
   const pill = screen.getByRole('button', { name: 'Open agent prompt' });
   await fireEvent.click(pill);
   // The sheet spans inset-x-0, so any clamp margin would shift it off the right edge.
-  expect((pill.parentElement!.parentElement as HTMLElement).style.transform).toContain('translate(0px, 0px)');
+  expect((pill.parentElement!.parentElement as HTMLElement).style.transform).toMatch(/^translate\(0px(?:, 0px)?\)$/);
 });

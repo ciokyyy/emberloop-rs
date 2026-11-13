@@ -8,8 +8,8 @@ impl McpRegistry {
             .ok_or_else(|| ToolError::msg("FigCraft live server is not configured; run scripts/install-figcraft and restart the daemon"))?;
         let root = std::fs::canonicalize(&self.root)?;
         Ok(Path::new(dir).join(format!(
-            "{:x}.json",
-            Sha256::digest(root.as_os_str().as_encoded_bytes())
+            "{}.json",
+            hex::encode(Sha256::digest(root.as_os_str().as_encoded_bytes()))
         )))
     }
 

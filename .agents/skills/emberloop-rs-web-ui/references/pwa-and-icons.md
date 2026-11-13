@@ -4,7 +4,7 @@ Facts gathered from the code, so a PWA change starts from the real constraints.
 
 ## How the bundle is served
 
-- `web/svelte.config.js` uses `@sveltejs/adapter-static` with `fallback: 'index.html'`. There is no `web/static/` directory, so no manifest, icon or favicon ships today; create `web/static/` and the adapter copies its contents into `web/build/`.
+- `web/vite.config.ts` passes `@sveltejs/adapter-static` with `fallback: 'index.html'` to `sveltekit()` (SvelteKit 3 no longer reads `svelte.config.js`). `web/static/` holds the manifest, worker, icons and favicon; the adapter copies its contents into `web/build/`.
 - `crates/daemon/src/lib.rs` embeds the bundle with `#[derive(RustEmbed)] #[folder = "../../web/build"] struct Assets`, and `router()` ends with `.fallback(static_asset)`.
 - `static_asset` returns 404 for every `api/` path and serves `index.html` for every other unknown path, with the type from `content_type(path)`. An unmapped extension therefore gets `application/octet-stream`, and the shell fallback returns HTML under the requested name. Both break a manifest (Chrome refuses a `webmanifest` served as octet-stream or as HTML), so add `.webmanifest` to `content_type` and keep the file a real asset in `web/static/`. `js` is already mapped, so a service worker survives.
 - `static_asset` sets no `Cache-Control`. Nothing is fingerprinted except `_app/immutable/*`, so a changed shell or service worker has only heuristic caching to rely on.

@@ -116,7 +116,7 @@ wait_stage
 # web_sources names every path web_bundle.rs calls a source, and the bundle must also stay newer
 # than all of them: that test compares modification times, and a checkout rewrites them.
 web_sources() {
-    printf '%s\n' web/src web/static web/package.json web/svelte.config.js web/vite.config.ts
+    printf '%s\n' web/src web/static web/package.json web/tsconfig.json web/vite.config.ts
 }
 
 web_inputs() {

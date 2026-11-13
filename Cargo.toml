@@ -44,7 +44,7 @@ serde_json = "1.0"
 libc = "0.2"
 axum = { version = "0.8", features = ["macros"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "fs"] }
 utoipa = { version = "6.0", features = ["axum_extras"] }
 utoipa-axum = "0.3"
 agent-client-protocol = "=5.2.0"
@@ -52,22 +52,22 @@ rmcp = { version = "=3.10.0", default-features = false, features = ["server", "c
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 async-trait = "0.1"
 futures = "0.3"
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
-zstd = "0.13"
-hmac = "0.12"
+zstd = "0.14"
+hmac = "0.13"
 ignore = "0.4"
 regex = "1.10"
 glob = "0.3"
 tempfile = "3.12"
 clap = { version = "4.5", features = ["derive"] }
 rust-embed = "8.5"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "query", "form"] }
 web-push = { version = "0.11", default-features = false }
-jwt-simple = { version = "0.12", default-features = false, features = ["pure-rust"] }
+jwt-simple = { version = "0.15", default-features = false, features = ["pure-rust"] }
 ct-codecs = "1.1"
 
 [workspace.lints.clippy]

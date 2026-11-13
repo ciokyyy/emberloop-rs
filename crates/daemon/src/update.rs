@@ -173,7 +173,7 @@ const BINARY: &str = "emberloop-daemon";
 /// `root`. Nothing running is touched; `activate` switches to it.
 pub async fn install(artifact: &Artifact, version: &str, root: &Path) -> anyhow::Result<()> {
     let bytes = get_bytes(&artifact.url).await?;
-    let sum = format!("{:x}", Sha256::digest(&bytes));
+    let sum = hex::encode(Sha256::digest(&bytes));
     anyhow::ensure!(
         sum == artifact.sha256.to_ascii_lowercase(),
         "download checksum {sum} does not match the manifest ({})",
@@ -902,7 +902,7 @@ mod tests {
     async fn applying_a_request_installs_activates_and_leaves_the_marker() {
         let root = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
-        let sum = format!("{:x}", Sha256::digest(b"nine"));
+        let sum = hex::encode(Sha256::digest(b"nine"));
         let url = serve_bytes(b"nine").await;
         write_request(data.path(), &request_for(url, sum)).unwrap();
         let applied = apply_request(root.path(), data.path(), vec![])
