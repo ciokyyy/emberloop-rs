@@ -179,6 +179,7 @@ dependencies = [
  "emberloop-core",
  "futures",
  "jwt-simple 0.15.0",
+ "libc",
  "prompts",
  "reqwest 0.13.5",
  "serde",
@@ -4219,6 +4220,7 @@ name = "tools"
 version = "0.0.40"
 dependencies = [
  "clap",
+ "emberloop-core",
  "glob",
  "hex",
  "ignore",

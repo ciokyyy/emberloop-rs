@@ -1,21 +1,24 @@
 # Emberloop
 
-Emberloop supports implementation work and independent review of that work.
+Emberloop orchestrates AI coding Sessions across harnesses, proxies, and tools inside a Project.
 
 ## Language
 
-**Spec reviewer**:
-An agent that reviews a change against its originating ticket or specification, identifying omissions, incorrect behavior, and scope creep.
-_Avoid_: Spec implementer
+**Subagent**:
+A persistent child Session spawned by a parent Session to perform a specialized role and report back through parent steers.
+_Avoid_: Child bot, helper agent
 
-**Standards reviewer**:
-An agent that reviews a change against the project's documented coding standards and the review skill's code-smell baseline.
-_Avoid_: Standards implementer
+**Reviewer**:
+A Subagent with role `spec` or `standards` that audits changes against a ticket and starting point; singleton per parent and role, using fixed role-specific model settings.
 
-**Reviewer Session**:
-A continuing conversation with one reviewer across the tickets in the main agent's assignment. Completing a report does not end the conversation.
-_Avoid_: Review run
+**Worker**:
+A Subagent with full file-editing and shell capabilities that executes delegated implementation tasks.
 
-**Review report**:
-The findings from one reviewer, kept separate from findings on the other review axis.
-_Avoid_: Combined verdict
+**Scout**:
+A read-only Subagent for codebase research and exploration whose file-editing and write tools are disabled and whose shell access runs through an exploration gate.
+
+**Intelligence Tier**:
+An abstract capability level (`smol`, `mid`, `top`) chosen by a parent when spawning a Worker or Scout, mapped in settings to a concrete model and reasoning effort.
+
+**Fallback Ladder**:
+An ordered list of model and reasoning-effort rungs assigned to a Reviewer role or Intelligence Tier, tried sequentially when a Subagent run fails with an error.

@@ -6,9 +6,11 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vitest/config";
 
 // `EMBERLOOP_DEV_API=http://127.0.0.1:8790 npm run dev` proxies the daemon, so the dev server needs no CORS.
-const devApi = (
+const env = (
   globalThis as { process?: { env: Record<string, string | undefined> } }
-).process?.env.EMBERLOOP_DEV_API;
+).process?.env;
+const devApi = env?.EMBERLOOP_DEV_API;
+const isVitest = Boolean(env?.VITEST);
 
 export default defineConfig({
   plugins: [
@@ -17,6 +19,9 @@ export default defineConfig({
       alias: { $lib: "src/lib" },
       adapter: adapter({ fallback: "index.html" }),
       preprocess: vitePreprocess(),
+      // Vitest's fsModuleCache replays JS without running vite-plugin-svelte:compile, so
+      // external ?svelte&type=style&lang.css imports miss meta.svelte.css; inject CSS in tests.
+      ...(isVitest ? { compilerOptions: { css: "injected" } } : {}),
     }),
     svelteTesting(),
   ],

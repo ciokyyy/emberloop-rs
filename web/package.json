@@ -14,11 +14,13 @@
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.102.0",
     "@lucide/svelte": "^1.72.0",
+    "@tanstack/svelte-table": "^9.3.1",
     "@tanstack/svelte-virtual": "^3.13.52",
     "bits-ui": "^2.21.0",
     "clsx": "^2.1.1",
     "dompurify": "^3.4.17",
     "marked": "^18.2.0",
+    "material-file-icons": "^2.4.0",
     "tailwind-merge": "^3.7.0",
     "uisfx": "^0.4.0"
   },
