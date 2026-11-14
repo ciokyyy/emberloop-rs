@@ -48,6 +48,47 @@ describe('file links', () => {
     await vi.waitFor(() => expect(box.querySelector('.tk-key')?.textContent).toBe('"a"'));
     vi.unstubAllGlobals();
   });
+
+  it('deduplicates multiple links to the same file and groups many files', () => {
+    const repeated = mount(
+      '[fnA](file:///work/shared.rs#L1-L5) [fnB](file:///work/shared.rs#L10-L20)'
+    );
+    const boxes = repeated.querySelectorAll('details.md-file');
+    expect(boxes).toHaveLength(1);
+    expect(boxes[0]?.querySelector('summary')?.textContent).toBe('shared.rs');
+
+    const many = mount(
+      '[a](file:///work/a.rs) [b](file:///work/b.rs) [c](file:///work/c.rs) [d](file:///work/d.rs)'
+    );
+    const group = many.querySelector('details.md-files-group');
+    expect(group).not.toBeNull();
+    expect(group?.querySelector('summary')?.textContent).toBe('4 files · a.rs, b.rs, c.rs, …');
+    expect(group?.querySelectorAll('details.md-file')).toHaveLength(4);
+  });
+
+  it('shows a filetype icon by extension in each file disclosure', () => {
+    const root = mount('[lib](file:///work/lib.rs) [view](file:///work/Feed.svelte)');
+    const icons = [...root.querySelectorAll('.md-file summary .md-file-icon')];
+    expect(icons.map((el) => (el as HTMLElement).dataset.fileIcon)).toEqual(['rust', 'svelte']);
+    expect(icons.every((el) => el.querySelector('svg') !== null)).toBe(true);
+    expect(root.querySelectorAll('.md-file summary')[0]?.textContent).toBe('lib');
+  });
+
+  it('replaces the file shelf without duplicating rows across streaming re-renders', () => {
+    const root = document.createElement('div');
+    root.innerHTML = renderMarkdown('[tokens](file:///work/tokens.rs)', BASE);
+    embedFiles(root);
+    // Svelte {@html} replaces the markdown nodes while keeping manually appended siblings.
+    const shelf = root.querySelector('.md-files')!;
+    const firstParagraph = root.firstElementChild!;
+    const next = document.createElement('div');
+    next.innerHTML = renderMarkdown('[tokens](file:///work/tokens.rs) [acp](file:///work/acp.rs)', BASE);
+    firstParagraph.replaceWith(...next.childNodes);
+    embedFiles(root);
+    embedFiles(root);
+    expect(root.querySelectorAll('.md-files')).toHaveLength(1);
+    expect(root.querySelectorAll('details.md-file')).toHaveLength(2);
+  });
 });
 
 describe('lists', () => {

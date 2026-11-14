@@ -459,10 +459,14 @@ async fn pi_sessions_and_catalogue_run_on_the_pi_harness_without_an_agy_account(
     std::fs::set_permissions(&fake_pi, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let data_root = dir.path().join("data");
+    let agy_dir = data_root.join("agy-acp/1.4.5");
+    std::fs::create_dir_all(&agy_dir).unwrap();
+    let fake_agy = agy_dir.join("agy_acp_server.par");
+    std::fs::write(&fake_agy, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&fake_agy, std::fs::Permissions::from_mode(0o755)).unwrap();
     let bin_dir = data_root.join("pi/v0.12.11");
     std::fs::create_dir_all(&bin_dir).unwrap();
     std::fs::copy(&fake_pi, bin_dir.join("pi")).unwrap();
-
     let config = Config {
         port: 0,
         host: "127.0.0.1".to_string(),
@@ -563,6 +567,7 @@ async fn planned_update_resumes_active_agents_and_reviewers_but_not_idle_reviewe
             role: role.into(),
             ticket_path: "ticket.md".into(),
             starting_point: "abc123".into(),
+            tier: None,
         });
         std::fs::create_dir_all(env.daemon.data_root.session_dir(id)).unwrap();
         env.daemon.sessions.save(&meta).await.unwrap();

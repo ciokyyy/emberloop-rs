@@ -52,6 +52,9 @@ async fn active_session_archives_restores_and_resumes() {
     let now = 10 * DAY;
     let (_dir, data_root, sessions, sweeper) = setup(now - 4 * DAY).await;
     let events_dir = data_root.session_events_dir("ses_1");
+    let exec_dir = data_root.session_exec_dir("ses_1");
+    std::fs::create_dir_all(&exec_dir).unwrap();
+    std::fs::write(exec_dir.join("1.py"), "print(1)\n").unwrap();
     let archive = data_root.session_archive_file("ses_1");
 
     sweeper.sweep_at(now).await.unwrap();
@@ -61,6 +64,7 @@ async fn active_session_archives_restores_and_resumes() {
     );
     assert!(archive.exists());
     assert!(!events_dir.exists());
+    assert!(!exec_dir.exists());
 
     sweeper.restore_at("ses_1", now).await.unwrap();
     let restored = sessions.get("ses_1").await.unwrap();

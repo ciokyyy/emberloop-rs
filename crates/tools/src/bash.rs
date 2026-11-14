@@ -30,6 +30,14 @@ pub async fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     if args.command.trim().is_empty() {
         return Err(ToolError::msg("command is required"));
     }
+    if toolbox.is_scout() {
+        if let Some(reason) = intercept::scout_blocked(&args.command) {
+            return Err(ToolError::msg(format!(
+                "Blocked: {reason}\nCommand not run: {}",
+                args.command.trim()
+            )));
+        }
+    }
     // A command that belongs to another tool is refused before anything runs, and the reply names
     // the tool that does it. Reads never match, so their views still feed the seen-line store.
     if let Some(rule) = intercept::blocked(&args.command) {

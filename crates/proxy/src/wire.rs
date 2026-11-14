@@ -204,6 +204,15 @@ pub fn inject_tools_for_wire(wire: WireKind, request: &mut Value, pins: &PinnedP
 
 /// Remove only the edit declaration; reviewers still have shell and check tools.
 pub fn remove_edit_tool(request: &mut Value) {
+    remove_tools(request, is_edit_tool);
+}
+
+/// Remove write declarations for read-only scout Sessions.
+pub fn remove_write_tool(request: &mut Value) {
+    remove_tools(request, is_write_tool);
+}
+
+fn remove_tools(request: &mut Value, matches_tool: fn(&Value) -> bool) {
     let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) else {
         return;
     };
@@ -212,11 +221,11 @@ pub fn remove_edit_tool(request: &mut Value) {
             .get_mut("functionDeclarations")
             .and_then(Value::as_array_mut)
         {
-            declarations.retain(|declaration| !is_edit_tool(declaration));
+            declarations.retain(|declaration| !matches_tool(declaration));
         }
     }
     tools.retain(|tool| {
-        !is_edit_tool(tool)
+        !matches_tool(tool)
             && !tool
                 .get("functionDeclarations")
                 .and_then(Value::as_array)
@@ -224,16 +233,21 @@ pub fn remove_edit_tool(request: &mut Value) {
     });
 }
 
-fn is_edit_tool(tool: &Value) -> bool {
+fn tool_name(tool: &Value) -> &str {
     let name = tool
         .get("name")
         .or_else(|| tool.pointer("/function/name"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    matches!(
-        name.rsplit("__").next().unwrap_or(name),
-        "edit" | "el_edit" | "Edit"
-    )
+    name.rsplit("__").next().unwrap_or(name)
+}
+
+fn is_edit_tool(tool: &Value) -> bool {
+    matches!(tool_name(tool), "edit" | "el_edit" | "Edit")
+}
+
+fn is_write_tool(tool: &Value) -> bool {
+    matches!(tool_name(tool), "write" | "el_write" | "Write")
 }
 
 struct ToolSpec {
@@ -1473,6 +1487,26 @@ mod tests {
         }
         let mut request = json!({"tools":[{"functionDeclarations":[{"name":"edit"}]}]});
         remove_edit_tool(&mut request);
+        assert_eq!(request["tools"], json!([]));
+    }
+
+    #[test]
+    fn scout_filter_removes_write_across_all_tool_shapes() {
+        for tools in [
+            json!([{"functionDeclarations":[{"name":"mcp__el__write"},{"name":"bash"},{"name":"read"}]}]),
+            json!([{"type":"function","function":{"name":"mcp__el__write"}}, {"type":"function","function":{"name":"bash"}}, {"type":"function","function":{"name":"read"}}]),
+            json!([{"type":"function","name":"el_write"},{"name":"bash"},{"name":"read"}]),
+            json!([{"name":"Write","input_schema":{}},{"name":"Bash"},{"name":"Read"}]),
+        ] {
+            let mut request = json!({"tools":tools});
+            remove_write_tool(&mut request);
+            let tools = request["tools"].to_string().to_lowercase();
+            assert!(!tools.contains("write"));
+            assert!(tools.contains("bash"));
+            assert!(tools.contains("read"));
+        }
+        let mut request = json!({"tools":[{"functionDeclarations":[{"name":"write"}]}]});
+        remove_write_tool(&mut request);
         assert_eq!(request["tools"], json!([]));
     }
 }

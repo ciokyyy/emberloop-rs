@@ -93,4 +93,14 @@ on a phone the same rail is a bottom sheet over the canvas.
 `Skill · editor` is the editing state of the skill detail: same shell and header, a
 toolbar with the file name, a dirty dot and Discard/Save, then the code card
 (`#171717`, mono 12, gutter, active-line `#262626`) and a line-count status row.
+The `Status · Astryx dark` page (`824633720833`) holds the locked baseline pair
+(`Status · System · desktop`, `Status · Tokens · desktop`) alongside refined v2
+screens (`Status · System v2 · desktop`, `Status · Tokens v2 · desktop`) reached
+from the sidebar `More` overflow menu: an underline `Tabs` bar (`System` |
+`Tokens`) switches between host/daemon resource rings (`CPU`, `Memory`, `Disk
+space`, aligned `Processes & runtime` table with `State` pills, and `Data root
+storage` segmented bar) and monthly subscription-only token/call telemetry
+(`< November 2026 >`, `Export CSV`, 4 KPIs with avg/p95 latency, search +
+multi-facet `Filter bar` with active chips, sortable `@tanstack/svelte-table`
+grouped view with summary footer, and `Top token sinks` breakdown).
 Change the mock and the code in the same pass, and keep this file's table true.

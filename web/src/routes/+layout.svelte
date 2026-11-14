@@ -26,12 +26,13 @@
   import Skills from '$lib/components/Skills.svelte';
   import SkillDetail from '$lib/components/SkillDetail.svelte';
   import Settings from '$lib/components/Settings.svelte';
+  import Status from '$lib/components/Status.svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import WorkingIndicator from '$lib/components/WorkingIndicator.svelte';
   import FigcraftView from '$lib/components/FigcraftView.svelte';
   import ProjectDrawer from '$lib/components/ProjectDrawer.svelte';
   import SessionMenu from '$lib/components/SessionMenu.svelte';
-  import { PanelsTopLeft } from '@lucide/svelte';
+  import { PanelsTopLeft, RotateCw } from '@lucide/svelte';
   import { applyEvent, applySnapshot, emptyFeedState, type FeedState } from '$lib/feed';
   import { chosenWindow } from '$lib/contextMeter';
   import { toPromptImage } from '$lib/images';
@@ -50,8 +51,13 @@
     title_generation: true,
     title_model: 'openrouter/openrouter/free',
     default_model: 'gemini-3.8-flash',
-    spec_reviewer: { model: 'gemini-3.8-flash', reasoning_effort: null },
-    standards_reviewer: { model: 'gemini-3.8-flash', reasoning_effort: null },
+    spec_reviewer: [{ model: 'gemini-3.8-flash', reasoning_effort: null }],
+    standards_reviewer: [{ model: 'gemini-3.8-flash', reasoning_effort: null }],
+    subagent_tiers: {
+      smol: [{ model: 'gemini-3.8-flash', reasoning_effort: null }],
+      mid: [{ model: 'gemini-3.8-flash', reasoning_effort: null }],
+      top: [{ model: 'gemini-3.8-flash', reasoning_effort: null }]
+    },
     proxy_compression: true,
     ponytail_default_level: 'full',
     todo_reminders: true,
@@ -74,6 +80,7 @@
   let log = $state<SessionEvent[]>([]);
   let feed = $state<FeedState>(emptyFeedState());
   let loadingMore = $state(false);
+  let historyExhausted = $state(false);
   let statuses = $state<Record<string, SessionStatus>>({});
   let loading = $state(true);
   let error = $state('');
@@ -96,14 +103,16 @@
   // The pending SSE batch and its animation frame, so a replay folds into one update per frame.
   let frame: number | null = null;
   let flush: (() => void) | null = null;
+  let sendChain: Promise<void> = Promise.resolve();
+  let inFlightSends = 0;
+  let optSeq = 0;
   const PAGE = 8;
-  // The URL owns which Session and which view are showing, so a refresh, a pasted link and the
   // browser's back button all land on the same screen.
   const view = $derived<View>(viewOf(page.route.id));
   const selected = $derived(page.params.session ?? null);
   // A board opened from a Session keeps that Session as the agent it drives.
   const designSession = $derived(view === 'design' ? page.url.searchParams.get('session') : null);
-  const hasMore = $derived((log[0]?.seq ?? 1) > 1);
+  const hasMore = $derived(!historyExhausted && (log[0]?.seq ?? 1) > 1);
   const current = $derived(sessions.find((session) => session.id === selected) ?? null);
   // The URL's Project scopes the sidebar: one Project and its Sessions.
   const scope = $derived(page.params.project ?? null);
@@ -276,6 +285,10 @@
     try {
       const page = await api.history(id, log[0]?.seq ?? 0, PAGE);
       if (selected !== id) return;
+      if (page.length === 0) {
+        historyExhausted = true;
+        return;
+      }
       log = [...page, ...log];
       // An older page changes the rows, never the Session's current status or usage.
       feed = { ...log.reduce(applyEvent, emptyFeedState()), status: feed.status, usage: feed.usage };
@@ -314,6 +327,7 @@
   $effect(() => {
     const id = selected;
     log = [];
+    historyExhausted = false;
     feed = emptyFeedState();
     if (!id) {
       closeStream();
@@ -411,15 +425,47 @@
   }
 
   async function sendPrompt(text: string, files: File[]) {
-    if (!selected) throw new Error('Select a Session first.');
-    if (working) {
-      await api.steer(selected, text, await Promise.all(files.map(toPromptImage)));
-      return;
+    const targetSession = selected;
+    if (!targetSession) throw new Error('Select a Session first.');
+    const isSteer = working || inFlightSends > 0;
+    const optId = `opt-${++optSeq}`;
+    const imagesCount = files.length || undefined;
+    feed = {
+      ...feed,
+      status: isSteer ? feed.status : 'working',
+      items: [
+        ...feed.items,
+        isSteer
+          ? { id: optId, kind: 'steer', text, imagesCount, route: 'pending', optimistic: true }
+          : { id: optId, kind: 'user', text, imagesCount, optimistic: true }
+      ]
+    };
+    if (!isSteer) statuses = { ...statuses, [targetSession]: 'working' };
+    inFlightSends += 1;
+    const job = sendChain
+      .catch(() => {})
+      .then(async () => {
+        const images = await Promise.all(files.map(toPromptImage));
+        if (isSteer) await api.steer(targetSession, text, images);
+        else await api.prompt(targetSession, text, images);
+      });
+    sendChain = job;
+    try {
+      await job;
+    } catch (cause) {
+      if (selected === targetSession) {
+        const hadOtherWork = working && inFlightSends > 1;
+        feed = {
+          ...feed,
+          items: feed.items.filter((item) => item.id !== optId),
+          status: !isSteer && !hadOtherWork ? 'idle' : feed.status
+        };
+        if (!isSteer && !hadOtherWork) statuses = { ...statuses, [targetSession]: 'idle' };
+      }
+      throw cause;
+    } finally {
+      inFlightSends = Math.max(0, inFlightSends - 1);
     }
-    const images = await Promise.all(files.map(toPromptImage));
-    await api.prompt(selected, text, images);
-    feed = { ...feed, status: 'working' };
-    statuses = { ...statuses, [selected]: 'working' };
   }
 
   async function applyModel(input: { model: string; thoughtLevel: string }) {
@@ -482,6 +528,7 @@
       draftModel={view === 'new' && scope ? draftModel : null}
       ondraft={() => { if (scope) void goto(newPath(scope)); }}
       settingsActive={view === 'settings'}
+      statusActive={view === 'status'}
       providersActive={view === 'providers'}
       usageActive={view === 'usage'}
       skillsActive={view === 'skills' || view === 'skill'}
@@ -495,6 +542,7 @@
       onrename={(session, title) => void renameSession(session, title)}
       ondelete={(session) => void deleteSession(session)}
       onsettings={() => openView('settings')}
+      onstatus={() => openView('status')}
       onproviders={() => openView('providers')}
       onusage={() => openView('usage')}
       onskills={() => openView('skills')}
@@ -511,6 +559,8 @@
             ? 'New session'
             : view === 'settings'
               ? 'Settings'
+            : view === 'status'
+              ? 'Status'
             : view === 'providers'
               ? 'Providers'
               : view === 'skill'
@@ -534,6 +584,15 @@
         </div>
       </SessionMenu>
 
+      <button
+        type="button"
+        class="grid size-8 shrink-0 place-items-center rounded-xl border border-border bg-surface-1 text-fg-2 hover:bg-surface-3 hover:text-fg-1"
+        aria-label="Reload app"
+        title="Reload"
+        onclick={() => window.location.reload()}
+      >
+        <RotateCw class="size-4" />
+      </button>
       {#if activeProject}
         <button
           class="grid size-8 shrink-0 place-items-center rounded-xl border border-border bg-surface-1 text-fg-2 hover:bg-surface-3 hover:text-fg-1"
@@ -591,6 +650,8 @@
         onback={() => openView('skills')} />
     {:else if view === 'usage'}
       <Usage />
+    {:else if view === 'status'}
+      <Status />
     {:else if view === 'design' && activeProject}
       <FigcraftView
         project={activeProject}

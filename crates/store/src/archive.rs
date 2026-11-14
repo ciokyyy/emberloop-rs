@@ -98,69 +98,99 @@ impl ArchivalSweeper {
 
     async fn sweep_one(
         &self,
-        mut meta: SessionMeta,
+        meta: SessionMeta,
         now: u64,
         report: &mut SweepReport,
     ) -> Result<(), ArchivalError> {
         match meta.state {
-            SessionState::Active => {
-                let events_dir = self.data_root.session_events_dir(&meta.id);
-                let archive = self.data_root.session_archive_file(&meta.id);
-                if archive.exists() && !events_dir.exists() {
-                    meta.state = SessionState::Archived;
-                    meta.archived_at = Some(now);
-                    self.sessions.save(&meta).await?;
-                    report.archived.push(meta.id.clone());
-                    return Ok(());
-                }
-                let idle_since = meta.last_used_at.unwrap_or(meta.updated_at);
-                let idle_limit = self.config.archive_after_days.saturating_mul(DAY_MS);
-                if now.saturating_sub(idle_since) < idle_limit {
-                    return Ok(());
-                }
-                if self.archive(&meta.id).await? {
-                    meta.state = SessionState::Archived;
-                    meta.archived_at = Some(now);
-                    meta.restored_at = None;
-                    meta.restored_seq = None;
-                    self.sessions.save(&meta).await?;
-                    report.archived.push(meta.id.clone());
-                }
-            }
-            SessionState::Restored => {
-                let restored_at = meta.restored_at.unwrap_or(now);
-                if now.saturating_sub(restored_at)
-                    < self.config.restore_keep_hours.saturating_mul(HOUR_MS)
-                {
-                    return Ok(());
-                }
-                let log = EventLog::open(self.data_root.session_events_dir(&meta.id)).await?;
-                let resumed = log.last_seq().await > meta.restored_seq.unwrap_or(0);
-                if resumed {
-                    remove_file_if_exists(&self.data_root.session_archive_file(&meta.id)).await?;
-                    meta.state = SessionState::Active;
-                    meta.archived_at = None;
-                    meta.restored_at = None;
-                    meta.restored_seq = None;
-                    meta.last_used_at = Some(now);
-                    meta.updated_at = now;
-                    self.sessions.save(&meta).await?;
-                    report.resumed.push(meta.id.clone());
-                } else {
-                    remove_dir_if_exists(&self.data_root.session_events_dir(&meta.id)).await?;
-                    meta.state = SessionState::Archived;
-                    self.sessions.save(&meta).await?;
-                    report.removed_hot.push(meta.id.clone());
-                }
-            }
-            SessionState::Archived => {
-                let events_dir = self.data_root.session_events_dir(&meta.id);
-                if self.data_root.session_archive_file(&meta.id).exists() && events_dir.exists() {
-                    remove_dir_if_exists(&events_dir).await?;
-                    report.removed_hot.push(meta.id.clone());
-                }
-            }
+            SessionState::Active => self.sweep_active(meta, now, report).await,
+            SessionState::Restored => self.sweep_restored(meta, now, report).await,
+            SessionState::Archived => self.sweep_archived(&meta, report).await,
         }
+    }
+
+    async fn sweep_active(
+        &self,
+        mut meta: SessionMeta,
+        now: u64,
+        report: &mut SweepReport,
+    ) -> Result<(), ArchivalError> {
+        let events_dir = self.data_root.session_events_dir(&meta.id);
+        let archive = self.data_root.session_archive_file(&meta.id);
+        if archive.exists() && !events_dir.exists() {
+            remove_dir_if_exists(&self.data_root.session_exec_dir(&meta.id)).await?;
+            meta.state = SessionState::Archived;
+            meta.archived_at = Some(now);
+            self.sessions.save(&meta).await?;
+            report.archived.push(meta.id.clone());
+            return Ok(());
+        }
+        let idle_since = meta.last_used_at.unwrap_or(meta.updated_at);
+        let idle_limit = self.config.archive_after_days.saturating_mul(DAY_MS);
+        if now.saturating_sub(idle_since) < idle_limit {
+            return Ok(());
+        }
+        if self.archive(&meta.id).await? {
+            meta.state = SessionState::Archived;
+            meta.archived_at = Some(now);
+            meta.restored_at = None;
+            meta.restored_seq = None;
+            self.sessions.save(&meta).await?;
+            report.archived.push(meta.id.clone());
+        }
+        Ok(())
+    }
+
+    async fn sweep_restored(
+        &self,
+        mut meta: SessionMeta,
+        now: u64,
+        report: &mut SweepReport,
+    ) -> Result<(), ArchivalError> {
+        let restored_at = meta.restored_at.unwrap_or(now);
+        if now.saturating_sub(restored_at) < self.config.restore_keep_hours.saturating_mul(HOUR_MS)
+        {
+            return Ok(());
+        }
+        let log = EventLog::open(self.data_root.session_events_dir(&meta.id)).await?;
+        if log.last_seq().await > meta.restored_seq.unwrap_or(0) {
+            remove_file_if_exists(&self.data_root.session_archive_file(&meta.id)).await?;
+            meta.state = SessionState::Active;
+            meta.archived_at = None;
+            meta.restored_at = None;
+            meta.restored_seq = None;
+            meta.last_used_at = Some(now);
+            meta.updated_at = now;
+            self.sessions.save(&meta).await?;
+            report.resumed.push(meta.id.clone());
+        } else {
+            self.remove_hot_dirs(&meta.id).await?;
+            meta.state = SessionState::Archived;
+            self.sessions.save(&meta).await?;
+            report.removed_hot.push(meta.id.clone());
+        }
+        Ok(())
+    }
+
+    async fn sweep_archived(
+        &self,
+        meta: &SessionMeta,
+        report: &mut SweepReport,
+    ) -> Result<(), ArchivalError> {
+        let events_dir = self.data_root.session_events_dir(&meta.id);
+        let exec_dir = self.data_root.session_exec_dir(&meta.id);
+        if self.data_root.session_archive_file(&meta.id).exists()
+            && (events_dir.exists() || exec_dir.exists())
+        {
+            self.remove_hot_dirs(&meta.id).await?;
+            report.removed_hot.push(meta.id.clone());
+        }
+        Ok(())
+    }
+
+    async fn remove_hot_dirs(&self, id: &str) -> Result<(), ArchivalError> {
+        remove_dir_if_exists(&self.data_root.session_events_dir(id)).await?;
+        remove_dir_if_exists(&self.data_root.session_exec_dir(id)).await?;
         Ok(())
     }
 
@@ -184,6 +214,7 @@ impl ArchivalSweeper {
         tokio::fs::write(&tmp, &compressed).await?;
         tokio::fs::rename(&tmp, &archive).await?;
         tokio::fs::remove_dir_all(&events_dir).await?;
+        remove_dir_if_exists(&self.data_root.session_exec_dir(id)).await?;
         Ok(true)
     }
 
@@ -222,6 +253,13 @@ impl ArchivalSweeper {
         self.sessions.save(&meta).await?;
         Ok(())
     }
+}
+
+/// Reads the `(filename, bytes)` entries inside an archived `events.zstd` without restoring to disk.
+pub fn read_archived_events(archive_path: &Path) -> Result<Vec<(String, Vec<u8>)>, ArchivalError> {
+    let compressed = std::fs::read(archive_path)?;
+    let payload = decompress(&compressed)?;
+    unpack(&payload)
 }
 
 async fn read_event_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, ArchivalError> {

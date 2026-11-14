@@ -713,7 +713,77 @@ pub fn foldable_runs(contents: &[Value], end: usize) -> Vec<Range<usize>> {
     if let Some(first) = start {
         runs.push(first..end);
     }
-    runs
+    runs.into_iter()
+        .flat_map(|run| refine_pair_safe(contents, run))
+        .collect()
+}
+
+fn part_ids<'a>(turn: &'a Value, key: &str) -> Vec<&'a str> {
+    turn.get("parts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part.get(key)?.get("id")?.as_str())
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
+/// Shrink or split a candidate run so no sub-run strands half of a tool-call/result pair
+/// across an edge (`validate_range` rejects `split_pair`).
+fn refine_pair_safe(contents: &[Value], run: Range<usize>) -> Vec<Range<usize>> {
+    let mut sub_runs = vec![run];
+    loop {
+        let mut next = Vec::with_capacity(sub_runs.len());
+        let mut changed = false;
+        for r in sub_runs {
+            let outer_calls: HashSet<&str> = contents[..r.start]
+                .iter()
+                .chain(&contents[r.end..])
+                .flat_map(|turn| part_ids(turn, "functionCall"))
+                .collect();
+            let outer_results: HashSet<&str> = contents[..r.start]
+                .iter()
+                .chain(&contents[r.end..])
+                .flat_map(|turn| part_ids(turn, "functionResponse"))
+                .collect();
+            let inside_calls: HashSet<&str> = contents[r.start..r.end]
+                .iter()
+                .flat_map(|turn| part_ids(turn, "functionCall"))
+                .collect();
+            let inside_results: HashSet<&str> = contents[r.start..r.end]
+                .iter()
+                .flat_map(|turn| part_ids(turn, "functionResponse"))
+                .collect();
+
+            let mut cur_start: Option<usize> = None;
+            for (offset, turn) in contents[r.clone()].iter().enumerate() {
+                let idx = r.start + offset;
+                let straddles = part_ids(turn, "functionCall")
+                    .into_iter()
+                    .any(|id| !inside_results.contains(id) && outer_results.contains(id))
+                    || part_ids(turn, "functionResponse")
+                        .into_iter()
+                        .any(|id| !inside_calls.contains(id) && outer_calls.contains(id));
+                match (straddles, cur_start) {
+                    (false, None) => cur_start = Some(idx),
+                    (true, Some(first)) => {
+                        next.push(first..idx);
+                        cur_start = None;
+                        changed = true;
+                    }
+                    (true, None) => changed = true,
+                    (false, Some(_)) => {}
+                }
+            }
+            if let Some(first) = cur_start {
+                next.push(first..r.end);
+            }
+        }
+        sub_runs = next;
+        if !changed {
+            return sub_runs;
+        }
+    }
 }
 
 /// Index of the latest message the user typed, the one no fold may include.
@@ -1442,6 +1512,34 @@ mod tests {
         ];
         assert_eq!(foldable_runs(&contents, 6), vec![2..4, 5..6]);
         assert!(foldable_runs(&contents, 1).is_empty());
+    }
+
+    #[test]
+    fn foldable_runs_trim_and_split_around_straddling_tool_pairs() {
+        let contents = vec![
+            json!({"role": "user", "parts": [{"text": "first"}]}),
+            json!({"role": "model", "parts": [{"functionCall": {"id": "c1", "name": "read", "args": {}}}]}),
+            json!({"role": "model", "parts": [{"functionCall": {"id": "c2", "name": "read", "args": {}}}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "c1", "name": "read", "response": {}}}]}),
+            json!({"role": "model", "parts": [{"text": "note"}]}),
+            json!({"role": "user", "parts": [{"text": "later"}]}),
+            json!({"role": "user", "parts": [{"text": "<system-reminder>r</system-reminder>"}]}),
+            json!({"role": "user", "parts": [{"functionResponse": {"id": "c2", "name": "read", "response": {}}}]}),
+            json!({"role": "user", "parts": [{"text": "latest"}]}),
+        ];
+        // Turn 2 (c2) pairs across the reminder at 6 with turn 7: drop turn 2, then turns 1 and 3
+        // also straddle the gap around turn 2 so only the clean suffix 4..6 remains.
+        let runs = foldable_runs(&contents, 8);
+        assert_eq!(runs, vec![4..6]);
+        for run in runs {
+            let call = CompressCall {
+                start: run.start,
+                end: run.end,
+                summary: "kept".into(),
+                topic: None,
+            };
+            assert_eq!(split_pair(&call, &contents), None);
+        }
     }
 
     #[test]

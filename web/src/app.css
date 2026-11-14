@@ -378,9 +378,10 @@
 
   /* A long key or URL wraps instead of widening the answer; code and tables scroll instead. */
   .md {
+    min-width: 0;
+    max-width: 100%;
     overflow-wrap: anywhere;
   }
-
   .md pre,
   .md table {
     overflow-wrap: normal;
@@ -398,6 +399,7 @@
   }
 
   .md pre {
+    max-width: 100%;
     overflow-x: auto;
     border: 1px solid var(--border);
     border-radius: 10px;
@@ -512,17 +514,53 @@
   /* Files a text answer points at stack below it, so they never split a sentence. */
   .md-files {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 6px;
+    min-width: 0;
+    max-width: 100%;
     margin-top: 0.6em;
   }
 
+  .md-files-group {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-1);
+  }
+
+  .md-files-group > summary {
+    cursor: pointer;
+    padding: 6px 12px;
+    color: var(--fg-2);
+    font: 12.5px var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .md-files-list {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    min-width: 0;
+    padding: 6px;
+    border-top: 1px solid var(--border);
+  }
+
   .md-files > .md-file,
-  .md-files > .md-frame {
+  .md-files > .md-frame,
+  .md-files-list > .md-file,
+  .md-files-list > .md-frame {
     margin: 0;
   }
 
   /* Files an answer points at: a text file opens in a disclosure, an HTML page in a frame. */
   .md-file {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
     margin: 0.6em 0;
     border: 1px solid var(--border);
     border-radius: 10px;
@@ -534,9 +572,30 @@
     padding: 6px 12px;
     color: var(--fg-2);
     font: 12.5px var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .md-file-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    margin-right: 6px;
+    vertical-align: -2.5px;
+    flex-shrink: 0;
+  }
+
+  .md-file-icon > svg {
+    display: block;
+    width: 100%;
+    height: 100%;
   }
 
   .md-file > pre {
+    max-width: 100%;
     max-height: 360px;
     margin: 0;
     overflow: auto;
@@ -545,6 +604,7 @@
     border-radius: 0 0 10px 10px;
     font: 12px/1.5 var(--font-mono);
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .md-frame {
@@ -561,6 +621,7 @@
   /* A wide table scrolls sideways inside the frame instead of squeezing its columns thin. The
      table keeps its content width, so a phone shows a real table sliding under the card's edge. */
   .md-table {
+    max-width: 100%;
     overflow-x: auto;
     overscroll-behavior-x: contain;
     -webkit-overflow-scrolling: touch;

@@ -152,8 +152,15 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
 
                     let loaded = match resume.as_deref() {
                         Some(token) => {
-                            try_load(&connection, token, &cwd, mcp_servers.clone(), &replaying)
-                                .await
+                            try_load(
+                                &connection,
+                                token,
+                                &cwd,
+                                mcp_servers.clone(),
+                                meta.clone(),
+                                &replaying,
+                            )
+                            .await
                         }
                         None => None,
                     };
@@ -173,8 +180,9 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
                             true,
                         ),
                         None => {
-                            let mut request = NewSessionRequest::new(&cwd).mcp_servers(mcp_servers);
-                            request.meta = meta;
+                            let mut request =
+                                NewSessionRequest::new(&cwd).mcp_servers(mcp_servers.clone());
+                            request.meta = meta.clone();
                             let started = connection
                                 .build_session_from(request)
                                 .block_task()
@@ -252,10 +260,10 @@ pub async fn start(launch: AcpLaunch, session_id: &str) -> Result<AcpSession, Ha
                                 ))?;
                             }
                             Command::Resume(token) => {
-                                connection
-                                    .send_request(LoadSessionRequest::new(token, &cwd))
-                                    .block_task()
-                                    .await?;
+                                let mut request = LoadSessionRequest::new(token, &cwd)
+                                    .mcp_servers(mcp_servers.clone());
+                                request.meta = meta.clone();
+                                connection.send_request(request).block_task().await?;
                             }
                             Command::Forget(token) => {
                                 connection
@@ -347,13 +355,13 @@ async fn try_load(
     token: &str,
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
+    meta: Option<serde_json::Map<String, serde_json::Value>>,
     replaying: &AtomicBool,
 ) -> Option<serde_json::Value> {
     replaying.store(true, Ordering::SeqCst);
-    let loaded = connection
-        .send_request(LoadSessionRequest::new(token.to_string(), cwd).mcp_servers(mcp_servers))
-        .block_task()
-        .await;
+    let mut request = LoadSessionRequest::new(token.to_string(), cwd).mcp_servers(mcp_servers);
+    request.meta = meta;
+    let loaded = connection.send_request(request).block_task().await;
     replaying.store(false, Ordering::SeqCst);
     let response = loaded.ok()?;
     Some(serde_json::to_value(&response.config_options).unwrap_or_default())

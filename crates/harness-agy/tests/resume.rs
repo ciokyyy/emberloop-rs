@@ -18,6 +18,7 @@ while IFS= read -r line; do
     *'"session/new"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"sess-new"}}\n' "$id";;
     *'"session/load"'*)
+      printf '%s\n' "$line" >> "$0.loads"
       case "$line" in
         *sess-old*)
           printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-old","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"OLD"}}}}\n'
@@ -114,4 +115,29 @@ async fn a_first_run_has_a_token_to_store() {
 
     assert!(!session.resumed());
     assert_eq!(session.resume_token().as_deref(), Some("sess-new"));
+}
+
+#[tokio::test]
+async fn a_loaded_session_forwards_antigravity_meta_and_mcp_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("agy");
+    fake_server(&bin);
+    let harness = AgyHarness::new(&bin, dir.path().join("home"));
+    let mut w = wiring(&dir.path().join("work"), Some("sess-old"));
+    w.mcp_command = Some(vec!["el-mcp".into(), "--root".into(), "/w".into()]);
+
+    let session = harness.spawn("s1", w).await.unwrap();
+    assert!(session.resumed());
+
+    let loaded = std::fs::read_to_string(dir.path().join("agy.loads")).unwrap();
+    let req: serde_json::Value = serde_json::from_str(loaded.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        req["params"]["_meta"]["antigravity"]["mcpMaxOutputBytes"],
+        i32::MAX
+    );
+    assert_eq!(
+        req["params"]["_meta"]["antigravity"]["eagerMcpServers"],
+        serde_json::json!(["el"])
+    );
+    assert_eq!(req["params"]["mcpServers"][0]["name"], "el");
 }

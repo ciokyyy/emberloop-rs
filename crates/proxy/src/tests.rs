@@ -486,6 +486,7 @@ async fn reviewer_prompts_are_pinned_and_edit_is_removed_on_the_model_wire() {
         role: "spec".into(),
         ticket_path: "ticket.md".into(),
         starting_point: "abc123".into(),
+        tier: None,
     });
     fixture.sessions.save(&meta).await.unwrap();
     let mut request = body(conversation());
@@ -506,6 +507,71 @@ async fn reviewer_prompts_are_pinned_and_edit_is_removed_on_the_model_wire() {
     assert!(!names.contains("mcp__el__edit"));
     assert!(names.contains("bash"));
     assert!(names.contains("write"));
+}
+
+#[tokio::test]
+async fn worker_subagents_keep_edit_and_do_not_receive_reviewer_prompts() {
+    let fixture = fixture().await;
+    let mut meta = fixture.sessions.get("ses_1").await.unwrap();
+    meta.reviewer = Some(store::sessions::ReviewerAssignment {
+        parent_id: "parent".into(),
+        role: "worker".into(),
+        ticket_path: String::new(),
+        starting_point: String::new(),
+        tier: None,
+    });
+    fixture.sessions.save(&meta).await.unwrap();
+    let mut request = body(conversation());
+    request["tools"] = json!([{"functionDeclarations": [{"name":"mcp__el__edit"},{"name":"bash"},{"name":"write"}]}]);
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        request,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let upstream = fixture.fake.body(0);
+    let system = upstream["systemInstruction"].to_string();
+    assert!(!system.contains("# Spec reviewer"));
+    assert!(!system.contains("# Standards reviewer"));
+    let names = upstream["tools"].to_string();
+    assert!(names.contains("mcp__el__edit"));
+    assert!(names.contains("bash"));
+    assert!(names.contains("write"));
+}
+
+#[tokio::test]
+async fn scout_subagents_drop_edit_and_write_and_do_not_receive_reviewer_prompts() {
+    let fixture = fixture().await;
+    let mut meta = fixture.sessions.get("ses_1").await.unwrap();
+    meta.reviewer = Some(store::sessions::ReviewerAssignment {
+        parent_id: "parent".into(),
+        role: "scout".into(),
+        ticket_path: String::new(),
+        starting_point: String::new(),
+        tier: None,
+    });
+    fixture.sessions.save(&meta).await.unwrap();
+    let mut request = body(conversation());
+    request["tools"] = json!([{"functionDeclarations": [{"name":"mcp__el__edit"},{"name":"mcp__el__write"},{"name":"bash"},{"name":"execute"}]}]);
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        request,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let upstream = fixture.fake.body(0);
+    let system = upstream["systemInstruction"].to_string();
+    assert!(!system.contains("# Spec reviewer"));
+    assert!(!system.contains("# Standards reviewer"));
+    let names = upstream["tools"].to_string();
+    assert!(!names.contains("mcp__el__edit"));
+    assert!(!names.contains("mcp__el__write"));
+    assert!(names.contains("bash"));
+    assert!(names.contains("execute"));
 }
 
 #[tokio::test]
@@ -2901,6 +2967,69 @@ fn compress_args_name_the_range_that_is_malformed() {
     assert!(parse_compress_calls(&json!({"ranges": []})).is_err());
     assert!(parse_compress_calls(&json!({"ranges": "nope"})).is_err());
     assert!(parse_compress_calls(&json!({})).is_err());
+}
+
+#[test]
+fn compress_empty_args_hint_at_cut_stream() {
+    let error = parse_compress_calls(&json!({})).unwrap_err();
+    assert!(
+        error.contains("empty") && error.contains("re-issue"),
+        "{error}"
+    );
+}
+
+#[test]
+fn compress_batch_checks_300_char_floor_across_combined_summaries() {
+    let long = "x".repeat(295);
+    let ok = parse_compress_calls(&json!({
+        "ranges": [
+            {"start": 0, "end": 8, "summary": "short"},
+            {"start": 8, "end": 10, "summary": long}
+        ]
+    }));
+    assert!(ok.is_ok(), "{ok:?}");
+
+    let short = parse_compress_calls(&json!({
+        "ranges": [
+            {"start": 0, "end": 4, "summary": "a".repeat(100)},
+            {"start": 4, "end": 8, "summary": "b".repeat(100)}
+        ]
+    }))
+    .unwrap_err();
+    assert!(short.contains("summary too short"), "{short}");
+}
+
+#[test]
+fn compress_guard_collapses_repeat_failures_and_resets_on_ok() {
+    let mut guard = CompressGuard::default();
+    assert_eq!(
+        guard.observe("compress", Err("bad range".into())),
+        Err("bad range".into())
+    );
+    let repeat = guard
+        .observe("compress", Err("bad range".into()))
+        .unwrap_err();
+    assert!(
+        repeat.contains("2x") && repeat.contains("Stop retrying"),
+        "{repeat}"
+    );
+    let different = guard.observe("compress", Err("other".into())).unwrap_err();
+    assert!(
+        different.contains("3x") && different.contains("stop calling compress"),
+        "{different}"
+    );
+    assert_eq!(
+        guard.observe("read", Err("enoent".into())),
+        Err("enoent".into())
+    );
+    assert_eq!(
+        guard.observe("compress", Ok("folded".into())),
+        Ok("folded".into())
+    );
+    assert_eq!(
+        guard.observe("compress", Err("bad range".into())),
+        Err("bad range".into())
+    );
 }
 
 #[tokio::test]

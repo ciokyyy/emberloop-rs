@@ -2,7 +2,7 @@
 
 ## Reviewer subagents
 
-The Session runtime appends its pinned `reviewer.spec` or `reviewer.standards` instructions to the frozen catalog. `wire::remove_edit_tool` removes only the edit declaration across Google, Anthropic, Chat Completions and Responses tool shapes, independently of compression settings. Harnesses never compose the reviewer system prompt.
+`SessionRuntime.subagent_role` tracks the subagent role once per runtime. For `spec` and `standards` reviewers (`emberloop_core::steer::is_reviewer_role`), the runtime appends its pinned `reviewer.spec` or `reviewer.standards` instructions to the frozen catalog and `wire::remove_edit_tool` removes only `edit` across Google, Anthropic, Chat Completions and Responses tool shapes, intentionally leaving `write` available for non-source artifacts/specs. For `scout` subagents, `wire::remove_edit_tool` and `wire::remove_write_tool` strip both `edit` and `write` declarations with no reviewer brief appended. Non-reviewer `worker` subagents keep `edit` and `write` and receive no reviewer brief. Harnesses never compose the reviewer system prompt.
 
 
 ## Purpose

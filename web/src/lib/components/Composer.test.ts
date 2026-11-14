@@ -19,6 +19,20 @@ describe('Composer attachments', () => {
     await waitFor(() => expect(screen.queryByAltText('screen.png')).toBeNull());
   });
 
+  it('clears text and attachments immediately while send is still in flight', async () => {
+    let release!: () => void;
+    const onsubmit = vi.fn(() => new Promise<void>((resolve) => { release = resolve; }));
+    const view = setup({ onsubmit });
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: 'queued text' } });
+    await fireEvent.change(view.container.querySelector('input[type=file]')!, { target: { files: [image()] } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(box.value).toBe('');
+    expect(screen.queryByAltText('screen.png')).toBeNull();
+    release();
+    await waitFor(() => expect(onsubmit).toHaveBeenCalledWith('queued text', [expect.any(File)]));
+  });
+
   it('keeps images and draft on failure', async () => {
     const view = setup({ onsubmit: vi.fn().mockRejectedValue(new Error('Upload failed')) });
     await fireEvent.change(view.container.querySelector('input[type=file]')!, { target: { files: [image()] } });

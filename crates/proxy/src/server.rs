@@ -200,7 +200,7 @@ struct SessionRuntime {
     nudge_file: std::path::PathBuf,
     /// Frozen skill catalog and pinned reviewer instructions, read once per Session runtime.
     catalog: String,
-    reviewer: bool,
+    subagent_role: Option<String>,
     /// Set by an emergency nudge; while set, every outgoing request truncates its older large
     /// results, so the truncated prefix stays byte-identical. Cleared by a fold or a reset.
     /// In memory only: a restarted proxy starts clear.
@@ -234,7 +234,7 @@ impl SessionRuntime {
             nudge: Mutex::new(nudge::load(&nudge_file)),
             nudge_file,
             catalog,
-            reviewer: false,
+            subagent_role: None,
             splices: Mutex::new(SpliceStore::open(splices_file)),
             ctx: Mutex::new(ctx),
             compressor: Mutex::new(Box::new(
@@ -382,16 +382,18 @@ impl ProxyState {
         let splices = self.inner.data_root.session_splices_file(session_id);
         let mut runtime = SessionRuntime::new(pins, spill, splices)?;
         if let Some(reviewer) = &meta.reviewer {
-            runtime.reviewer = true;
-            let id = if reviewer.role == "spec" {
-                prompts::REVIEWER_SPEC
-            } else {
-                prompts::REVIEWER_STANDARDS
-            };
-            runtime.catalog.push_str("\n\n");
-            runtime
-                .catalog
-                .push_str(runtime.pins.text(id).unwrap_or_default());
+            runtime.subagent_role = Some(reviewer.role.clone());
+            if reviewer.is_reviewer() {
+                let id = if reviewer.role == "spec" {
+                    prompts::REVIEWER_SPEC
+                } else {
+                    prompts::REVIEWER_STANDARDS
+                };
+                runtime.catalog.push_str("\n\n");
+                runtime
+                    .catalog
+                    .push_str(runtime.pins.text(id).unwrap_or_default());
+            }
         }
         let runtime = Arc::new(runtime);
 
@@ -583,6 +585,7 @@ async fn handle_generation(
     dump_request(session_id, "out", &request);
     let url = upstream_url(base, path, query);
     let sent = outgoing_body(&runtime, wire, &request);
+    let call_started = std::time::Instant::now();
     let response = match send_stream(
         &state.inner.client,
         &url,
@@ -630,6 +633,7 @@ async fn handle_generation(
             response,
             settings,
             window,
+            call_started,
         );
         sse.nudge_text = nudge_text;
         return Ok(streaming_response(sse));
@@ -646,6 +650,7 @@ async fn handle_generation(
         (status, content_type, first_bytes),
         settings,
         window,
+        call_started,
     )
     .await
 }
@@ -695,13 +700,16 @@ async fn buffered_generation(
     first: (StatusCode, Option<String>, Bytes),
     settings: Settings,
     window: usize,
+    mut round_started: std::time::Instant,
 ) -> Result<Response<Body>, ProxyError> {
     let mut final_response = None;
     let mut current = Some(first);
+    let mut compress_guard = CompressGuard::default();
     for _ in 0..MAX_TOOL_ROUNDS {
         let (status, content_type, bytes) = match current.take() {
             Some(response) => response,
             None => {
+                round_started = std::time::Instant::now();
                 let sent = outgoing_body(&runtime, wire, &request);
                 send_generation(
                     &state.inner.client,
@@ -731,6 +739,7 @@ async fn buffered_generation(
             &assistant,
             &settings,
             window,
+            &mut compress_guard,
         )?;
         store_proxy_splice(&runtime, &turns, after)?;
     }
@@ -739,7 +748,17 @@ async fn buffered_generation(
         return Err(ProxyError::ToolRoundLimit);
     };
     let sent = outgoing_body(&runtime, wire, &request);
-    publish_usage(state, session_id, &runtime, &bytes, wire, &sent).await;
+    let duration_ms = round_started.elapsed().as_millis() as u64;
+    publish_usage(
+        state,
+        session_id,
+        &runtime,
+        &bytes,
+        wire,
+        &sent,
+        Some(duration_ms),
+    )
+    .await;
     Ok(response_with(status, content_type.as_deref(), bytes))
 }
 
@@ -773,8 +792,16 @@ fn prepare_request(
 ) -> Result<PrepareOutcome, ProxyError> {
     let request = request_body_mut(request);
 
-    if runtime.reviewer {
-        crate::wire::remove_edit_tool(request);
+    match runtime.subagent_role.as_deref() {
+        Some(role) if emberloop_core::steer::is_reviewer_role(role) => {
+            // Reviewers keep write (non-source reports/notes if needed) and drop edit.
+            crate::wire::remove_edit_tool(request);
+        }
+        Some("scout") => {
+            crate::wire::remove_edit_tool(request);
+            crate::wire::remove_write_tool(request);
+        }
+        _ => {}
     }
     if settings.proxy_compression && settings.inject_tool {
         inject_tools_for_wire(wire, request, &runtime.pins);
@@ -1407,6 +1434,7 @@ fn run_proxy_tool(
     assistant: &[Value],
     settings: &Settings,
     window: usize,
+    compress_guard: &mut CompressGuard,
 ) -> Result<(Vec<Value>, Option<String>), ProxyError> {
     let request = request_body_mut(request);
     let mut contents = extract_core_contents(wire, request).ok_or(ProxyError::NoContents)?;
@@ -1420,6 +1448,7 @@ fn run_proxy_tool(
         &call,
         settings,
         window,
+        compress_guard,
     );
     let turns = proxy_turns(
         wire,
@@ -1442,6 +1471,46 @@ fn splice_anchor(contents: &[Value]) -> Option<String> {
         .and_then(turn_key)
 }
 
+#[derive(Default)]
+struct CompressGuard {
+    failures: usize,
+    last_error: Option<String>,
+}
+
+impl CompressGuard {
+    fn observe(&mut self, name: &str, result: Result<String, String>) -> Result<String, String> {
+        if name != "compress" {
+            return result;
+        }
+        match result {
+            Ok(text) => {
+                self.failures = 0;
+                self.last_error = None;
+                Ok(text)
+            }
+            Err(error) => {
+                self.failures += 1;
+                let repeated = self.last_error.as_deref() == Some(error.as_str());
+                self.last_error = Some(error.clone());
+                if repeated {
+                    Err(format!(
+                        "compress failed again ({}x) with the same error: {error}. Stop retrying these arguments and continue your task.",
+                        self.failures
+                    ))
+                } else if self.failures >= 2 {
+                    Err(format!(
+                        "{error} (compress failed {}x this turn; stop calling compress and continue your task if ranges cannot fold)",
+                        self.failures
+                    ))
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_by_name(
     state: &ProxyState,
     session_id: &str,
@@ -1450,8 +1519,13 @@ fn execute_by_name(
     call: &ProxyCall,
     settings: &Settings,
     window: usize,
+    compress_guard: &mut CompressGuard,
 ) -> String {
-    match execute_tool(runtime, contents, call, settings, window) {
+    let result = compress_guard.observe(
+        &call.name,
+        execute_tool(runtime, contents, call, settings, window),
+    );
+    match result {
         Ok(text) => {
             if matches!(call.name.as_str(), "compress" | "decompress") {
                 publish_compression_event(&state.inner.events, session_id, runtime, call, &text);
@@ -1698,34 +1772,45 @@ fn refuse_cache_costly_folds(contents: &[Value], calls: &[CompressCall]) -> Resu
 /// `compress` takes `ranges: [{start, end, summary, topic?}, ...]`; the single-range form
 /// (`start`, `end`, `summary`, `topic` at the top level) is still accepted.
 fn parse_compress_calls(args: &Value) -> Result<Vec<CompressCall>, String> {
-    let Some(ranges) = args.get("ranges") else {
-        return parse_compress_range(args).map(|call| vec![call]);
-    };
-    let ranges = ranges
-        .as_array()
-        .ok_or_else(|| "ranges must be an array".to_string())?;
-    if ranges.is_empty() {
-        return Err("ranges must not be empty".into());
+    if args.as_object().is_some_and(serde_json::Map::is_empty) {
+        return Err(
+            "compress arguments were empty (the upstream stream may have been cut); re-issue compress with ranges"
+                .into(),
+        );
     }
-    ranges
-        .iter()
-        .enumerate()
-        .map(|(index, range)| {
-            parse_compress_range(range).map_err(|error| format!("range {}: {error}", index + 1))
-        })
-        .collect()
+    let calls = match args.get("ranges") {
+        None => vec![parse_compress_range(args)?],
+        Some(ranges) => {
+            let ranges = ranges
+                .as_array()
+                .ok_or_else(|| "ranges must be an array".to_string())?;
+            if ranges.is_empty() {
+                return Err("ranges must not be empty".into());
+            }
+            ranges
+                .iter()
+                .enumerate()
+                .map(|(index, range)| {
+                    parse_compress_range(range)
+                        .map_err(|error| format!("range {}: {error}", index + 1))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    };
+    let total_turns: usize = calls.iter().map(|c| c.end.saturating_sub(c.start)).sum();
+    let total_summary_len: usize = calls.iter().map(|c| c.summary.trim().len()).sum();
+    // A tiny summary over a big range loses the work; the model then re-reads.
+    if total_turns > 6 && total_summary_len < 300 {
+        return Err(format!(
+            "summary too short for {total_turns} turns: write at least 300 characters with paths, commands, decisions and open items"
+        ));
+    }
+    Ok(calls)
 }
 
 fn parse_compress_range(args: &Value) -> Result<CompressCall, String> {
     let (start, end) = (number_arg(args, "start")?, number_arg(args, "end")?);
     let summary = string_arg(args, "summary")?;
-    // A tiny summary over a big range loses the work; the model then re-reads.
-    if end.saturating_sub(start) > 6 && summary.trim().len() < 300 {
-        return Err(format!(
-            "summary too short for {} turns: write at least 300 characters with paths, commands, decisions and open items",
-            end - start
-        ));
-    }
     Ok(CompressCall {
         start,
         end,
@@ -1958,6 +2043,7 @@ async fn publish_usage(
     bytes: &Bytes,
     wire: WireKind,
     request: &Value,
+    duration_ms: Option<u64>,
 ) {
     let Some(usage) = meter::extract_usage(bytes) else {
         return;
@@ -1970,6 +2056,7 @@ async fn publish_usage(
         session_id,
         usage,
         crate::context::ContextBreakdown::from_request(wire, request),
+        duration_ms,
     )
     .await;
 }
@@ -1981,6 +2068,7 @@ async fn publish_usage_event(
     session_id: &str,
     usage: meter::Usage,
     breakdown: crate::context::ContextBreakdown,
+    duration_ms: Option<u64>,
 ) {
     let window = state.context_window(session_id).await;
     let mut data = json!({
@@ -1992,6 +2080,9 @@ async fn publish_usage_event(
     });
     if let Some(window) = window {
         data["contextWindow"] = json!(window);
+    }
+    if let Some(ms) = duration_ms {
+        data["durationMs"] = json!(ms);
     }
     state
         .inner
@@ -2113,6 +2204,8 @@ struct SseState {
     nudge_text: Option<String>,
     settings: Settings,
     window: usize,
+    compress_guard: CompressGuard,
+    call_started: std::time::Instant,
 }
 
 #[derive(Debug, Default)]
@@ -2136,6 +2229,7 @@ impl SseState {
         response: reqwest::Response,
         settings: Settings,
         window: usize,
+        call_started: std::time::Instant,
     ) -> Self {
         Self {
             proxy,
@@ -2164,6 +2258,8 @@ impl SseState {
             nudge_text: None,
             settings,
             window,
+            compress_guard: CompressGuard::default(),
+            call_started,
         }
     }
 
@@ -2200,12 +2296,14 @@ impl SseState {
                 self.wire,
                 &outgoing_body(&self.runtime, self.wire, &self.request),
             ),
+            Some(self.call_started.elapsed().as_millis() as u64),
         )
         .await;
     }
 
     async fn follow_up(&mut self) -> Result<(), ProxyError> {
         let sent = outgoing_body(&self.runtime, self.wire, &self.request);
+        self.call_started = std::time::Instant::now();
         let response = send_stream(
             &self.proxy.inner.client,
             &self.url,
@@ -2539,6 +2637,7 @@ impl SseState {
             &call,
             &self.settings,
             self.window,
+            &mut self.compress_guard,
         );
         write_core_contents(self.wire, req_body, &contents);
         self.completed.push(CompletedCall { call, text });

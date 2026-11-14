@@ -57,6 +57,9 @@ impl DataRoot {
     pub fn session_spill_dir(&self, session_id: &str) -> PathBuf {
         self.session_dir(session_id).join("spill")
     }
+    pub fn session_exec_dir(&self, session_id: &str) -> PathBuf {
+        self.session_dir(session_id).join("exec")
+    }
     pub fn session_splices_file(&self, session_id: &str) -> PathBuf {
         self.session_dir(session_id).join("splices.jsonl")
     }

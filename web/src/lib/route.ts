@@ -1,7 +1,7 @@
 // URL grammar: `/p/<project>/s/<session>` for a Session and its `/cache` page, `/p/<project>/<view>`
 // for Settings and Providers, and the bare `/<view>` when there is no Project to hang them on yet.
 
-export type View = 'session' | 'new' | 'settings' | 'providers' | 'usage' | 'skills' | 'skill' | 'cache' | 'design';
+export type View = 'session' | 'new' | 'settings' | 'providers' | 'usage' | 'status' | 'skills' | 'skill' | 'cache' | 'design';
 
 /** A page hung on a Project, as opposed to a Session, its cache page or the new-Session draft. */
 export type Page = Exclude<View, 'session' | 'new' | 'cache' | 'skill'>;
@@ -31,6 +31,7 @@ export function viewOf(routeId: string | null | undefined): View {
   if (routeId?.endsWith('/settings')) return 'settings';
   if (routeId?.endsWith('/providers')) return 'providers';
   if (routeId?.endsWith('/usage')) return 'usage';
+  if (routeId?.endsWith('/status')) return 'status';
   if (routeId?.endsWith('/skills/[name]')) return 'skill';
   if (routeId?.endsWith('/skills')) return 'skills';
   if (routeId?.endsWith('/design')) return 'design';

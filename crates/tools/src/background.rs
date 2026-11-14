@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -165,7 +165,7 @@ impl BackgroundManager {
         let mut out = String::new();
         for id in ids {
             if let Some(entry) = entries.get_mut(&id) {
-                let status = refresh_status(entry);
+                let status = refresh_status(entry, &self.dir, &id);
                 out.push_str(&format!(
                     "{id}  {status}  pid {}  {}\n",
                     entry.pid,
@@ -215,6 +215,7 @@ impl BackgroundManager {
             if !identity_matches(pid, &entry_start, &entry_boot) {
                 entry.lost = true;
                 entry.status = Some("lost".to_string());
+                remove_meta(&self.dir, id);
                 return Ok(format!("lost (pid {pid})\n"));
             }
             entry.adopted = false;
@@ -233,6 +234,7 @@ impl BackgroundManager {
                 let label = status_label(&status);
                 entry.child = None;
                 entry.status = Some(label.clone());
+                mark_notice_emitted(&self.dir, id);
                 Ok(format!("{}\n", wait_reply(&label)))
             }
             Ok(Err(e)) => Err(ToolError::msg(format!("wait {id:?}: {e}"))),
@@ -320,13 +322,14 @@ fn read_log(path: &Path, offset: u64) -> ToolResult<LogChunk> {
     })
 }
 
-fn refresh_status(entry: &mut Entry) -> String {
+fn refresh_status(entry: &mut Entry, dir: &Path, id: &str) -> String {
     if let Some(child) = entry.child.as_mut() {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let label = status_label(&status);
                 entry.child = None;
                 entry.status = Some(label.clone());
+                mark_notice_emitted(dir, id);
                 label
             }
             Ok(None) => "running".to_string(),
@@ -338,6 +341,7 @@ fn refresh_status(entry: &mut Entry) -> String {
         if !identity_matches(entry.pid, &entry.start_time, &entry.boot_id) {
             entry.lost = true;
             entry.status = Some("lost".to_string());
+            mark_notice_emitted(dir, id);
             "lost".to_string()
         } else if process_alive(entry.pid) {
             "running".to_string()
@@ -394,19 +398,39 @@ fn remove_meta(dir: &Path, id: &str) {
     let _ = fs::remove_file(meta_path(dir, id));
 }
 
-fn load_adopted(dir: &Path) -> (HashMap<String, Entry>, Vec<String>) {
-    let mut entries = HashMap::new();
-    let mut notices = Vec::new();
-    let current_boot = boot_id();
-    let Ok(items) = fs::read_dir(dir) else {
-        return (entries, notices);
+fn mark_notice_emitted(dir: &Path, id: &str) {
+    let path = meta_path(dir, id);
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
     };
+    let Ok(mut meta) = serde_json::from_str::<Meta>(&text) else {
+        return;
+    };
+    if !meta.notice_emitted {
+        meta.notice_emitted = true;
+        write_meta(dir, id, &meta);
+    }
+}
+
+fn exit_notice(id: &str, log: &Path) -> String {
+    format!(
+        "background {id} exited (code unknown)\nlog: {}",
+        log.display()
+    )
+}
+
+fn read_meta_entries(dir: &Path) -> Vec<(String, Meta, PathBuf)> {
+    let Ok(items) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
     for item in items.flatten() {
         let path = item.path();
-        let Some(id) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let Some(id) = id.strip_suffix(".json") else {
+        let Some(id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".json"))
+        else {
             continue;
         };
         if !id.starts_with("bg_") || valid_id(id).is_err() {
@@ -415,31 +439,67 @@ fn load_adopted(dir: &Path) -> (HashMap<String, Entry>, Vec<String>) {
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(mut meta) = serde_json::from_str::<Meta>(&text) else {
+        let Ok(meta) = serde_json::from_str::<Meta>(&text) else {
             continue;
         };
         let log = dir.join(format!("{id}.log"));
         if meta.pid == 0 || !log.exists() {
             continue;
         }
-        let matches = meta.boot_id == current_boot
-            && !meta.start_time.is_empty()
-            && proc_start_time(meta.pid).as_deref() == Some(meta.start_time.as_str());
+        found.push((id.to_string(), meta, log));
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+}
+
+/// Collects exit notices for background jobs in `dir` once. `watched` lists job IDs
+/// already seen running in this daemon process, so a job reaped by PID 1 still notifies.
+pub fn collect_notices_for(dir: &Path, watched: &HashSet<String>) -> Vec<String> {
+    let mut notices = Vec::new();
+    for (id, mut meta, log) in read_meta_entries(dir) {
+        if meta.notice_emitted {
+            continue;
+        }
+        let matches = identity_matches(meta.pid, &meta.start_time, &meta.boot_id);
+        let alive = matches && process_alive(meta.pid);
+        if (matches && !alive) || (!matches && watched.contains(&id)) {
+            notices.push(exit_notice(&id, &log));
+            meta.notice_emitted = true;
+            write_meta(dir, &id, &meta);
+        }
+    }
+    notices
+}
+
+/// Collects exit notices for exited (zombie) background jobs in `dir` once.
+pub fn collect_notices(dir: &Path) -> Vec<String> {
+    collect_notices_for(dir, &HashSet::new())
+}
+
+fn load_adopted(dir: &Path) -> (HashMap<String, Entry>, Vec<String>) {
+    let mut entries = HashMap::new();
+    let mut notices = Vec::new();
+    for (id, mut meta, log) in read_meta_entries(dir) {
+        let matches = identity_matches(meta.pid, &meta.start_time, &meta.boot_id);
         let alive = matches && process_alive(meta.pid);
         let (adopted, lost, status) = if matches && alive {
             (true, false, None)
         } else if matches {
             if !meta.notice_emitted {
-                notices.push(format!("background {id} exited (code unknown)"));
+                notices.push(exit_notice(&id, &log));
                 meta.notice_emitted = true;
-                write_meta(dir, id, &meta);
+                write_meta(dir, &id, &meta);
             }
             (false, false, Some("exited (code unknown)".to_string()))
         } else {
+            if !meta.notice_emitted {
+                meta.notice_emitted = true;
+                write_meta(dir, &id, &meta);
+            }
             (false, true, Some("lost".to_string()))
         };
         entries.insert(
-            id.to_string(),
+            id,
             Entry {
                 pid: meta.pid,
                 start_time: meta.start_time,
@@ -464,36 +524,18 @@ fn identity_matches(pid: u32, start_time: &str, boot_id_stored: &str) -> bool {
 /// True while any job recorded in this spill dir is still alive. The daemon asks
 /// before a turn-end reminder, so it never wakes a Session that still waits on a
 /// background command.
+pub fn running_ids(dir: &Path) -> Vec<String> {
+    read_meta_entries(dir)
+        .into_iter()
+        .filter(|(_, meta, _)| {
+            identity_matches(meta.pid, &meta.start_time, &meta.boot_id) && process_alive(meta.pid)
+        })
+        .map(|(id, _, _)| id)
+        .collect()
+}
+
 pub fn any_running(dir: &Path) -> bool {
-    let Ok(items) = fs::read_dir(dir) else {
-        return false;
-    };
-    for item in items.flatten() {
-        let path = item.path();
-        let Some(id) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_suffix(".json"))
-        else {
-            continue;
-        };
-        if !id.starts_with("bg_") || valid_id(id).is_err() {
-            continue;
-        }
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(meta) = serde_json::from_str::<Meta>(&text) else {
-            continue;
-        };
-        if meta.pid == 0 || !dir.join(format!("{id}.log")).exists() {
-            continue;
-        }
-        if identity_matches(meta.pid, &meta.start_time, &meta.boot_id) && process_alive(meta.pid) {
-            return true;
-        }
-    }
-    false
+    !running_ids(dir).is_empty()
 }
 
 fn boot_id() -> String {
@@ -562,4 +604,64 @@ mod tests {
         record(dir.path(), std::process::id());
         assert!(any_running(dir.path()));
     }
+}
+
+#[test]
+fn collect_notices_emits_once_and_skips_unwatched_stale_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let stale = Meta {
+        pid: u32::MAX - 1,
+        start_time: "123".to_string(),
+        boot_id: boot_id(),
+        notice_emitted: false,
+    };
+    fs::write(
+        dir.path().join("bg_stale.json"),
+        serde_json::to_string(&stale).unwrap(),
+    )
+    .unwrap();
+    fs::write(dir.path().join("bg_stale.log"), "").unwrap();
+
+    // Unwatched dead/reaped job never fires spuriously.
+    assert!(collect_notices(dir.path()).is_empty());
+
+    // Watched job whose PID already vanished (e.g. reaped by PID 1) emits once.
+    let watched: HashSet<String> = ["bg_stale".to_string()].into_iter().collect();
+    let notices = collect_notices_for(dir.path(), &watched);
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].contains("bg_stale exited (code unknown)"));
+    assert!(notices[0].contains("bg_stale.log"));
+    assert!(collect_notices_for(dir.path(), &watched).is_empty());
+}
+
+#[test]
+fn collect_notices_catches_zombie_while_parent_holds_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    let start_time = proc_start_time(pid).unwrap();
+    for _ in 0..10_000 {
+        if !process_alive(pid) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let meta = Meta {
+        pid,
+        start_time,
+        boot_id: boot_id(),
+        notice_emitted: false,
+    };
+    fs::write(
+        dir.path().join("bg_z.json"),
+        serde_json::to_string(&meta).unwrap(),
+    )
+    .unwrap();
+    fs::write(dir.path().join("bg_z.log"), "done\n").unwrap();
+
+    let notices = collect_notices(dir.path());
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].contains("bg_z exited (code unknown)"));
+    assert!(collect_notices(dir.path()).is_empty());
+    let _ = child.wait();
 }

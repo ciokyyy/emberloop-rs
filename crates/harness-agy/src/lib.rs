@@ -235,12 +235,10 @@ fn mcp_servers(command: Option<Vec<String>>) -> Vec<McpServer> {
             let command = parts.first().cloned()?;
             let args = parts.split_off(1);
             Some(vec![McpServer::Stdio(
-                McpServerStdio::new("el", command)
-                    .args(args)
-                    .env(vec![EnvVariable::new(
-                        "EMBERLOOP_MAX_CALL_SECS",
-                        MAX_CALL_SECS,
-                    )]),
+                McpServerStdio::new("el", command).args(args).env(vec![
+                    EnvVariable::new("EMBERLOOP_MAX_CALL_SECS", MAX_CALL_SECS),
+                    EnvVariable::new("EMBERLOOP_CAPTURE_MCP_OUTPUT", "1"),
+                ]),
             )])
         })
         .unwrap_or_default()
@@ -253,7 +251,8 @@ fn session_meta() -> serde_json::Map<String, serde_json::Value> {
         serde_json::json!({
             "enabledTools": [],
             "eagerMcpServers": ["el"],
-            "mcpMaxOutputBytes": 100000
+            // agy has no boolean off toggle (types.py validates 0 < x <= i32::MAX); max out to keep outputs inline.
+            "mcpMaxOutputBytes": i32::MAX
         }),
     );
     meta
@@ -337,6 +336,17 @@ mod tests {
         let servers = mcp_servers(Some(vec!["emberloop-mcp".into(), "--root".into()]));
         assert!(matches!(servers.as_slice(), [McpServer::Stdio(server)]
             if server.name == "el" && server.args == ["--root"]
-                && server.env.iter().any(|var| var.name == "EMBERLOOP_MAX_CALL_SECS" && var.value == "170")));
+                && server.env.iter().any(|var| var.name == "EMBERLOOP_MAX_CALL_SECS" && var.value == "170")
+                && server.env.iter().any(|var| var.name == "EMBERLOOP_CAPTURE_MCP_OUTPUT" && var.value == "1")));
+    }
+
+    #[test]
+    fn session_meta_maximizes_mcp_inline_output_limit() {
+        let meta = session_meta();
+        assert_eq!(meta["antigravity"]["mcpMaxOutputBytes"], i32::MAX);
+        assert_eq!(
+            meta["antigravity"]["eagerMcpServers"],
+            serde_json::json!(["el"])
+        );
     }
 }

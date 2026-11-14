@@ -143,16 +143,21 @@
       errors = ['This model does not support images. Remove attachments or choose another model.'];
       return;
     }
-    busy = true;
+    const draftText = text;
+    const trimmed = text.trim();
+    const files = attachments.map((item) => item.file);
+    // Clear optimistically right away so slow uploads never leave stale text or previews behind.
+    text = '';
+    clearAttachments();
     errors = [];
     try {
-      await onsubmit(text.trim(), attachments.map((item) => item.file));
-      text = '';
-      clearAttachments();
+      await onsubmit(trimmed, files);
     } catch (error) {
       errors = [error instanceof Error ? error.message : String(error)];
-    } finally {
-      busy = false;
+      if (!text && attachments.length === 0) {
+        text = draftText;
+        attachments = files.map((file) => ({ file, url: URL.createObjectURL(file) }));
+      }
     }
   }
 

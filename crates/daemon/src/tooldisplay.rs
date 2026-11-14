@@ -11,6 +11,7 @@ const MAX_SNAPSHOTS: usize = 200;
 #[derive(Default)]
 pub struct ToolTracker {
     entries: HashMap<String, TrackedTool>,
+    spill_dir: Option<PathBuf>,
 }
 
 struct TrackedTool {
@@ -20,6 +21,13 @@ struct TrackedTool {
 }
 
 impl ToolTracker {
+    pub fn with_spill_dir(spill_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            entries: HashMap::new(),
+            spill_dir: Some(spill_dir.into()),
+        }
+    }
+
     pub fn on_start(
         &mut self,
         id: &str,
@@ -70,10 +78,14 @@ impl ToolTracker {
         &mut self,
         id: &str,
         workdir: &Path,
-    ) -> (Option<String>, Option<Value>, Option<Value>) {
+    ) -> (Option<String>, Option<Value>, Option<Value>, Option<String>) {
         let Some(entry) = self.entries.remove(id) else {
-            return (None, None, None);
+            return (None, None, None, None);
         };
+        let captured_output = self
+            .spill_dir
+            .as_deref()
+            .and_then(|dir| consume_captured_output(dir, &entry.name, &entry.input));
         let mut display = None;
         if let Some((label, before)) = entry.snapshot {
             let abs = resolve_path(&label, workdir);
@@ -86,8 +98,59 @@ impl ToolTracker {
         }
         let name = (!entry.name.is_empty()).then_some(entry.name);
         let input = (!entry.input.as_object().is_some_and(|o| o.is_empty())).then_some(entry.input);
-        (name, input, display)
+        (name, input, display, captured_output)
     }
+}
+
+#[derive(serde::Deserialize)]
+struct CapturedOutput {
+    name: String,
+    args: Value,
+    output: String,
+}
+
+fn normalize_mcp_args(input: &Value) -> Value {
+    let inner = input
+        .get("arguments")
+        .or_else(|| input.get("Arguments"))
+        .unwrap_or(input);
+    let Some(obj) = inner.as_object() else {
+        return inner.clone();
+    };
+    let mut clean = obj.clone();
+    clean.remove("toolAction");
+    clean.remove("toolSummary");
+    Value::Object(clean)
+}
+
+fn consume_captured_output(spill_dir: &Path, name: &str, input: &Value) -> Option<String> {
+    let dir = spill_dir.join("mcp_outputs");
+    let Ok(items) = std::fs::read_dir(&dir) else {
+        return None;
+    };
+    let mut paths: Vec<PathBuf> = items
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
+    let target_name = short_tool_name(name);
+    let target_args = normalize_mcp_args(input);
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_str::<CapturedOutput>(&text) else {
+            continue;
+        };
+        if short_tool_name(&record.name) == target_name
+            && normalize_mcp_args(&record.args) == target_args
+        {
+            let _ = std::fs::remove_file(&path);
+            return Some(record.output);
+        }
+    }
+    None
 }
 
 pub(crate) fn short_tool_name(name: &str) -> &str {
@@ -376,5 +439,64 @@ mod tests {
         assert!(diff.contains("+++ b/src/main.rs"));
         assert!(diff.contains("-old"));
         assert!(diff.contains("+new"));
+    }
+
+    #[test]
+    fn consumes_captured_mcp_outputs_in_fifo_order_by_tool_and_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let out_dir = dir.path().join("mcp_outputs");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(
+            out_dir.join("0001.json"),
+            r#"{"name":"read","args":{"path":"a.rs"},"output":"first-a"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            out_dir.join("0002.json"),
+            r#"{"name":"read","args":{"path":"b.rs"},"output":"first-b"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            out_dir.join("0003.json"),
+            r#"{"name":"read","args":{"path":"a.rs"},"output":"second-a"}"#,
+        )
+        .unwrap();
+
+        let mut tracker = ToolTracker::with_spill_dir(dir.path());
+        tracker.on_start(
+            "c1",
+            "el_read",
+            &json!({"arguments": {"path": "a.rs"}, "path": "a.rs"}),
+            dir.path(),
+        );
+        tracker.on_start(
+            "c2",
+            "el_read",
+            &json!({"arguments": {"path": "b.rs"}}),
+            dir.path(),
+        );
+        tracker.on_start(
+            "c3",
+            "el_read",
+            &json!({"arguments": {"path": "a.rs"}}),
+            dir.path(),
+        );
+        tracker.on_start(
+            "c4",
+            "el_read",
+            &json!({"arguments": {"path": "missing.rs"}}),
+            dir.path(),
+        );
+
+        // Out-of-order finish still resolves each call's own output and FIFO for identical calls.
+        let (_, _, _, out_b) = tracker.on_finish("c2", dir.path());
+        assert_eq!(out_b.as_deref(), Some("first-b"));
+        let (_, _, _, out_a1) = tracker.on_finish("c1", dir.path());
+        assert_eq!(out_a1.as_deref(), Some("first-a"));
+        let (_, _, _, out_a2) = tracker.on_finish("c3", dir.path());
+        assert_eq!(out_a2.as_deref(), Some("second-a"));
+        let (_, _, _, out_missing) = tracker.on_finish("c4", dir.path());
+        assert_eq!(out_missing, None);
+        assert_eq!(std::fs::read_dir(&out_dir).unwrap().count(), 0);
     }
 }
