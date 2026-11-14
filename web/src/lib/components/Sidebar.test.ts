@@ -12,6 +12,7 @@ const base = {
   onrename: vi.fn(),
   ondelete: vi.fn(),
   onsettings: vi.fn(),
+  onstatus: vi.fn(),
   onproviders: vi.fn(),
   onusage: vi.fn()
 };
@@ -166,8 +167,48 @@ it("keeps reviewer children after their parent and opens their own Session", asy
   const session = { projectId: "p", model: "gemini", createdAt: 1, updatedAt: 1 };
   const onselect = vi.fn();
   const view = render(Sidebar, { ...base, onselect, projects: [{ id: "p", name: "P", root: "/p" }], projectId: "p", selectedId: "main",
-    sessions: [{ ...session, id: "child", title: "Spec reviewer", parentId: "main", reviewerRole: "spec", updatedAt: 9 }, { ...session, id: "main", title: "Main" }] });
+    sessions: [
+      { ...session, id: "child", title: "Spec reviewer", parentId: "main", reviewerRole: "spec", updatedAt: 9 },
+      { ...session, id: "w1", title: "Worker", parentId: "main", reviewerRole: "worker", updatedAt: 8 },
+      { ...session, id: "s1", title: "Scout", parentId: "main", reviewerRole: "scout", updatedAt: 7 },
+      { ...session, id: "main", title: "Main" }
+    ] });
   expect(view.container.textContent!.indexOf("Main")).toBeLessThan(view.container.textContent!.indexOf("Spec reviewer"));
+  expect(view.container.textContent!.indexOf("Main")).toBeLessThan(view.container.textContent!.indexOf("Worker"));
+  expect(view.container.textContent!.indexOf("Main")).toBeLessThan(view.container.textContent!.indexOf("Scout"));
   await fireEvent.click(view.getByText("Spec reviewer"));
   expect(onselect).toHaveBeenCalledWith("child");
+  await fireEvent.click(view.getByText("Worker"));
+  expect(onselect).toHaveBeenCalledWith("w1");
+  await fireEvent.click(view.getByText("Scout"));
+  expect(onselect).toHaveBeenCalledWith("s1");
+});
+
+it('opens the More menu with Status and Settings, and closes on Escape', async () => {
+  const onstatus = vi.fn();
+  const onsettings = vi.fn();
+  render(Sidebar, {
+    ...base,
+    onstatus,
+    onsettings,
+    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projectId: 'p',
+    sessions: [],
+    selectedId: null
+  });
+  const moreBtn = screen.getByRole('button', { name: 'More' });
+  await fireEvent.click(moreBtn);
+  expect(screen.getByRole('menuitem', { name: 'Status' })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Settings' })).toBeTruthy();
+  await fireEvent.keyDown(window, { key: 'Escape' });
+  expect(screen.queryByRole('menu')).toBeNull();
+
+  await fireEvent.click(moreBtn);
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Status' }));
+  expect(onstatus).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('menu')).toBeNull();
+
+  await fireEvent.click(moreBtn);
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
+  expect(onsettings).toHaveBeenCalledTimes(1);
 });

@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
@@ -8,6 +5,10 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::Toolbox;
 
@@ -15,6 +16,7 @@ use crate::Toolbox;
 pub struct McpServer {
     toolbox: Arc<Toolbox>,
     descriptions: Arc<HashMap<String, String>>,
+    capture_seq: Arc<AtomicU64>,
 }
 
 impl Clone for McpServer {
@@ -22,6 +24,7 @@ impl Clone for McpServer {
         Self {
             toolbox: Arc::clone(&self.toolbox),
             descriptions: Arc::clone(&self.descriptions),
+            capture_seq: Arc::clone(&self.capture_seq),
         }
     }
 }
@@ -32,6 +35,7 @@ impl McpServer {
         Self {
             toolbox,
             descriptions: Arc::new(default_descriptions()),
+            capture_seq: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -65,17 +69,57 @@ impl McpServer {
             if let Some(found) = crate::read::image(&self.toolbox, &args) {
                 return match found {
                     Ok((mime, data)) => {
+                        self.record_captured_output(name, &args, &format!("[image {mime}]"));
                         CallToolResult::success(vec![ContentBlock::image(data, mime)])
                     }
                     Err(error) => {
-                        CallToolResult::error(vec![ContentBlock::text(error.to_string())])
+                        let msg = error.to_string();
+                        self.record_captured_output(name, &args, &msg);
+                        CallToolResult::error(vec![ContentBlock::text(msg)])
                     }
                 };
             }
         }
         match self.toolbox.call(name, &args).await {
-            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
-            Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
+            Ok(text) => {
+                self.record_captured_output(name, &args, &text);
+                CallToolResult::success(vec![ContentBlock::text(text)])
+            }
+            Err(error) => {
+                let msg = error.to_string();
+                self.record_captured_output(name, &args, &msg);
+                CallToolResult::error(vec![ContentBlock::text(msg)])
+            }
+        }
+    }
+
+    fn record_captured_output(&self, name: &str, args: &Value, output: &str) {
+        if !self.toolbox.capture_mcp_output() {
+            return;
+        }
+        let dir = self.toolbox.spill_dir().join("mcp_outputs");
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let seq = self.capture_seq.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let stem = format!("{millis:016x}_{pid:08x}_{seq:08x}");
+        let tmp = dir.join(format!("{stem}.tmp"));
+        let final_path = dir.join(format!("{stem}.json"));
+        let capped = truncate_utf8(output, MAX_CAPTURED_BYTES);
+        let payload = json!({
+            "name": name,
+            "args": strip_meta_keys(args),
+            "output": capped,
+        });
+        if let Ok(bytes) = serde_json::to_vec(&payload) {
+            if std::fs::write(&tmp, bytes).is_ok() {
+                let _ = std::fs::rename(&tmp, &final_path);
+            }
         }
     }
 
@@ -128,17 +172,19 @@ fn tool_specs() -> Vec<Value> {
         {
             "name": "spawn",
             "inputSchema": {"type": "object", "properties": {
-                "role": {"type": "string", "enum": ["spec", "standards"]},
+                "role": {"type": "string", "enum": ["spec", "standards", "worker", "scout"]},
+                "tier": {"type": "string", "enum": ["smol", "mid", "top"]},
                 "ticketPath": {"type": "string"}, "startingPoint": {"type": "string"},
-                "text": {"type": "string"}
-            }, "required": ["role", "ticketPath", "startingPoint"]}
+                "text": {"type": "string"}, "title": {"type": "string"}
+            }, "required": ["role"]}
         },
         {
             "name": "steer",
             "inputSchema": {"type": "object", "properties": {
                 "id": {"type": "string"}, "text": {"type": "string"},
+                "tier": {"type": "string", "enum": ["smol", "mid", "top"]},
                 "ticketPath": {"type": "string"}, "startingPoint": {"type": "string"}
-            }, "required": ["id", "text", "ticketPath", "startingPoint"]}
+            }, "required": ["id", "text"]}
         },
         {
             "name": "stop",
@@ -160,7 +206,7 @@ fn tool_specs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File, directory, http(s) URL, ctx:<handle> pointer or el://skills/<name>. Append :raw to a file or URL path to read it whole; without it the first 300 lines."},
+                    "path": {"type": "string", "description": "File, directory, http(s) URL, ctx:<handle> pointer, el://skills/<name> or el://docs/<topic>. Append :raw to a file or URL path to read it whole; without it the first 300 lines."},
                     "offset": {"type": "integer", "description": "First line, 1-based."},
                     "limit": {"type": "integer", "description": "Maximum lines."}
                 },
@@ -363,6 +409,33 @@ fn tool_specs() -> Vec<Value> {
             }
         },
         {
+            "name": "retry_call",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer", "description": "Failed call number from [failed call #N]."},
+                    "set": {
+                        "type": "object",
+                        "description": "Top-level argument fields to overwrite (set a key to null to remove it).",
+                        "additionalProperties": true
+                    },
+                    "patches": {
+                        "type": "array",
+                        "description": "Sequential exact-once { old, new } string replacements applied across string arguments.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old": {"type": "string"},
+                                "new": {"type": "string"}
+                            },
+                            "required": ["old", "new"]
+                        }
+                    }
+                },
+                "required": ["id"]
+            }
+        },
+        {
             "name": "execute",
             "inputSchema": {
                 "type": "object",
@@ -375,4 +448,67 @@ fn tool_specs() -> Vec<Value> {
         }
     ]);
     serde_json::from_value(specs).unwrap_or_default()
+}
+
+const MAX_CAPTURED_BYTES: usize = 256 * 1024;
+
+fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+pub(crate) fn strip_meta_keys(args: &Value) -> Value {
+    let Some(obj) = args.as_object() else {
+        return args.clone();
+    };
+    let mut clean = obj.clone();
+    clean.remove("toolAction");
+    clean.remove("toolSummary");
+    Value::Object(clean)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ToolConfig;
+
+    #[tokio::test]
+    async fn captures_mcp_outputs_only_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("hello.txt"), "hello world\n").unwrap();
+
+        let spill_off = dir.path().join("spill_off");
+        let tb_off = Arc::new(Toolbox::new(ToolConfig::new(&root, &spill_off)).unwrap());
+        let srv_off = McpServer::new(tb_off);
+        let mut args = Map::new();
+        args.insert("path".into(), json!("hello.txt"));
+        let _ = srv_off.call("read", Some(args.clone())).await;
+        assert!(!spill_off.join("mcp_outputs").exists());
+
+        let spill_on = dir.path().join("spill_on");
+        let mut cfg = ToolConfig::new(&root, &spill_on);
+        cfg.capture_mcp_output = true;
+        let tb_on = Arc::new(Toolbox::new(cfg).unwrap());
+        let srv_on = McpServer::new(tb_on);
+        let _ = srv_on.call("read", Some(args)).await;
+
+        let files: Vec<_> = std::fs::read_dir(spill_on.join("mcp_outputs"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(files.len(), 1);
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(files[0].path()).unwrap()).unwrap();
+        assert_eq!(saved["name"], "read");
+        assert_eq!(saved["args"], json!({"path": "hello.txt"}));
+        assert!(saved["output"].as_str().unwrap().contains("hello world"));
+    }
 }

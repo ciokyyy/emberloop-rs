@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 prompts = { workspace = true }
+emberloop-core = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

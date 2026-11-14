@@ -2,7 +2,7 @@
 
 ## Reviewer subagents
 
-`steer::ReviewerReport` carries reviewer identity and report metadata. `enqueue_report` persists each distinct submission before acceptance and rolls back failed writes; queue mutations save under the entries lock. Direct and factory queue loading both requeue in-flight entries. `tests/reviewer_reports.rs` covers repeated reports, restart and storage failure.
+`steer::is_reviewer_role` identifies reviewer roles (`spec`, `standards`); `steer::ReviewerReport` carries subagent identity (`session_id`, `role`, optional `ticket_path`) and report metadata, omitting empty `ticket_path` from `enqueue_report`'s parent steer header. `enqueue_report` persists each distinct submission before acceptance and rolls back failed writes; queue mutations save under the entries lock. Direct and factory queue loading both requeue in-flight entries. `tests/reviewer_reports.rs` covers repeated reports, restart and storage failure.
 
 
 ## Purpose

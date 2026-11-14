@@ -500,6 +500,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/status/system": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_system_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/status/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_token_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tool-keys": {
         parameters: {
             query?: never;
@@ -555,6 +587,17 @@ export interface components {
         CompleteLoginRequest: {
             address: string;
         };
+        CpuStatsDto: {
+            cores: number;
+            /** Format: double */
+            loadAvg1: number;
+            /** Format: double */
+            loadAvg15: number;
+            /** Format: double */
+            loadAvg5: number;
+            /** Format: double */
+            percent: number;
+        };
         CreateProjectRequest: {
             name: string;
             root: string;
@@ -564,6 +607,25 @@ export interface components {
             projectId: string;
             thoughtLevel?: string | null;
             title?: string | null;
+        };
+        DiskStatsDto: {
+            /** Format: int64 */
+            availableBytes: number;
+            path: string;
+            /** Format: double */
+            percent: number;
+            /** Format: int64 */
+            totalBytes: number;
+            /** Format: int64 */
+            usedBytes: number;
+        };
+        FallbackLadder: components["schemas"]["ModelRung"][];
+        HostInfoDto: {
+            hostname: string;
+            os: string;
+            /** Format: int64 */
+            uptimeSeconds: number;
+            version: string;
         };
         LoginRequest: {
             label?: string;
@@ -581,6 +643,22 @@ export interface components {
             userCode?: string;
             verificationUri?: string;
         };
+        MemoryStatsDto: {
+            /** Format: int64 */
+            availableBytes: number;
+            /** Format: int64 */
+            cachedBytes: number;
+            /** Format: double */
+            percent: number;
+            /** Format: int64 */
+            swapTotalBytes: number;
+            /** Format: int64 */
+            swapUsedBytes: number;
+            /** Format: int64 */
+            totalBytes: number;
+            /** Format: int64 */
+            usedBytes: number;
+        };
         ModelEntry: {
             context_window: number;
             efforts: string[];
@@ -593,6 +671,23 @@ export interface components {
             stale: boolean;
             /** Format: int64 */
             updated_at: number;
+        };
+        ModelRung: {
+            /** @default gemini-3.8-flash */
+            model: string;
+            /** @default null */
+            reasoning_effort: string | null;
+        };
+        ProcessRowDto: {
+            /** Format: double */
+            cpuPercent: number;
+            detail: string;
+            name: string;
+            /** Format: int32 */
+            pid: number;
+            /** Format: int64 */
+            rssBytes: number;
+            state: string;
         };
         ProjectDesignDto: {
             exists: boolean;
@@ -642,11 +737,10 @@ export interface components {
             name: string;
             signedIn: boolean;
         };
-        ReviewerSettings: {
-            /** @default gemini-3.8-flash */
-            model: string;
-            /** @default null */
-            reasoning_effort: string | null;
+        RuntimeSummaryDto: {
+            activeSessions: number;
+            archivedSessions: number;
+            workingSessions: number;
         };
         SessionDto: {
             /** Format: int64 */
@@ -722,19 +816,46 @@ export interface components {
              */
             skills_review_interval: number;
             /**
-             * @default {
-             *       "model": "gemini-3.8-flash",
-             *       "reasoning_effort": null
-             *     }
+             * @default [
+             *       {
+             *         "model": "gemini-3.8-flash",
+             *         "reasoning_effort": null
+             *       }
+             *     ]
              */
-            spec_reviewer: components["schemas"]["ReviewerSettings"];
+            spec_reviewer: components["schemas"]["FallbackLadder"];
+            /**
+             * @default [
+             *       {
+             *         "model": "gemini-3.8-flash",
+             *         "reasoning_effort": null
+             *       }
+             *     ]
+             */
+            standards_reviewer: components["schemas"]["FallbackLadder"];
             /**
              * @default {
-             *       "model": "gemini-3.8-flash",
-             *       "reasoning_effort": null
+             *       "mid": [
+             *         {
+             *           "model": "gemini-3.8-flash",
+             *           "reasoning_effort": null
+             *         }
+             *       ],
+             *       "smol": [
+             *         {
+             *           "model": "gemini-3.8-flash",
+             *           "reasoning_effort": null
+             *         }
+             *       ],
+             *       "top": [
+             *         {
+             *           "model": "gemini-3.8-flash",
+             *           "reasoning_effort": null
+             *         }
+             *       ]
              *     }
              */
-            standards_reviewer: components["schemas"]["ReviewerSettings"];
+            subagent_tiers: components["schemas"]["SubagentTiers"];
             /**
              * Format: int32
              * @description Reference `compress.tiers.tier2Trigger`.
@@ -767,20 +888,42 @@ export interface components {
             images?: components["schemas"]["PromptImageDto"][];
             text: string;
         };
+        StorageBreakdownDto: {
+            /** Format: double */
+            diskPercent: number;
+            /** Format: int64 */
+            diskTotalBytes: number;
+            rootPath: string;
+            segments: components["schemas"]["StorageSegmentDto"][];
+            /** Format: int64 */
+            totalUsedBytes: number;
+        };
+        StorageSegmentDto: {
+            /** Format: int64 */
+            bytes: number;
+            id: string;
+            label: string;
+            /** Format: double */
+            percent: number;
+            tone: string;
+        };
         SubagentRequest: {
             /** @enum {string} */
             action: "spawn";
             role: string;
-            starting_point: string;
+            starting_point?: string;
             text?: string;
-            ticket_path: string;
+            ticket_path?: string;
+            tier?: string | null;
+            title?: string | null;
         } | {
             /** @enum {string} */
             action: "steer";
             id: string;
-            starting_point: string;
+            starting_point?: string;
             text: string;
-            ticket_path: string;
+            ticket_path?: string;
+            tier?: string | null;
         } | {
             /** @enum {string} */
             action: "stop";
@@ -795,6 +938,119 @@ export interface components {
             report?: string;
             status: string;
             summary?: string;
+        };
+        SubagentTiers: {
+            /**
+             * @default [
+             *       {
+             *         "model": "gemini-3.8-flash",
+             *         "reasoning_effort": null
+             *       }
+             *     ]
+             */
+            mid: components["schemas"]["FallbackLadder"];
+            /**
+             * @default [
+             *       {
+             *         "model": "gemini-3.8-flash",
+             *         "reasoning_effort": null
+             *       }
+             *     ]
+             */
+            smol: components["schemas"]["FallbackLadder"];
+            /**
+             * @default [
+             *       {
+             *         "model": "gemini-3.8-flash",
+             *         "reasoning_effort": null
+             *       }
+             *     ]
+             */
+            top: components["schemas"]["FallbackLadder"];
+        };
+        SystemStatusDto: {
+            cpu: components["schemas"]["CpuStatsDto"];
+            disk: components["schemas"]["DiskStatsDto"];
+            host: components["schemas"]["HostInfoDto"];
+            memory: components["schemas"]["MemoryStatsDto"];
+            processes: components["schemas"]["ProcessRowDto"][];
+            runtime: components["schemas"]["RuntimeSummaryDto"];
+            /** Format: int64 */
+            sampledAt: number;
+            storage: components["schemas"]["StorageBreakdownDto"];
+        };
+        TokenSinkDto: {
+            /** Format: int64 */
+            calls: number;
+            category: string;
+            name: string;
+            /** Format: double */
+            sharePercent: number;
+            /** Format: int64 */
+            tokens: number;
+        };
+        TokenStatusDto: {
+            availableMonths: string[];
+            month: string;
+            nextMonth: string;
+            prevMonth: string;
+            rows: components["schemas"]["TokenTelemetryRowDto"][];
+            sinks: components["schemas"]["TokenSinkDto"][];
+            summary: components["schemas"]["TokenSummaryDto"];
+        };
+        TokenSummaryDto: {
+            /** Format: int64 */
+            avgLatencyMs: number;
+            /** Format: int64 */
+            cacheCreationTokens: number;
+            /** Format: double */
+            cacheHitPercent: number;
+            /** Format: int64 */
+            cachedTokens: number;
+            /** Format: int64 */
+            inputTokens: number;
+            /** Format: int64 */
+            outputTokens: number;
+            /** Format: int64 */
+            p95LatencyMs: number;
+            topSinkName: string;
+            /** Format: double */
+            topSinkSharePercent: number;
+            /** Format: int64 */
+            topSinkTokens: number;
+            /** Format: int64 */
+            totalCalls: number;
+            /** Format: int64 */
+            totalTokens: number;
+        };
+        TokenTelemetryRowDto: {
+            /** Format: int64 */
+            avgLatencyMs: number;
+            /** Format: int64 */
+            cacheCreationTokens: number;
+            /** Format: double */
+            cacheHitPercent: number;
+            /** Format: int64 */
+            cachedTokens: number;
+            /** Format: int64 */
+            calls: number;
+            harness: string;
+            harnessLabel: string;
+            id: string;
+            /** Format: int64 */
+            inputTokens: number;
+            model: string;
+            /** Format: int64 */
+            outputTokens: number;
+            /** Format: int64 */
+            p95LatencyMs: number;
+            projectId: string;
+            projectName: string;
+            provider: string;
+            /** Format: int64 */
+            totalLatencyMs: number;
+            /** Format: int64 */
+            totalTokens: number;
         };
         ToolKeyDto: {
             /** @description Settings key name: `brave`, `exa` or `jina`. */
@@ -2143,6 +2399,59 @@ export interface operations {
                 };
             };
             /** @description Invalid title model */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_system_status: {
+        parameters: {
+            query?: {
+                /** @description Bypass the short storage walk cache */
+                refresh?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Host, runtime process, and data root storage health */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemStatusDto"];
+                };
+            };
+        };
+    };
+    get_token_status: {
+        parameters: {
+            query?: {
+                /** @description UTC month in YYYY-MM format (defaults to current month) */
+                month?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Monthly token usage, latency, and sink telemetry */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenStatusDto"];
+                };
+            };
+            /** @description Invalid month parameter */
             400: {
                 headers: {
                     [name: string]: unknown;

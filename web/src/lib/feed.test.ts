@@ -252,3 +252,20 @@ it('keeps repeated reviewer reports distinct and preserves metadata on delivery'
   expect(state.items[0]).toMatchObject({ id: 'one', report, route: 'injected' });
   expect(state.items[1]).toMatchObject({ id: 'two', report, route: 'pending' });
 });
+
+it('replaces optimistic user and steer items in place when server events arrive', () => {
+  const seeded = {
+    ...emptyFeedState(),
+    items: [
+      { id: 'opt-1', kind: 'user' as const, text: 'hello', imagesCount: 2, optimistic: true },
+      { id: 'opt-2', kind: 'steer' as const, text: 'wait', route: 'pending' as const, optimistic: true }
+    ]
+  };
+  const afterPrompt = applyEvent(seeded, ev('prompt', { text: 'hello', imagesCount: 2 }, 1));
+  expect(afterPrompt.items).toHaveLength(2);
+  expect(afterPrompt.items[0]).toMatchObject({ id: 'opt-1', kind: 'user', text: 'hello', optimistic: false });
+
+  const afterSteer = applyEvent(afterPrompt, ev('steer_queued', { id: 'srv-2', text: 'wait' }, 2));
+  expect(afterSteer.items).toHaveLength(2);
+  expect(afterSteer.items[1]).toMatchObject({ id: 'srv-2', kind: 'steer', text: 'wait', route: 'pending', optimistic: false });
+});

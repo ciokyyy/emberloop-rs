@@ -12,6 +12,8 @@ mod session_setup;
 pub mod skills;
 pub mod sse;
 pub mod state;
+pub mod status;
+mod subagent_recovery;
 pub mod subagents;
 pub mod transcribe;
 pub mod usage;

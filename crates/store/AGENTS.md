@@ -2,13 +2,13 @@
 
 ## Reviewer subagents
 
-`sessions::ReviewerAssignment` is optional Session metadata: parent, role, current ticket path and captured starting point. It persists reviewer identity across reports, ticket changes and restarts; older Session files remain readable without it.
+`sessions::ReviewerAssignment` is optional Session metadata: parent, role, current ticket path (`#[serde(default)]`) and captured starting point (`#[serde(default)]`). It persists subagent identity across reports, ticket changes and restarts; older Session files remain readable without it.
 
 
 ## Purpose
 
 Filesystem persistence and storage layer:
-- `DataRoot`: manages layout `<data_root>/projects.json`, `<data_root>/blobs/<sha256>`, `<data_root>/models/catalogue.json`, and `<data_root>/sessions/<id>/{meta.json (carries `resumeToken`), events/NNNNNN.jsonl, events/index.json, events.zstd, splices.jsonl, images/, spill/}`
+- `DataRoot`: manages layout `<data_root>/projects.json`, `<data_root>/blobs/<sha256>`, `<data_root>/models/catalogue.json`, and `<data_root>/sessions/<id>/{meta.json (carries `resumeToken`), events/NNNNNN.jsonl, events/index.json, events.zstd, splices.jsonl, images/, spill/, exec/}`
 - `ProjectsStore`: atomic JSON store for Projects (`{id, name, root, ...}`)
 - `SessionsStore`: atomic metadata store for Sessions (`{id, project_id, title, model, promptHashes, lastUsedAt, archivedAt, restoredAt, state, ...}`)
 - `EventLog`: segmented append-only log with a sidecar segment/turn index, bounded live ring and tail reads
@@ -31,10 +31,10 @@ last 200 events; replay of anything older reads files. `SessionsStore::load` and
 `ArchivalConfig` defaults to a 24-hour sweep, 3 idle days before archiving and a
 24-hour restore grace. `sweep_at` compresses `.jsonl` segments and `index.json`
 into `events.zstd` (zstd level 19, long-distance matching), verifies the decompressed
-bytes, renames the temp archive and only then removes the hot directory. A
+bytes, renames the temp archive and only then removes the hot directory and `exec/`. A
 restore decompresses into `events/`, keeps the archive and records `restoredAt`
 and `restoredSeq`. The next sweep after the grace either deletes the stale
-archive for a resumed Session or removes the hot copy for a viewed one.
+archive for a resumed Session or removes the hot copy and `exec/` for a viewed one.
 
 ## Generated titles
 

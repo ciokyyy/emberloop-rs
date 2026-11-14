@@ -48,19 +48,57 @@ struct BridgeResponse {
 
 struct BridgeState {
     session_dir: PathBuf,
+    exec_id: u64,
     pending_store: Mutex<HashMap<String, Value>>,
 }
 
 impl BridgeState {
-    fn new(spill_dir: &Path) -> Self {
+    fn create(spill_dir: &Path, code: &str) -> std::io::Result<(Self, PathBuf)> {
         let session_dir = spill_dir
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| spill_dir.to_path_buf());
-        Self {
-            session_dir,
-            pending_store: Mutex::new(HashMap::new()),
+        let exec_dir = session_dir.join("exec");
+        fs::create_dir_all(&exec_dir)?;
+        let max_id = fs::read_dir(&exec_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                e.file_name()
+                    .to_str()?
+                    .strip_suffix(".py")?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .max()
+            .unwrap_or(0);
+        for offset in 0..1000 {
+            let id = max_id + 1 + offset;
+            let path = exec_dir.join(format!("{id}.py"));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    std::io::Write::write_all(&mut file, code.as_bytes())?;
+                    let state = Self {
+                        session_dir,
+                        exec_id: id,
+                        pending_store: Mutex::new(HashMap::new()),
+                    };
+                    return Ok((state, path));
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            }
         }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "failed to allocate exec id",
+        ))
     }
 
     fn store_path(&self) -> PathBuf {
@@ -69,6 +107,14 @@ impl BridgeState {
 
     fn scripts_dir(&self, scope: &str) -> PathBuf {
         self.session_dir.join("scripts").join(scope)
+    }
+
+    fn exec_dir(&self) -> PathBuf {
+        self.session_dir.join("exec")
+    }
+
+    fn exec_path(&self, id: u64) -> PathBuf {
+        self.exec_dir().join(format!("{id}.py"))
     }
 
     fn load_store_map(&self) -> HashMap<String, Value> {
@@ -86,6 +132,8 @@ impl BridgeState {
             "scripts" => self.op_scripts(),
             "script" => self.op_script(args),
             "delete" => self.op_delete(args),
+            "exec_source" => self.op_exec_source(args),
+            "update_exec" => self.op_update_exec(args),
             other => Err(format!("unknown execute operation {other:?}")),
         }
     }
@@ -239,6 +287,26 @@ impl BridgeState {
         fs::remove_file(path).map_err(|_| format!("no saved script {name:?} in {scope} scope"))?;
         Ok(format!("deleted {name}"))
     }
+    fn op_exec_source(&self, args: &Value) -> Result<String, String> {
+        let id = args
+            .get("id")
+            .and_then(Value::as_u64)
+            .filter(|&id| id >= 1)
+            .ok_or_else(|| "invalid exec id".to_string())?;
+        let source =
+            fs::read_to_string(self.exec_path(id)).map_err(|_| format!("no saved exec #{id}"))?;
+        Ok(json!({ "source": source }).to_string())
+    }
+
+    fn op_update_exec(&self, args: &Value) -> Result<String, String> {
+        let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
+        if code.trim().is_empty() {
+            return Err("script source is empty".to_string());
+        }
+        fs::create_dir_all(self.exec_dir()).map_err(|e| e.to_string())?;
+        fs::write(self.exec_path(self.exec_id), code).map_err(|e| e.to_string())?;
+        Ok(format!("updated exec #{}", self.exec_id))
+    }
 
     fn flush(&self) {
         let pending = self.pending_store.lock().unwrap_or_else(|e| e.into_inner());
@@ -277,25 +345,35 @@ fn valid_script_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-pub async fn run(toolbox: Arc<Toolbox>, args: &Value) -> ToolResult<String> {
-    let args: ExecuteArgs = serde_json::from_value(args.clone())?;
-    if args.code.trim().is_empty() {
-        return Err(ToolError::msg("code is required"));
-    }
-    let timeout_secs = toolbox.call_secs(args.timeout, DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
-    let tmp_dir = create_bridge_dir()?;
-    // An MCP failure or a slow start costs the MCP stubs only: the builtin ones stay.
-    let mcp = toolbox.mcp_tools_soon().await;
-    let result = run_in_bridge(
-        Arc::clone(&toolbox),
-        &tmp_dir,
-        &args.code,
-        timeout_secs,
-        &mcp,
-    )
-    .await;
-    let _ = fs::remove_dir_all(&tmp_dir);
-    result
+pub fn run<'a>(
+    toolbox: Arc<Toolbox>,
+    args: &'a Value,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult<String>> + Send + 'a>> {
+    Box::pin(async move {
+        if crate::IN_SCRIPT.try_with(|_| ()).is_ok() {
+            return Err(ToolError::msg(
+                "execute cannot be called recursively inside an execute script",
+            ));
+        }
+        let args: ExecuteArgs = serde_json::from_value(args.clone())?;
+        if args.code.trim().is_empty() {
+            return Err(ToolError::msg("code is required"));
+        }
+        let timeout_secs = toolbox.call_secs(args.timeout, DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
+        let tmp_dir = create_bridge_dir()?;
+        // An MCP failure or a slow start costs the MCP stubs only: the builtin ones stay.
+        let mcp = toolbox.mcp_tools_soon().await;
+        let result = run_in_bridge(
+            Arc::clone(&toolbox),
+            &tmp_dir,
+            &args.code,
+            timeout_secs,
+            &mcp,
+        )
+        .await;
+        let _ = fs::remove_dir_all(&tmp_dir);
+        result
+    })
 }
 
 fn create_bridge_dir() -> ToolResult<PathBuf> {
@@ -315,14 +393,14 @@ async fn run_in_bridge(
     timeout_secs: u64,
     mcp: &[McpTool],
 ) -> ToolResult<String> {
+    let (state, exec_path) = BridgeState::create(toolbox.spill_dir(), code)?;
+    let exec_id = state.exec_id;
     let sock_path = dir.join("sock");
-    let stub = build_tools_py(&sock_path, &mcp_stub(mcp));
+    let stub = build_tools_py(&sock_path, &mcp_stub(mcp), &exec_path);
     fs::write(dir.join("tools.py"), stub)?;
-    let main_path = dir.join("main.py");
-    fs::write(&main_path, code)?;
 
     let listener = UnixListener::bind(&sock_path)?;
-    let state = Arc::new(BridgeState::new(toolbox.spill_dir()));
+    let state = Arc::new(state);
     let tb_for_bridge = Arc::clone(&toolbox);
     let state_for_bridge = Arc::clone(&state);
     let bridge_task = tokio::spawn(async move {
@@ -350,7 +428,7 @@ async fn run_in_bridge(
         .arg("-c")
         .arg(LAUNCHER)
         .arg(dir)
-        .arg(&main_path)
+        .arg(&exec_path)
         .current_dir(toolbox.root())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -379,15 +457,21 @@ async fn run_in_bridge(
                 code,
                 &stdout,
                 &stderr,
-                exit_code,
-                false,
-                timeout_secs,
+                ExecOutcome::Exit(exit_code),
+                exec_id,
             )
         }
         Ok(Err(e)) => Err(ToolError::Io(e)),
         Err(_) => {
             kill_group(pid);
-            format_output(&toolbox, code, "", "", -1, true, timeout_secs)
+            format_output(
+                &toolbox,
+                code,
+                "",
+                "",
+                ExecOutcome::TimedOut(timeout_secs),
+                exec_id,
+            )
         }
     }
 }
@@ -476,19 +560,22 @@ async fn write_resp(
     writer.flush().await
 }
 
+enum ExecOutcome {
+    Exit(i32),
+    TimedOut(u64),
+}
+
 fn format_output(
     toolbox: &Toolbox,
     code: &str,
     stdout: &str,
     stderr: &str,
-    exit_code: i32,
-    timed_out: bool,
-    timeout_secs: u64,
+    outcome: ExecOutcome,
+    exec_id: u64,
 ) -> ToolResult<String> {
-    let stderr_part = if exit_code != 0 && !timed_out {
-        tail_lines(stderr, TRACE_TAIL_LINES)
-    } else {
-        stderr.to_string()
+    let stderr_part = match outcome {
+        ExecOutcome::Exit(code) if code != 0 => tail_lines(stderr, TRACE_TAIL_LINES),
+        _ => stderr.to_string(),
     };
     let mut text = stdout.to_string();
     if !stderr_part.trim().is_empty() {
@@ -499,14 +586,17 @@ fn format_output(
     }
     let first_line = code.lines().next().unwrap_or("").trim();
     let mut text = toolbox.maybe_spill(text, &format!("execute {first_line}"))?;
-    if timed_out {
-        text.push_str(&format!("\n[timed out after {timeout_secs}s]"));
-    } else if exit_code != 0 {
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
+    let tag = match outcome {
+        ExecOutcome::TimedOut(secs) => format!("[timed out after {secs}s; saved exec #{exec_id}]"),
+        ExecOutcome::Exit(code) if code != 0 => {
+            format!("[exit status {code}; saved exec #{exec_id}]")
         }
-        text.push_str(&format!("[exit status {exit_code}]"));
+        ExecOutcome::Exit(_) => format!("[saved exec #{exec_id}]"),
+    };
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
     }
+    text.push_str(&tag);
     Ok(text)
 }
 
@@ -545,11 +635,14 @@ fn mcp_stub(tools: &[McpTool]) -> String {
     serde_json::to_string(&payload).unwrap_or_else(|_| "\"{}\"".to_string())
 }
 
-fn build_tools_py(sock_path: &Path, mcp_json: &str) -> String {
+fn build_tools_py(sock_path: &Path, mcp_json: &str, exec_path: &Path) -> String {
     let sock_json = serde_json::to_string(&sock_path.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "\"\"".to_string());
+    let exec_path_json = serde_json::to_string(&exec_path.to_string_lossy().to_string())
         .unwrap_or_else(|_| "\"\"".to_string());
     format!(
         r#"import json as _json
+import linecache as _linecache
 import socket as _socket
 import sys as _sys
 import threading as _threading
@@ -559,6 +652,7 @@ class ToolError(Exception):
     pass
 
 _SOCKET_PATH = {sock_json}
+_EXEC_PATH = {exec_path_json}
 _CALL_LIMIT = 500
 _call_count = 0
 _next_id = 0
@@ -576,11 +670,12 @@ _SPECS = {{
     "background": {{"sig": "background(action, id, offset, timeout)", "desc": "Manage background commands."}},
     "find": {{"sig": "find(query, grep_keywords, limit, mode, path)", "desc": "Semantic/lexical code finder with modes."}},
     "websearch": {{"sig": "websearch(query, count, domains, fresh, freshness, provider)", "desc": "Search the web."}},
-    "spawn": {{"sig": "spawn(role, ticketPath, startingPoint, text)", "desc": "Start or reuse a persistent Spec or Standards reviewer."}},
-    "steer": {{"sig": "steer(id, ticketPath, startingPoint, text)", "desc": "Continue a reviewer Session."}},
-    "stop": {{"sig": "stop(id)", "desc": "Stop a reviewer without deleting its conversation."}},
-    "result": {{"sig": "result(id)", "desc": "Retrieve all reports from a reviewer."}},
+    "spawn": {{"sig": "spawn(role, text, title, tier, ticketPath, startingPoint)", "desc": "Start a Worker or Scout or start/reuse a Spec or Standards reviewer."}},
+    "steer": {{"sig": "steer(id, text, tier, ticketPath, startingPoint)", "desc": "Continue an existing subagent Session."}},
+    "stop": {{"sig": "stop(id)", "desc": "Stop a subagent without deleting its conversation."}},
+    "result": {{"sig": "result(id)", "desc": "Retrieve all reports from a subagent."}},
     "submit": {{"sig": "submit(status, report, summary)", "desc": "Send a new report to the parent Session."}},
+    "retry_call": {{"sig": "retry_call(id, set, patches)", "desc": "Retry failed call #id with field overrides or string patches."}},
 }}
 
 _MCP = _json.loads({mcp_json})
@@ -690,6 +785,50 @@ def run(name, **args):
         _run_depth -= 1
     return scope.get("result")
 
+def _parse_exec_id(exec_id):
+    try:
+        eid = int(str(exec_id).strip().lstrip('#'))
+    except (TypeError, ValueError):
+        raise ToolError("invalid exec id %r" % (exec_id,))
+    if eid < 1:
+        raise ToolError("invalid exec id %r" % (exec_id,))
+    return eid
+
+def exec_source(exec_id):
+    eid = _parse_exec_id(exec_id)
+    return _json.loads(_op("exec_source", {{"id": eid}})).get("source", "")
+
+def rerun(exec_id, patches=None):
+    global _run_depth
+    if _run_depth >= 4:
+        raise ToolError("saved scripts nest at most 4 deep")
+    eid = _parse_exec_id(exec_id)
+    source = _json.loads(_op("exec_source", {{"id": eid}})).get("source", "")
+    if patches:
+        items = list(patches.items()) if isinstance(patches, dict) else list(patches)
+        for pair in items:
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                raise ToolError("each patch must be an (old, new) pair")
+            old, new = pair
+            if not isinstance(old, str) or not isinstance(new, str) or not old:
+                raise ToolError("patch old/new must be strings and old non-empty")
+            count = source.count(old)
+            if count == 0:
+                raise ToolError("patch target not found in exec #%d: %r" % (eid, old[:80]))
+            if count > 1:
+                raise ToolError("patch target matched %d times in exec #%d; add more context" % (count, eid))
+            source = source.replace(old, new, 1)
+    if _EXEC_PATH and _run_depth == 0:
+        _op("update_exec", {{"code": source}})
+        _linecache.checkcache(_EXEC_PATH)
+    scope = {{"__name__": "__main__", "tools": _sys.modules[__name__], "result": None}}
+    _run_depth += 1
+    try:
+        exec(compile(source, _EXEC_PATH or ("<exec #%d>" % eid), "exec"), scope)
+    finally:
+        _run_depth -= 1
+    return scope.get("result")
+
 def search(query=""):
     q = (query or "").lower()
     out = []
@@ -727,7 +866,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let spill = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("notes.txt"), "alpha\nbeta\ngamma\n").unwrap();
-        let tb = Arc::new(Toolbox::new(ToolConfig::new(dir.path(), spill.path())).unwrap());
+        let tb = Arc::new(
+            Toolbox::new(ToolConfig::new(dir.path(), spill.path().join("spill"))).unwrap(),
+        );
 
         let out = run(
             Arc::clone(&tb),
@@ -755,7 +896,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let spill = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
-        let tb = Arc::new(Toolbox::new(ToolConfig::new(dir.path(), spill.path())).unwrap());
+        let tb = Arc::new(
+            Toolbox::new(ToolConfig::new(dir.path(), spill.path().join("spill"))).unwrap(),
+        );
 
         let out = run(
             Arc::clone(&tb),
@@ -778,7 +921,7 @@ mod tests {
         let tb = Arc::new(
             Toolbox::new(ToolConfig {
                 env_file: Some(env),
-                ..ToolConfig::new(dir.path(), spill.path())
+                ..ToolConfig::new(dir.path(), spill.path().join("spill"))
             })
             .unwrap(),
         );
@@ -790,5 +933,101 @@ mod tests {
         .await
         .unwrap();
         assert!(out.contains("abc"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn execute_saves_scripts_and_reruns_with_patches() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = tempfile::tempdir().unwrap();
+        let tb = Arc::new(
+            Toolbox::new(ToolConfig::new(dir.path(), session.path().join("spill"))).unwrap(),
+        );
+
+        let first = run(
+            Arc::clone(&tb),
+            &json!({
+                "code": "a = 10\nb = 0\nc = 5\nprint(a // b)\nprint(a // c)"
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            first.contains("[exit status 1; saved exec #1]"),
+            "got: {first}"
+        );
+        assert!(session.path().join("exec/1.py").exists());
+
+        let second = run(
+            Arc::clone(&tb),
+            &json!({
+                "code": "import tools\ntools.rerun(1, patches=[('b = 0', 'b = 2'), ('c = 5', 'c = 0')])"
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(second.contains("5"), "got: {second}");
+        assert!(
+            second.contains("[exit status 1; saved exec #2]"),
+            "got: {second}"
+        );
+        // #2 persisted the patched source so a follow-up rerun builds on it.
+        let saved_two = fs::read_to_string(session.path().join("exec/2.py")).unwrap();
+        assert!(saved_two.contains("b = 2"), "got: {saved_two}");
+
+        let third = run(
+            Arc::clone(&tb),
+            &json!({
+                "code": "import tools\ntools.rerun(2, patches=[('c = 0', 'c = 5')])"
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(third.contains("5\n2"), "got: {third}");
+        assert!(third.contains("[saved exec #3]"), "got: {third}");
+    }
+
+    #[tokio::test]
+    async fn execute_rerun_rejects_missing_or_ambiguous_patches_and_exposes_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = tempfile::tempdir().unwrap();
+        let tb = Arc::new(
+            Toolbox::new(ToolConfig::new(dir.path(), session.path().join("spill"))).unwrap(),
+        );
+
+        let first = run(
+            Arc::clone(&tb),
+            &json!({"code": "x = 1\ny = 1\nprint(x + y)"}),
+        )
+        .await
+        .unwrap();
+        assert!(first.contains("[saved exec #1]"), "got: {first}");
+
+        let missing = run(
+            Arc::clone(&tb),
+            &json!({"code": "import tools\ntools.rerun(1, patches=[('nope', 'z')])"}),
+        )
+        .await
+        .unwrap();
+        assert!(missing.contains("patch target not found"), "got: {missing}");
+        assert!(
+            missing.contains("[exit status 1; saved exec #2]"),
+            "got: {missing}"
+        );
+
+        let ambiguous = run(
+            Arc::clone(&tb),
+            &json!({"code": "import tools\ntools.rerun(1, patches=[('= 1', '= 2')])"}),
+        )
+        .await
+        .unwrap();
+        assert!(ambiguous.contains("matched 2 times"), "got: {ambiguous}");
+
+        let inspected = run(
+            Arc::clone(&tb),
+            &json!({"code": "import tools\nprint(tools.exec_source(1).splitlines()[2])"}),
+        )
+        .await
+        .unwrap();
+        assert!(inspected.contains("print(x + y)"), "got: {inspected}");
     }
 }

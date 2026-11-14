@@ -58,6 +58,7 @@ pub const TOOL_STEER: &str = "tool.steer.description";
 pub const TOOL_STOP: &str = "tool.stop.description";
 pub const TOOL_RESULT: &str = "tool.result.description";
 pub const TOOL_SUBMIT: &str = "tool.submit.description";
+pub const TOOL_RETRY_CALL: &str = "tool.retry_call.description";
 pub const REVIEWER_SPEC: &str = "reviewer.spec";
 pub const REVIEWER_STANDARDS: &str = "reviewer.standards";
 /// Billion-context nudges (ticket 20). Derived from the reference wording; the
@@ -96,6 +97,7 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_STOP,
     TOOL_RESULT,
     TOOL_SUBMIT,
+    TOOL_RETRY_CALL,
     REVIEWER_SPEC,
     REVIEWER_STANDARDS,
     SKILL_CODEBASE_MEMORY,
@@ -169,6 +171,7 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_STOP => defaults::TOOL_STOP,
         TOOL_RESULT => defaults::TOOL_RESULT,
         TOOL_SUBMIT => defaults::TOOL_SUBMIT,
+        TOOL_RETRY_CALL => defaults::TOOL_RETRY_CALL,
         REVIEWER_SPEC => defaults::REVIEWER_SPEC,
         REVIEWER_STANDARDS => defaults::REVIEWER_STANDARDS,
         SKILL_CODEBASE_MEMORY => defaults::SKILL_CODEBASE_MEMORY,

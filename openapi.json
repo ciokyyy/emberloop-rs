@@ -1325,6 +1325,71 @@
         }
       }
     },
+    "/api/status/system": {
+      "get": {
+        "tags": [
+          "crate::status"
+        ],
+        "operationId": "get_system_status",
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "Bypass the short storage walk cache",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Host, runtime process, and data root storage health",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemStatusDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/status/tokens": {
+      "get": {
+        "tags": [
+          "crate::status"
+        ],
+        "operationId": "get_token_status",
+        "parameters": [
+          {
+            "name": "month",
+            "in": "query",
+            "description": "UTC month in YYYY-MM format (defaults to current month)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Monthly token usage, latency, and sink telemetry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenStatusDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid month parameter"
+          }
+        }
+      }
+    },
     "/api/tool-keys": {
       "get": {
         "tags": [],
@@ -1467,6 +1532,38 @@
           }
         }
       },
+      "CpuStatsDto": {
+        "type": "object",
+        "required": [
+          "percent",
+          "cores",
+          "loadAvg1",
+          "loadAvg5",
+          "loadAvg15"
+        ],
+        "properties": {
+          "cores": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "loadAvg1": {
+            "type": "number",
+            "format": "double"
+          },
+          "loadAvg15": {
+            "type": "number",
+            "format": "double"
+          },
+          "loadAvg5": {
+            "type": "number",
+            "format": "double"
+          },
+          "percent": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
       "CreateProjectRequest": {
         "type": "object",
         "required": [
@@ -1508,6 +1605,71 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "DiskStatsDto": {
+        "type": "object",
+        "required": [
+          "path",
+          "usedBytes",
+          "totalBytes",
+          "availableBytes",
+          "percent"
+        ],
+        "properties": {
+          "availableBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string"
+          },
+          "percent": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "usedBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "FallbackLadder": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ModelRung"
+        }
+      },
+      "HostInfoDto": {
+        "type": "object",
+        "required": [
+          "hostname",
+          "os",
+          "version",
+          "uptimeSeconds"
+        ],
+        "properties": {
+          "hostname": {
+            "type": "string"
+          },
+          "os": {
+            "type": "string"
+          },
+          "uptimeSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "version": {
+            "type": "string"
           }
         }
       },
@@ -1566,6 +1728,54 @@
           }
         }
       },
+      "MemoryStatsDto": {
+        "type": "object",
+        "required": [
+          "usedBytes",
+          "totalBytes",
+          "percent",
+          "cachedBytes",
+          "availableBytes",
+          "swapUsedBytes",
+          "swapTotalBytes"
+        ],
+        "properties": {
+          "availableBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cachedBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "percent": {
+            "type": "number",
+            "format": "double"
+          },
+          "swapTotalBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "swapUsedBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "totalBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "usedBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ModelEntry": {
         "type": "object",
         "required": [
@@ -1616,6 +1826,58 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "ModelRung": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "default": "gemini-3.8-flash"
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      },
+      "ProcessRowDto": {
+        "type": "object",
+        "required": [
+          "pid",
+          "name",
+          "detail",
+          "cpuPercent",
+          "rssBytes",
+          "state"
+        ],
+        "properties": {
+          "cpuPercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "rssBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string"
           }
         }
       },
@@ -1802,19 +2064,25 @@
           }
         }
       },
-      "ReviewerSettings": {
+      "RuntimeSummaryDto": {
         "type": "object",
+        "required": [
+          "activeSessions",
+          "workingSessions",
+          "archivedSessions"
+        ],
         "properties": {
-          "model": {
-            "type": "string",
-            "default": "gemini-3.8-flash"
+          "activeSessions": {
+            "type": "integer",
+            "minimum": 0
           },
-          "reasoning_effort": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "default": null
+          "archivedSessions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "workingSessions": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },
@@ -1956,17 +2224,44 @@
             "minimum": 0
           },
           "spec_reviewer": {
-            "$ref": "#/components/schemas/ReviewerSettings",
-            "default": {
-              "model": "gemini-3.8-flash",
-              "reasoning_effort": null
-            }
+            "$ref": "#/components/schemas/FallbackLadder",
+            "default": [
+              {
+                "model": "gemini-3.8-flash",
+                "reasoning_effort": null
+              }
+            ]
           },
           "standards_reviewer": {
-            "$ref": "#/components/schemas/ReviewerSettings",
+            "$ref": "#/components/schemas/FallbackLadder",
+            "default": [
+              {
+                "model": "gemini-3.8-flash",
+                "reasoning_effort": null
+              }
+            ]
+          },
+          "subagent_tiers": {
+            "$ref": "#/components/schemas/SubagentTiers",
             "default": {
-              "model": "gemini-3.8-flash",
-              "reasoning_effort": null
+              "mid": [
+                {
+                  "model": "gemini-3.8-flash",
+                  "reasoning_effort": null
+                }
+              ],
+              "smol": [
+                {
+                  "model": "gemini-3.8-flash",
+                  "reasoning_effort": null
+                }
+              ],
+              "top": [
+                {
+                  "model": "gemini-3.8-flash",
+                  "reasoning_effort": null
+                }
+              ]
             }
           },
           "tier2_trigger": {
@@ -2028,14 +2323,77 @@
           }
         }
       },
+      "StorageBreakdownDto": {
+        "type": "object",
+        "required": [
+          "rootPath",
+          "totalUsedBytes",
+          "diskTotalBytes",
+          "diskPercent",
+          "segments"
+        ],
+        "properties": {
+          "diskPercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "diskTotalBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "rootPath": {
+            "type": "string"
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StorageSegmentDto"
+            }
+          },
+          "totalUsedBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "StorageSegmentDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "bytes",
+          "percent",
+          "tone"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "percent": {
+            "type": "number",
+            "format": "double"
+          },
+          "tone": {
+            "type": "string"
+          }
+        }
+      },
       "SubagentRequest": {
         "oneOf": [
           {
             "type": "object",
             "required": [
               "role",
-              "ticket_path",
-              "starting_point",
               "action"
             ],
             "properties": {
@@ -2056,6 +2414,18 @@
               },
               "ticket_path": {
                 "type": "string"
+              },
+              "tier": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             }
           },
@@ -2063,8 +2433,6 @@
             "type": "object",
             "required": [
               "id",
-              "ticket_path",
-              "starting_point",
               "text",
               "action"
             ],
@@ -2086,6 +2454,12 @@
               },
               "ticket_path": {
                 "type": "string"
+              },
+              "tier": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             }
           },
@@ -2150,6 +2524,327 @@
             }
           }
         ]
+      },
+      "SubagentTiers": {
+        "type": "object",
+        "properties": {
+          "mid": {
+            "$ref": "#/components/schemas/FallbackLadder",
+            "default": [
+              {
+                "model": "gemini-3.8-flash",
+                "reasoning_effort": null
+              }
+            ]
+          },
+          "smol": {
+            "$ref": "#/components/schemas/FallbackLadder",
+            "default": [
+              {
+                "model": "gemini-3.8-flash",
+                "reasoning_effort": null
+              }
+            ]
+          },
+          "top": {
+            "$ref": "#/components/schemas/FallbackLadder",
+            "default": [
+              {
+                "model": "gemini-3.8-flash",
+                "reasoning_effort": null
+              }
+            ]
+          }
+        }
+      },
+      "SystemStatusDto": {
+        "type": "object",
+        "required": [
+          "sampledAt",
+          "host",
+          "cpu",
+          "memory",
+          "disk",
+          "runtime",
+          "processes",
+          "storage"
+        ],
+        "properties": {
+          "cpu": {
+            "$ref": "#/components/schemas/CpuStatsDto"
+          },
+          "disk": {
+            "$ref": "#/components/schemas/DiskStatsDto"
+          },
+          "host": {
+            "$ref": "#/components/schemas/HostInfoDto"
+          },
+          "memory": {
+            "$ref": "#/components/schemas/MemoryStatsDto"
+          },
+          "processes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProcessRowDto"
+            }
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeSummaryDto"
+          },
+          "sampledAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageBreakdownDto"
+          }
+        }
+      },
+      "TokenSinkDto": {
+        "type": "object",
+        "required": [
+          "name",
+          "category",
+          "tokens",
+          "sharePercent",
+          "calls"
+        ],
+        "properties": {
+          "calls": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "category": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sharePercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TokenStatusDto": {
+        "type": "object",
+        "required": [
+          "month",
+          "prevMonth",
+          "nextMonth",
+          "availableMonths",
+          "summary",
+          "rows",
+          "sinks"
+        ],
+        "properties": {
+          "availableMonths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "month": {
+            "type": "string"
+          },
+          "nextMonth": {
+            "type": "string"
+          },
+          "prevMonth": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenTelemetryRowDto"
+            }
+          },
+          "sinks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenSinkDto"
+            }
+          },
+          "summary": {
+            "$ref": "#/components/schemas/TokenSummaryDto"
+          }
+        }
+      },
+      "TokenSummaryDto": {
+        "type": "object",
+        "required": [
+          "totalTokens",
+          "inputTokens",
+          "outputTokens",
+          "cachedTokens",
+          "cacheCreationTokens",
+          "cacheHitPercent",
+          "totalCalls",
+          "avgLatencyMs",
+          "p95LatencyMs",
+          "topSinkName",
+          "topSinkTokens",
+          "topSinkSharePercent"
+        ],
+        "properties": {
+          "avgLatencyMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cacheCreationTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cacheHitPercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "cachedTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "p95LatencyMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "topSinkName": {
+            "type": "string"
+          },
+          "topSinkSharePercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "topSinkTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "totalCalls": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "totalTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TokenTelemetryRowDto": {
+        "type": "object",
+        "required": [
+          "id",
+          "model",
+          "provider",
+          "harness",
+          "harnessLabel",
+          "projectId",
+          "projectName",
+          "calls",
+          "inputTokens",
+          "outputTokens",
+          "cachedTokens",
+          "cacheCreationTokens",
+          "totalTokens",
+          "cacheHitPercent",
+          "totalLatencyMs",
+          "avgLatencyMs",
+          "p95LatencyMs"
+        ],
+        "properties": {
+          "avgLatencyMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cacheCreationTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cacheHitPercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "cachedTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "calls": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "harness": {
+            "type": "string"
+          },
+          "harnessLabel": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "model": {
+            "type": "string"
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "p95LatencyMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "projectName": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "totalLatencyMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "totalTokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "ToolKeyDto": {
         "type": "object",

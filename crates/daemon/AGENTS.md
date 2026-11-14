@@ -2,7 +2,7 @@
 
 ## Reviewer subagents
 
-Runner and manual harness wiring pass `EMBERLOOP_SESSION_URL` and `EMBERLOOP_REVIEWER`; stdio MCP reads them into `ToolConfig`. The API error watcher starts after the event persister. Startup recovers report delivery after binding the listener. See Versioning and update for continuation rules.
+Runner and manual harness wiring call `push_subagent_env` to pass `EMBERLOOP_SESSION_URL`, `EMBERLOOP_REVIEWER` (`1` for `spec`/`standards` via `ReviewerAssignment::is_reviewer`, `0` otherwise), and `EMBERLOOP_SUBAGENT_ROLE` (for any subagent); stdio MCP reads them into `ToolConfig`. The API error watcher starts after the event persister. Startup recovers report delivery after binding the listener. See Versioning and update for continuation rules.
 
 
 ## Purpose
@@ -24,7 +24,7 @@ Each Session's harness handle lives in `SessionRunner.handles` only while it is 
 
 The idle reaper (`idle.rs`, `SessionRunner::reap_idle`, `watch_idle` every 30 s) closes a Session's harness and tool server once it has no running turn, no pending steer, no live background job (`tools::background::any_running`) and has been quiet for `Config.idle_timeout` (`--idle-timeout-minutes`, default 10). Quiet time counts from the last use or turn end. The clock is injected (`Clock`, `ManualClock` in tests), so tests never sleep.
 
-Model settings go through `SessionRunner::configure_model`: working turns are refused, a harness-family change requires a new Session, and a live same-harness change awaits ACP acknowledgment. A refusal attempts to restore the prior model/effort and leaves API metadata unchanged. A Session not yet connected uses the saved settings on its next spawn.
+Model settings go through `SessionRunner::configure_model`: working turns are refused, a harness-family change requires a new Session, and a live same-harness change awaits ACP acknowledgment. A refusal attempts to restore the prior model/effort (evicting the live handle if rollback also fails) and returns an error leaving API metadata unchanged. A Session not yet connected uses the saved settings on its next spawn.
 
 ## Versioning and update
 

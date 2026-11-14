@@ -29,6 +29,7 @@ export interface FeedItem {
   finished?: boolean;
   route?: SteerRoute;
   report?: ReviewerReport;
+  optimistic?: boolean;
 }
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
@@ -323,7 +324,17 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
     case 'todos':
       return { ...state, todos: todosOf(data) };
 
-    case 'prompt':
+    case 'prompt': {
+      const promptText = text(data.text);
+      const imagesCount = number(data.imagesCount) || number(data.images);
+      const optIndex = state.items.findIndex(
+        (item) => item.optimistic && item.kind === 'user' && (item.text ?? '') === promptText
+      );
+      if (optIndex !== -1) {
+        const next = [...state.items];
+        next[optIndex] = { ...next[optIndex], imagesCount, optimistic: false };
+        return { ...state, items: next };
+      }
       return {
         ...state,
         items: [
@@ -331,12 +342,12 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
           {
             id: nextId('user'),
             kind: 'user',
-            text: text(data.text),
-            imagesCount: number(data.imagesCount) || number(data.images)
+            text: promptText,
+            imagesCount
           }
         ]
       };
-
+    }
     case 'assistant_chunk':
       return appendChunk(state, 'assistant', text(data.text));
 
@@ -349,7 +360,24 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
     case 'tool_finished':
       return { ...state, items: closeLive(finishTool(state.items, event)) };
 
-    case 'steer_queued':
+    case 'steer_queued': {
+      const steerText = text(data.text);
+      const imagesCount = number(data.imagesCount) || undefined;
+      const optIndex = state.items.findIndex(
+        (item) => item.optimistic && item.kind === 'steer' && (item.text ?? '') === steerText
+      );
+      if (optIndex !== -1) {
+        const next = [...state.items];
+        next[optIndex] = {
+          ...next[optIndex],
+          id: toolId(data) || next[optIndex].id,
+          imagesCount,
+          report: reviewerReport(data.report),
+          route: 'pending',
+          optimistic: false
+        };
+        return { ...state, items: next };
+      }
       return {
         ...state,
         items: [
@@ -357,13 +385,14 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
           {
             id: toolId(data) || nextId('steer'),
             kind: 'steer',
-            text: text(data.text),
-            imagesCount: number(data.imagesCount) || undefined,
+            text: steerText,
+            imagesCount,
             report: reviewerReport(data.report),
             route: 'pending'
           }
         ]
       };
+    }
 
     case 'steer_delivered':
       return { ...state, items: deliver(state.items, event, 'steer') };

@@ -210,7 +210,13 @@ fn read_path_names_every_form_read_accepts() {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    for form in ["directory", "URL", "ctx:<handle>"] {
+    for form in [
+        "directory",
+        "URL",
+        "ctx:<handle>",
+        "el://skills",
+        "el://docs",
+    ] {
         assert!(path.contains(form), "read path text lacks {form}: {path}");
     }
 }

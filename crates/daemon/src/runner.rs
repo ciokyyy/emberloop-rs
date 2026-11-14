@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::idle::{self, Activity, Clock, SystemClock, DEFAULT_IDLE_TIMEOUT};
@@ -22,7 +22,8 @@ use tokio::sync::{Mutex, RwLock};
 
 /// How often the idle watcher checks the Sessions.
 const IDLE_CHECK_EVERY: Duration = Duration::from_secs(30);
-
+/// How often the background watcher checks for exited background commands.
+const BACKGROUND_CHECK_EVERY: Duration = Duration::from_secs(2);
 /// The daemon's turn loop: one harness process per Session, its event stream
 /// folded into the Session log, and idle steer delivery at turn end.
 pub struct SessionRunner {
@@ -39,6 +40,7 @@ pub struct SessionRunner {
     handles: Arc<Mutex<HashMap<String, Arc<Handle>>>>,
     settings: Arc<RwLock<Settings>>,
     reminders: Arc<Mutex<HashMap<String, Cycle>>>,
+    watched_bg: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     titles: Option<crate::titles::Titles>,
     models: Option<Arc<api::models::ModelCatalogue>>,
     config_root: Option<std::path::PathBuf>,
@@ -131,6 +133,7 @@ impl SessionRunner {
             handles: Arc::new(Mutex::new(HashMap::new())),
             settings,
             reminders: Arc::new(Mutex::new(HashMap::new())),
+            watched_bg: Arc::new(Mutex::new(HashMap::new())),
             titles: None,
             models: None,
             config_root: None,
@@ -205,6 +208,78 @@ impl SessionRunner {
             loop {
                 runner.reap_idle().await;
                 tokio::time::sleep(IDLE_CHECK_EVERY).await;
+            }
+        })
+    }
+
+    async fn seed_watched_background(&self) {
+        let sessions = self.sessions.list(None).await;
+        let mut seeded = HashMap::new();
+        for meta in sessions {
+            let spill = self.data_root.session_spill_dir(&meta.id);
+            let running: HashSet<String> =
+                tools::background::running_ids(&spill).into_iter().collect();
+            if !running.is_empty() {
+                seeded.insert(meta.id, running);
+            }
+        }
+        if !seeded.is_empty() {
+            self.watched_bg.lock().await.extend(seeded);
+        }
+    }
+
+    /// Checks active and watched Sessions for exited background commands, queues
+    /// notices, and wakes idle Sessions immediately.
+    pub async fn poll_background(&self) {
+        let mut ids: HashSet<String> = self.handles.lock().await.keys().cloned().collect();
+        ids.extend(self.watched_bg.lock().await.keys().cloned());
+        for session_id in ids {
+            let spill = self.data_root.session_spill_dir(&session_id);
+            let running: HashSet<String> =
+                tools::background::running_ids(&spill).into_iter().collect();
+            let prev = {
+                let mut watched = self.watched_bg.lock().await;
+                let prev = watched.get(&session_id).cloned().unwrap_or_default();
+                if running.is_empty() {
+                    watched.remove(&session_id);
+                } else {
+                    watched.insert(session_id.clone(), running);
+                }
+                prev
+            };
+            let notices = tools::background::collect_notices_for(&spill, &prev);
+            if notices.is_empty() {
+                continue;
+            }
+            let queue = self.steers.queue(&session_id);
+            for notice in notices {
+                queue.enqueue(SteerKind::Notice, notice).await;
+            }
+            self.drain_notices(&session_id).await;
+            if !queue.is_turn_active() {
+                if let Ok(handle) = self.ensure(&session_id).await {
+                    let waker = SessionWaker {
+                        handle: Arc::clone(&handle),
+                        session_id: session_id.clone(),
+                        events: Arc::clone(&self.events),
+                        logs: Arc::clone(&self.logs),
+                        events_dir: self.data_root.session_events_dir(&session_id),
+                    };
+                    let _ = deliver_idle(&handle.queue, &waker, &self.events, &session_id).await;
+                }
+            }
+        }
+    }
+
+    /// Starts the background job watcher so exited background commands wake idle Sessions.
+    #[allow(clippy::disallowed_methods)]
+    pub fn watch_background(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let runner = Arc::clone(self);
+        tokio::spawn(async move {
+            runner.seed_watched_background().await;
+            loop {
+                runner.poll_background().await;
+                tokio::time::sleep(BACKGROUND_CHECK_EVERY).await;
             }
         })
     }
@@ -295,27 +370,27 @@ impl SessionRunner {
             ),
             mcp_url: None,
             mcp_command,
-            env: vec![
-                (
-                    "EMBERLOOP_SESSION_URL".into(),
-                    format!(
-                        "{}/api/sessions/{session_id}",
-                        self.proxy_base.trim_end_matches('/')
+            env: {
+                let mut env = vec![
+                    (
+                        "EMBERLOOP_SESSION_URL".into(),
+                        format!(
+                            "{}/api/sessions/{session_id}",
+                            self.proxy_base.trim_end_matches('/')
+                        ),
                     ),
-                ),
-                (
-                    "EMBERLOOP_REVIEWER".into(),
-                    if meta.reviewer.is_some() { "1" } else { "0" }.into(),
-                ),
-                (
-                    "EMBERLOOP_IMAGE_INPUT".into(),
-                    if image_input { "1" } else { "0" }.into(),
-                ),
-                (
-                    "EMBERLOOP_CTX_SPILL".into(),
-                    if ctx_spill_enabled { "1" } else { "0" }.into(),
-                ),
-            ],
+                    (
+                        "EMBERLOOP_IMAGE_INPUT".into(),
+                        if image_input { "1" } else { "0" }.into(),
+                    ),
+                    (
+                        "EMBERLOOP_CTX_SPILL".into(),
+                        if ctx_spill_enabled { "1" } else { "0" }.into(),
+                    ),
+                ];
+                crate::Daemon::push_subagent_env(&mut env, meta);
+                env
+            },
             model: Some(meta.model.clone()),
             thought_level: meta.thought_level.clone(),
             resume_token: meta.resume_token.clone(),
@@ -599,10 +674,17 @@ impl SessionDriver for SessionRunner {
         }
         if let Some(handle) = self.handle(session_id).await {
             if let Err(error) = handle.session.configure_model(model, effort).await {
-                let _ = handle
+                if handle
                     .session
                     .configure_model(&meta.model, meta.thought_level.as_deref())
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    // Both new and rollback configure failed: handle is dead, so retire it for respawn
+                    // while still surfacing the configuration refusal to the caller.
+                    self.evict(session_id, &handle).await;
+                    return Err(error.to_string());
+                }
                 return Err(error.to_string());
             }
         }
@@ -640,7 +722,7 @@ async fn pump(
     prompts: Arc<PromptStore>,
 ) {
     let mut stream = handle.session.events();
-    let mut tracker = ToolTracker::default();
+    let mut tracker = ToolTracker::with_spill_dir(data_root.session_spill_dir(&session_id));
     loop {
         let next = tokio::select! {
             next = stream.next() => next,
@@ -912,7 +994,10 @@ fn map_event(
             (EventKind::ToolStarted, obj)
         }
         HarnessEvent::ToolFinished { id, output, status } => {
-            let (name, input, display) = tracker.on_finish(&id, project_root);
+            let (name, input, display, captured_output) = tracker.on_finish(&id, project_root);
+            let output = captured_output
+                .map(serde_json::Value::String)
+                .unwrap_or(output);
             let mut obj = serde_json::json!({
                 "id": id,
                 "output": output,
@@ -964,6 +1049,10 @@ async fn append(
 }
 
 async fn drain_notices(data_root: &DataRoot, steers: &SteerQueues, session_id: &str) {
+    let queue = steers.queue(session_id);
+    for notice in tools::background::collect_notices(&data_root.session_spill_dir(session_id)) {
+        queue.enqueue(SteerKind::Notice, notice).await;
+    }
     let path = data_root.session_dir(session_id).join("notices.jsonl");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return;
@@ -971,7 +1060,6 @@ async fn drain_notices(data_root: &DataRoot, steers: &SteerQueues, session_id: &
     if std::fs::write(&path, "").is_err() {
         return;
     }
-    let queue = steers.queue(session_id);
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;

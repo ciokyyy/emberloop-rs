@@ -17,8 +17,9 @@ use utoipa::ToSchema;
 pub struct Settings {
     pub title_generation: bool,
     pub title_model: String,
-    pub spec_reviewer: ReviewerSettings,
-    pub standards_reviewer: ReviewerSettings,
+    pub spec_reviewer: FallbackLadder,
+    pub standards_reviewer: FallbackLadder,
+    pub subagent_tiers: SubagentTiers,
     pub default_model: String,
     pub proxy_compression: bool,
     pub ponytail_default_level: String,
@@ -56,8 +57,9 @@ impl Default for Settings {
             title_generation: true,
             title_model: "openrouter/openrouter/free".into(),
             default_model: "gemini-3.8-flash".into(),
-            spec_reviewer: ReviewerSettings::default(),
-            standards_reviewer: ReviewerSettings::default(),
+            spec_reviewer: FallbackLadder::default(),
+            standards_reviewer: FallbackLadder::default(),
+            subagent_tiers: SubagentTiers::default(),
             proxy_compression: true,
             ponytail_default_level: "full".to_string(),
             todo_reminders: true,
@@ -79,20 +81,78 @@ impl Default for Settings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(default)]
-pub struct ReviewerSettings {
+pub struct ModelRung {
     pub model: String,
     pub reasoning_effort: Option<String>,
 }
 
-impl Default for ReviewerSettings {
+impl Default for ModelRung {
     fn default() -> Self {
         Self {
             model: "gemini-3.8-flash".into(),
             reasoning_effort: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(transparent)]
+#[schema(value_type = Vec<ModelRung>)]
+pub struct FallbackLadder(pub Vec<ModelRung>);
+
+impl Default for FallbackLadder {
+    fn default() -> Self {
+        Self(vec![ModelRung::default()])
+    }
+}
+
+impl FallbackLadder {
+    pub fn single(model: impl Into<String>, reasoning_effort: Option<String>) -> Self {
+        Self(vec![ModelRung {
+            model: model.into(),
+            reasoning_effort,
+        }])
+    }
+
+    pub fn rungs(&self) -> &[ModelRung] {
+        &self.0
+    }
+
+    pub fn primary(&self) -> Option<&ModelRung> {
+        self.0.first()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<'de> Deserialize<'de> for FallbackLadder {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Rungs(Vec<ModelRung>),
+            Single(ModelRung),
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Rungs(rungs) => Ok(Self(rungs)),
+            Wire::Single(rung) => Ok(Self(vec![rung])),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct SubagentTiers {
+    pub smol: FallbackLadder,
+    pub mid: FallbackLadder,
+    pub top: FallbackLadder,
 }
 
 /// `settings.json` at the data root: an update to the daemon keeps every choice.
@@ -137,6 +197,9 @@ pub struct AppState {
     pub global_skills: Option<PathBuf>,
     pub designs: Arc<crate::design::Designs>,
     pub subagent_gate: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) subagent_runs:
+        Arc<tokio::sync::Mutex<HashMap<String, crate::subagent_recovery::SubagentRun>>>,
+    pub(crate) subagent_retry_backoffs: [std::time::Duration; 2],
     /// Web Push: the VAPID keypair and the browsers that subscribed.
     pub push: Arc<crate::push::Push>,
 }
@@ -183,6 +246,11 @@ impl AppState {
             groq: None,
             designs: Arc::new(crate::design::Designs::default()),
             subagent_gate: Arc::new(tokio::sync::Mutex::new(())),
+            subagent_runs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            subagent_retry_backoffs: [
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_secs(5),
+            ],
             push,
         }
     }
@@ -227,6 +295,11 @@ impl AppState {
         self
     }
 
+    pub fn with_subagent_retry_backoffs(mut self, backoffs: [std::time::Duration; 2]) -> Self {
+        self.subagent_retry_backoffs = backoffs;
+        self
+    }
+
     pub async fn get_event_log(&self, session_id: &str) -> Result<EventLog, std::io::Error> {
         let mut map = self.event_logs.write().await;
         if let Some(log) = map.get(session_id) {
@@ -241,5 +314,26 @@ impl AppState {
         })?;
         map.insert(session_id.to_string(), log.clone());
         Ok(log)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn app_state_defaults_subagent_retry_backoffs_to_two_and_five_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = DataRoot::new(dir.path().to_path_buf());
+        let projects = ProjectsStore::load(root.projects_file()).await.unwrap();
+        let sessions = SessionsStore::load(root.clone()).await.unwrap();
+        let state = AppState::new(root, projects, sessions, Arc::new(EventBus::default()));
+        assert_eq!(
+            state.subagent_retry_backoffs,
+            [
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_secs(5),
+            ]
+        );
     }
 }

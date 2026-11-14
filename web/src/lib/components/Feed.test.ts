@@ -91,3 +91,10 @@ it('shows each incoming sub-agent report with a reviewer link and its delivery s
   expect(view.container.querySelector('details strong')?.textContent).toBe('Finding:');
   expect(view.queryByText('Steer ·')).toBeNull();
 });
+
+it('renders Scout sub-agent reports in the feed', () => {
+  const report = { sessionId: 'ses_scout', role: 'scout', ticketPath: '', status: 'done', summary: 'Found 3 callers', report: 'Details' };
+  const view = render(Feed, { feed: state([{ id: 'submit2', kind: 'steer', route: 'idle', report }]) });
+  expect(view.getByRole('link', { name: 'Scout' }).getAttribute('href')).toContain('ses_scout');
+  expect(view.getByText('Found 3 callers')).toBeTruthy();
+});

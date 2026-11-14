@@ -2,7 +2,7 @@
 
 ## Reviewer subagents
 
-Session `parentId` and `reviewerRole` metadata keep openable reviewer rows after their parent in the sidebar, including visible orphans. The layout refreshes Sessions on `notice` / `action: subagent_created`. `feed.ts` retains optional `ReviewerReport` metadata from `steer_queued`; delivery only changes its route. `SubagentReport.svelte` renders incoming reports or errors with reviewer links, ticket/status, summary, Markdown disclosure and queued/delivered state, never a user bubble. Settings provide independent creation-only model and reasoning defaults using the existing controls.
+Session `parentId` and `reviewerRole` metadata keep openable subagent rows (`spec`, `standards`, `worker`, `scout`) after their parent in the sidebar, including visible orphans. The layout refreshes Sessions on `notice` / `action: subagent_created`. `feed.ts` retains optional `ReviewerReport` metadata from `steer_queued`; delivery only changes its route. `SubagentReport.svelte` renders incoming reports or errors with subagent role labels and links, optional ticket path, status, summary, Markdown disclosure and queued/delivered state, never a user bubble. Settings provide ordered fallback ladder editors (add, remove with minimum 1 rung, reorder `↑`/`↓`, per-rung `ModelPicker` and reasoning effort) for `spec_reviewer`, `standards_reviewer`, and `subagent_tiers` (`smol`, `mid`, `top`); changing a rung model resets that rung's `reasoning_effort` to `null`.
 
 
 ## Purpose

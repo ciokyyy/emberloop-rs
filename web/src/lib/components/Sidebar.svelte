@@ -19,6 +19,7 @@
     /** The model picked on the draft page; its harness colors the draft row. */
     draftModel = null,
     settingsActive = false,
+    statusActive = false,
     providersActive = false,
     usageActive = false,
     skillsActive = false,
@@ -30,6 +31,7 @@
     onrename,
     ondelete,
     onsettings,
+    onstatus = () => {},
     onproviders,
     onusage,
     onskills = () => {}
@@ -43,6 +45,7 @@
     statuses: Record<string, SessionStatus>;
     selectedId: string | null;
     settingsActive?: boolean;
+    statusActive?: boolean;
     providersActive?: boolean;
     usageActive?: boolean;
     skillsActive?: boolean;
@@ -54,6 +57,7 @@
     onrename: (session: Session, title: string) => void;
     ondelete: (session: Session) => void;
     onsettings: () => void;
+    onstatus?: () => void;
     onproviders: () => void;
     onusage: () => void;
     onskills?: () => void;
@@ -174,6 +178,26 @@
   let overTrash = $state(false);
   let pending = $state<Session | null>(null);
   let trashEl: HTMLElement | undefined = $state();
+  let moreOpen = $state(false);
+  let moreBox: HTMLElement | undefined = $state();
+
+  $effect(() => {
+    if (!moreOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (moreBox && event.target instanceof Node && !moreBox.contains(event.target)) {
+        moreOpen = false;
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') moreOpen = false;
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  });
   const HOLD_MS = 450;
 
   function focusAll(node: HTMLInputElement) {
@@ -369,10 +393,72 @@
       <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z" /><path d="m2 22 3-3" /><path d="M7.5 13.5 10 11" /><path d="M10.5 16.5 13 14" /><path d="m18 3-4 4h6l-4 4" /></svg>
       Providers
     </button>
-    <button class={cn('row flex flex-col items-center gap-1 py-1.5 text-[11px]', settingsActive ? 'sel text-fg-1' : 'text-fg-3 hover:text-fg-1')} aria-label="Settings" onclick={onsettings}>
-      <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-[1.75]" aria-hidden="true"><line x1="21" x2="14" y1="4" y2="4" /><line x1="10" x2="3" y1="4" y2="4" /><line x1="21" x2="12" y1="12" y2="12" /><line x1="8" x2="3" y1="12" y2="12" /><line x1="21" x2="16" y1="20" y2="20" /><line x1="12" x2="3" y1="20" y2="20" /><line x1="14" x2="14" y1="2" y2="6" /><line x1="8" x2="8" y1="10" y2="14" /><line x1="16" x2="16" y1="18" y2="22" /></svg>
-      Settings
-    </button>
+    <div class="relative" bind:this={moreBox}>
+      {#if moreOpen}
+        <div
+          role="menu"
+          aria-label="More navigation"
+          class="absolute right-0 bottom-full z-30 mb-2 flex w-40 flex-col gap-0.5 rounded-xl border border-border bg-surface-2 p-1 shadow-lg"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            class={cn(
+              'row flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[12px]',
+              statusActive ? 'sel text-fg-1' : 'text-fg-2 hover:text-fg-1'
+            )}
+            onclick={() => {
+              moreOpen = false;
+              onstatus();
+            }}
+          >
+            <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0 fill-none stroke-current stroke-[1.75]" aria-hidden="true">
+              <path d="M22 12h-4l-3 7-4-14-3 7H2" />
+            </svg>
+            Status
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            class={cn(
+              'row flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[12px]',
+              settingsActive ? 'sel text-fg-1' : 'text-fg-2 hover:text-fg-1'
+            )}
+            onclick={() => {
+              moreOpen = false;
+              onsettings();
+            }}
+          >
+            <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0 fill-none stroke-current stroke-[1.75]" aria-hidden="true">
+              <line x1="21" x2="14" y1="4" y2="4" /><line x1="10" x2="3" y1="4" y2="4" />
+              <line x1="21" x2="12" y1="12" y2="12" /><line x1="8" x2="3" y1="12" y2="12" />
+              <line x1="21" x2="16" y1="20" y2="20" /><line x1="12" x2="3" y1="20" y2="20" />
+              <line x1="14" x2="14" y1="2" y2="6" /><line x1="8" x2="8" y1="10" y2="14" />
+              <line x1="16" x2="16" y1="18" y2="22" />
+            </svg>
+            Settings
+          </button>
+        </div>
+      {/if}
+      <button
+        type="button"
+        class={cn(
+          'row flex w-full flex-col items-center gap-1 py-1.5 text-[11px]',
+          statusActive || settingsActive || moreOpen ? 'sel text-fg-1' : 'text-fg-3 hover:text-fg-1'
+        )}
+        aria-label="More"
+        aria-haspopup="menu"
+        aria-expanded={moreOpen}
+        onclick={() => (moreOpen = !moreOpen)}
+      >
+        <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" aria-hidden="true">
+          <circle cx="5" cy="12" r="1.75" />
+          <circle cx="12" cy="12" r="1.75" />
+          <circle cx="19" cy="12" r="1.75" />
+        </svg>
+        More
+      </button>
+    </div>
   </div>
 </div>
 

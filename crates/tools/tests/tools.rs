@@ -218,6 +218,86 @@ fn read_skill_uri_catalog_and_item() {
 }
 
 #[test]
+fn read_el_docs_index_topics_and_unknown_topic_error() {
+    let fixture = setup();
+
+    let index = call(&fixture, "read", json!({"path": "el://docs"})).expect("docs index");
+    assert!(index.contains("1. `mcp`"), "{index}");
+    assert!(index.contains("2. `config`"), "{index}");
+    let trailing = call(&fixture, "read", json!({"path": "el://docs/"})).expect("docs index slash");
+    assert_eq!(index, trailing);
+
+    let mcp = call(&fixture, "read", json!({"path": "el://docs/mcp"})).expect("mcp docs");
+    assert!(mcp.contains("mcpServers"), "{mcp}");
+    assert!(mcp.contains("(not configured)"), "{mcp}");
+
+    let err = call(&fixture, "read", json!({"path": "el://docs/nope"})).unwrap_err();
+    assert!(err.to_string().contains("mcp, config"), "{err}");
+}
+
+#[test]
+fn read_el_docs_config_shows_paths_but_never_secret_contents() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("project");
+    fs::create_dir(&root).expect("project root");
+    fs::create_dir_all(root.join(".agents/skills")).expect("project skills");
+    let config_root = dir.path().join("config");
+    fs::create_dir_all(&config_root).expect("config root");
+    fs::write(
+        config_root.join("tool-keys.json"),
+        r#"{"WEBSEARCH_API_KEY": "super-secret-value"}"#,
+    )
+    .expect("tool keys");
+    fs::write(config_root.join("env"), "SECRET_TOKEN=hidden-value\n").expect("env");
+    let prompts_dir = config_root.join("prompts");
+    let global_skills = config_root.join("skills");
+
+    let config = ToolConfig {
+        mcp_file: Some(config_root.join("mcp.json")),
+        env_file: Some(config_root.join("env")),
+        tool_keys_file: Some(config_root.join("tool-keys.json")),
+        prompts_dir: Some(prompts_dir.clone()),
+        global_skills: Some(global_skills.clone()),
+        ..ToolConfig::new(&root, dir.path().join("spill"))
+    };
+    let toolbox = Arc::new(Toolbox::new(config).expect("toolbox"));
+    let fixture = Fixture {
+        _dir: dir,
+        root: root.clone(),
+        toolbox,
+    };
+
+    let config_docs = call(&fixture, "read", json!({"path": "el://docs/config"})).expect("config");
+    assert!(
+        config_docs.contains(&config_root.join("mcp.json").display().to_string()),
+        "{config_docs}"
+    );
+    assert!(
+        config_docs.contains(&config_root.join("env").display().to_string()),
+        "{config_docs}"
+    );
+    assert!(
+        config_docs.contains(&config_root.join("tool-keys.json").display().to_string()),
+        "{config_docs}"
+    );
+    assert!(
+        config_docs.contains(&prompts_dir.display().to_string()),
+        "{config_docs}"
+    );
+    assert!(
+        config_docs.contains(&global_skills.display().to_string()),
+        "{config_docs}"
+    );
+    assert!(
+        config_docs.contains(&root.join(".agents/skills").display().to_string()),
+        "{config_docs}"
+    );
+    assert!(config_docs.contains("EMBERLOOP_ENV_FILE"), "{config_docs}");
+    assert!(!config_docs.contains("super-secret-value"), "{config_docs}");
+    assert!(!config_docs.contains("hidden-value"), "{config_docs}");
+}
+
+#[test]
 fn jail_blocks_escapes_and_symlinks() {
     let fixture = setup();
     let outside = fixture._dir.path().join("outside.txt");
@@ -640,6 +720,7 @@ fn mcp_serves_tools_and_errors() {
             "skill_search",
             "skill_manage",
             "prompt_propose",
+            "retry_call",
             "execute"
         ]
     );
@@ -1074,4 +1155,376 @@ fn max_call_secs_caps_every_blocking_wait_below_the_harness_limit() {
     .unwrap();
     assert!(waited.starts_with("timeout after 1s"), "{waited}");
     call(&fixture, "background", json!({"action": "stop", "id": id})).unwrap();
+}
+
+#[test]
+fn retry_allowlist_defaults_to_spawn_and_steer_only() {
+    let fixture = setup();
+    let server = McpServer::new(fixture.toolbox.clone());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    let read_err = runtime.block_on(server.call(
+        "read",
+        Some(serde_json::from_value(json!({"path": "missing.txt"})).unwrap()),
+    ));
+    let read_err = serde_json::to_value(read_err).unwrap();
+    assert_eq!(read_err["isError"], true);
+    let read_msg = read_err["content"][0]["text"].as_str().unwrap();
+    assert!(!read_msg.contains("[failed call #"), "{read_msg}");
+    assert!(!fixture.toolbox.spill_dir().join("failed_calls").exists());
+
+    for (idx, (tool, args)) in [
+        ("spawn", json!({"role": "worker", "text": "hello"})),
+        ("steer", json!({"id": "ses_1", "text": "more"})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let expected_id = idx + 1;
+        let res = runtime.block_on(server.call(tool, Some(serde_json::from_value(args).unwrap())));
+        let val = serde_json::to_value(res).unwrap();
+        assert_eq!(val["isError"], true);
+        let msg = val["content"][0]["text"].as_str().unwrap();
+        assert!(
+            msg.contains(&format!(
+                "[failed call #{expected_id}] Retry with retry_call(id={expected_id}, ...)"
+            )),
+            "{msg}"
+        );
+        let persisted: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(
+                fixture
+                    .toolbox
+                    .spill_dir()
+                    .join("failed_calls")
+                    .join(format!("{expected_id}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted["tool"], tool);
+    }
+}
+
+#[test]
+fn custom_retry_allowlist_records_and_denied_calls_do_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("ok.txt"), "found it\n").unwrap();
+    let mut cfg = ToolConfig::new(&root, dir.path().join("spill"));
+    cfg.retry_allowlist.insert("read".into());
+    cfg.subagent_role = Some("worker".into());
+    let toolbox = Arc::new(Toolbox::new(cfg).unwrap());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    // Denied call for worker (`spawn`) must fail without recording #N even though spawn is allowlisted.
+    let denied = runtime
+        .block_on(toolbox.call("spawn", &json!({"role": "worker", "text": "nested"})))
+        .unwrap_err()
+        .to_string();
+    assert!(denied.contains("unavailable to subagent"), "{denied}");
+    assert!(!denied.contains("[failed call #"), "{denied}");
+
+    // Custom allowlisted `read` records #1 on failure and recovers via retry_call.
+    let err = runtime
+        .block_on(toolbox.call("read", &json!({"path": "missing.txt"})))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("[failed call #1]"), "{err}");
+    let fixed = runtime
+        .block_on(toolbox.call(
+            "retry_call",
+            &json!({"id": 1, "patches": [{"old": "missing.txt", "new": "ok.txt"}]}),
+        ))
+        .unwrap();
+    assert!(fixed.contains("found it"), "{fixed}");
+}
+
+#[test]
+fn retry_call_edits_set_and_patches_and_allocates_new_id_on_repeat_failure() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    let (addr, requests) = runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(tokio::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let reqs_clone = Arc::clone(&requests);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let reqs = Arc::clone(&reqs_clone);
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 4096];
+                    let header_end = loop {
+                        let n = stream.read(&mut tmp).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break pos + 4;
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&buf[..header_end]);
+                    let content_len: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (k, v) = line.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse().ok())?
+                        })
+                        .unwrap_or(0);
+                    while buf.len() < header_end + content_len {
+                        let n = stream.read(&mut tmp).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                    }
+                    let body: serde_json::Value =
+                        serde_json::from_slice(&buf[header_end..header_end + content_len]).unwrap();
+                    reqs.lock().await.push(body.clone());
+                    let has_ticket = body.get("ticketPath").is_some();
+                    let text = body.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let (status, resp_body) = if has_ticket {
+                        ("400 Bad Request", "worker rejects ticketPath")
+                    } else if !text.contains("fixed_target") {
+                        ("400 Bad Request", "text still invalid")
+                    } else {
+                        ("200 OK", r#"{"id":"ses_w1","role":"worker"}"#)
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+                        resp_body.len()
+                    );
+                    let _ = stream.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        (addr, requests)
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    fs::create_dir(&root).unwrap();
+    let config = ToolConfig {
+        session_url: Some(format!("http://{addr}/api/sessions/parent")),
+        ..ToolConfig::new(&root, dir.path().join("spill"))
+    };
+    let toolbox = Arc::new(Toolbox::new(config).unwrap());
+    let server = McpServer::new(toolbox.clone());
+
+    // 1. Initial spawn fails due to ticketPath + typo in long prompt.
+    let first = runtime.block_on(
+        server.call(
+            "spawn",
+            Some(
+                serde_json::from_value(json!({
+                    "role": "worker",
+                    "ticketPath": "bad.md",
+                    "text": "Investigate typo_target thoroughly",
+                    "toolAction": "Spawning worker",
+                    "toolSummary": "Spawn worker"
+                }))
+                .unwrap(),
+            ),
+        ),
+    );
+    let first_val = serde_json::to_value(first).unwrap();
+    assert_eq!(first_val["isError"], true);
+    assert!(first_val["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("[failed call #1]"));
+
+    // 2. Patch validation failure must fail cleanly without recording #2.
+    let bad_patch = runtime.block_on(
+        server.call(
+            "retry_call",
+            Some(
+                serde_json::from_value(json!({
+                    "id": 1,
+                    "patches": [{"old": "missing_text", "new": "x"}]
+                }))
+                .unwrap(),
+            ),
+        ),
+    );
+    let bad_val = serde_json::to_value(bad_patch).unwrap();
+    assert_eq!(bad_val["isError"], true);
+    let bad_msg = bad_val["content"][0]["text"].as_str().unwrap();
+    assert!(bad_msg.contains("0 occurrences"), "{bad_msg}");
+    assert!(!bad_msg.contains("[failed call #"), "{bad_msg}");
+    assert!(!toolbox.spill_dir().join("failed_calls/2.json").exists());
+
+    // 3. Retry #1 removes ticketPath via null, patches typo_target -> second_typo; fails and records #2.
+    let second = runtime.block_on(
+        server.call(
+            "retry_call",
+            Some(
+                serde_json::from_value(json!({
+                    "id": 1,
+                    "set": {"ticketPath": null, "tier": "smol"},
+                    "patches": [{"old": "typo_target", "new": "second_typo"}]
+                }))
+                .unwrap(),
+            ),
+        ),
+    );
+    let second_val = serde_json::to_value(second).unwrap();
+    assert_eq!(second_val["isError"], true);
+    let second_msg = second_val["content"][0]["text"].as_str().unwrap();
+    assert!(second_msg.contains("[failed call #2]"), "{second_msg}");
+
+    // 4. Retry #2 fixes second_typo -> fixed_target and succeeds.
+    let third = runtime.block_on(
+        server.call(
+            "retry_call",
+            Some(
+                serde_json::from_value(json!({
+                    "id": 2,
+                    "patches": [{"old": "second_typo", "new": "fixed_target"}]
+                }))
+                .unwrap(),
+            ),
+        ),
+    );
+    let third_val = serde_json::to_value(third).unwrap();
+    assert_eq!(third_val["isError"], false, "{third_val:?}");
+    assert!(third_val["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("ses_w1"));
+
+    let recorded = runtime.block_on(requests.lock()).clone();
+    assert_eq!(recorded.len(), 3);
+    assert!(recorded[2].get("ticketPath").is_none());
+    assert_eq!(recorded[2]["tier"], "smol");
+    assert_eq!(recorded[2]["text"], "Investigate fixed_target thoroughly");
+}
+
+#[test]
+fn retry_call_missing_id_fails_without_recording_new_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let toolbox =
+        Arc::new(Toolbox::new(ToolConfig::new(dir.path(), dir.path().join("spill"))).unwrap());
+    let server = McpServer::new(Arc::clone(&toolbox));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let res = runtime.block_on(server.call(
+        "retry_call",
+        Some(serde_json::from_value(json!({"id": 999})).unwrap()),
+    ));
+    let val = serde_json::to_value(res).unwrap();
+    assert_eq!(val["isError"], true);
+    let msg = val["content"][0]["text"].as_str().unwrap();
+    assert!(msg.contains("was not found"), "{msg}");
+    assert!(!toolbox.spill_dir().join("failed_calls/1.json").exists());
+}
+
+#[test]
+fn retry_call_dispatches_allowlisted_execute_and_bridge_records_spawn_failure() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let listener = runtime
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    runtime.spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"error":"spawn failed"}"#;
+                let resp = format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+
+    let mut cfg = ToolConfig::new(dir.path(), dir.path().join("spill"));
+    cfg.retry_allowlist = ["execute", "spawn"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    cfg.session_url = Some(format!("http://127.0.0.1:{addr}"));
+    let toolbox = Arc::new(Toolbox::new(cfg).unwrap());
+    let server = McpServer::new(Arc::clone(&toolbox));
+
+    // 1. Failing allowlisted `execute` records #1.
+    let first = runtime.block_on(server.call(
+        "execute",
+        Some(serde_json::from_value(json!({"code": "   "})).unwrap()),
+    ));
+    let first_val = serde_json::to_value(first).unwrap();
+    assert_eq!(first_val["isError"], true);
+    assert!(first_val["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("[failed call #1]"));
+
+    // 2. Retrying `execute` #1 via `retry_call` edits `code` and runs via `Toolbox::call`.
+    let retried = runtime.block_on(
+        server.call(
+            "retry_call",
+            Some(
+                serde_json::from_value(json!({
+                    "id": 1,
+                    "set": {"code": "print('retried execute ok')"}
+                }))
+                .unwrap(),
+            ),
+        ),
+    );
+    let retried_val = serde_json::to_value(retried).unwrap();
+    assert_eq!(retried_val["isError"], false, "{retried_val:?}");
+    assert!(retried_val["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("retried execute ok"));
+
+    // 3. Failing allowlisted `spawn` inside an `execute` bridge also records #2.
+    let bridge = runtime.block_on(server.call(
+        "execute",
+        Some(
+            serde_json::from_value(json!({
+                "code": "import tools\ntry:\n    tools.call('spawn', role='scout', text='hi')\nexcept tools.ToolError as e:\n    print('CAUGHT:', e)"
+            }))
+            .unwrap(),
+        ),
+    ));
+    let bridge_val = serde_json::to_value(bridge).unwrap();
+    assert_eq!(bridge_val["isError"], false, "{bridge_val:?}");
+    let bridge_out = bridge_val["content"][0]["text"].as_str().unwrap();
+    assert!(bridge_out.contains("CAUGHT:"), "{bridge_out}");
+    assert!(bridge_out.contains("[failed call #2]"), "{bridge_out}");
+    assert!(toolbox.spill_dir().join("failed_calls/2.json").exists());
 }

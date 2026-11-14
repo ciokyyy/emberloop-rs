@@ -44,5 +44,6 @@ pub const TOOL_STEER: &str = include_str!("../prompts/tool.steer.md");
 pub const TOOL_STOP: &str = include_str!("../prompts/tool.stop.md");
 pub const TOOL_RESULT: &str = include_str!("../prompts/tool.result.md");
 pub const TOOL_SUBMIT: &str = include_str!("../prompts/tool.submit.md");
+pub const TOOL_RETRY_CALL: &str = include_str!("../prompts/tool.retry_call.md");
 pub const REVIEWER_SPEC: &str = include_str!("../prompts/reviewer.spec.md");
 pub const REVIEWER_STANDARDS: &str = include_str!("../prompts/reviewer.standards.md");

@@ -34,8 +34,8 @@ struct FakeHarness {
     keep_open: bool,
     /// Sessions the runner closed through `HarnessSession::close`.
     closed: Arc<Mutex<usize>>,
+    configure_results: Arc<Mutex<std::collections::VecDeque<Result<(), String>>>>,
 }
-
 #[async_trait]
 impl Harness for FakeHarness {
     async fn spawn(
@@ -54,6 +54,7 @@ impl Harness for FakeHarness {
             dropped: Arc::clone(&self.dropped),
             keep_open: self.keep_open,
             closed: Arc::clone(&self.closed),
+            configure_results: Arc::clone(&self.configure_results),
         }))
     }
 }
@@ -67,8 +68,8 @@ struct FakeSession {
     dropped: Arc<Mutex<usize>>,
     keep_open: bool,
     closed: Arc<Mutex<usize>>,
+    configure_results: Arc<Mutex<std::collections::VecDeque<Result<(), String>>>>,
 }
-
 impl Drop for FakeSession {
     fn drop(&mut self) {
         *self.dropped.lock().unwrap() += 1;
@@ -125,6 +126,17 @@ impl HarnessSession for FakeSession {
     }
 
     async fn forget(&self, _resume_token: &str) -> Result<(), HarnessError> {
+        Ok(())
+    }
+
+    async fn configure_model(
+        &self,
+        _model: &str,
+        _effort: Option<&str>,
+    ) -> Result<(), HarnessError> {
+        if let Some(res) = self.configure_results.lock().unwrap().pop_front() {
+            return res.map_err(HarnessError::Process);
+        }
         Ok(())
     }
 }
@@ -339,6 +351,7 @@ async fn reviewer_wiring_carries_its_session_endpoint_and_tool_policy() {
         role: "spec".into(),
         ticket_path: "ticket.md".into(),
         starting_point: "abc123".into(),
+        tier: None,
     });
     fixture.sessions.save(&meta).await.unwrap();
     prompt_once(&fixture).await;
@@ -350,6 +363,46 @@ async fn reviewer_wiring_carries_its_session_endpoint_and_tool_policy() {
     assert!(wiring
         .env
         .contains(&("EMBERLOOP_REVIEWER".into(), "1".into())));
+    assert!(wiring
+        .env
+        .contains(&("EMBERLOOP_SUBAGENT_ROLE".into(), "spec".into())));
+
+    for (idx, (id, role)) in [("ses_w1", "worker"), ("ses_s1", "scout")]
+        .iter()
+        .enumerate()
+    {
+        fixture
+            .sessions
+            .insert(SessionMeta {
+                id: (*id).into(),
+                project_id: "proj_1".into(),
+                title: (*role).into(),
+                created_at: (idx + 2) as u64,
+                updated_at: (idx + 2) as u64,
+                reviewer: Some(store::sessions::ReviewerAssignment {
+                    parent_id: "parent".into(),
+                    role: (*role).into(),
+                    ticket_path: String::new(),
+                    starting_point: String::new(),
+                    tier: None,
+                }),
+                ..SessionMeta::default()
+            })
+            .await
+            .unwrap();
+        fixture
+            .runner
+            .prompt(id, "hi", Vec::<PromptImageDto>::new())
+            .await
+            .unwrap();
+        let wiring = fixture.fake.wirings.lock().unwrap()[idx + 1].clone();
+        assert!(wiring
+            .env
+            .contains(&("EMBERLOOP_REVIEWER".into(), "0".into())));
+        assert!(wiring
+            .env
+            .contains(&("EMBERLOOP_SUBAGENT_ROLE".into(), (*role).into())));
+    }
 }
 
 fn write_splices(data_root: &DataRoot) -> std::path::PathBuf {
@@ -484,13 +537,14 @@ async fn a_turn_end_wakes_pending_steers_and_notices_as_one_prompt() {
     queue
         .enqueue(SteerKind::Notice, "notice: background 7 exited")
         .await;
+    // Subscribe before the turn finishes: a delivered event published before this call is gone.
+    let mut delivered = fixture.events.subscribe();
     fixture
         .runner
         .prompt("ses_1", "start", Vec::<PromptImageDto>::new())
         .await
         .unwrap();
 
-    let mut delivered = fixture.events.subscribe();
     until(|| !fixture.fake.woken.lock().unwrap().is_empty()).await;
     let woken = fixture.fake.woken.lock().unwrap().clone();
     assert_eq!(woken.len(), 1);
@@ -786,4 +840,180 @@ async fn a_session_with_a_pending_steer_is_never_closed() {
     fixture.clock.advance(DEFAULT_IDLE_TIMEOUT * 6);
     assert!(fixture.runner.reap_idle().await.is_empty());
     assert_eq!(*fixture.fake.closed.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn exited_background_job_wakes_idle_session_once() {
+    let fixture = runner_with_stream(
+        vec![HarnessEvent::TurnFinished {
+            stop_reason: Some("end".into()),
+            usage: None,
+        }],
+        false,
+        Vec::new(),
+        true,
+    )
+    .await;
+    prompt_once(&fixture).await;
+    let queue = fixture.steers.queue("ses_1");
+    until(|| !queue.is_turn_active()).await;
+
+    let spill = fixture.data_root.session_spill_dir("ses_1");
+    std::fs::create_dir_all(&spill).unwrap();
+    let mut child = std::process::Command::new("sleep")
+        .arg("10")
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let start_time = stat[stat.rfind(')').unwrap() + 1..]
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .to_string();
+    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .unwrap()
+        .trim()
+        .to_string();
+    let meta = serde_json::json!({
+        "pid": pid,
+        "start_time": start_time,
+        "boot_id": boot_id,
+        "notice_emitted": false,
+    });
+    std::fs::write(spill.join("bg_live.json"), meta.to_string()).unwrap();
+    std::fs::write(spill.join("bg_live.log"), "bg output\n").unwrap();
+
+    // Still running: tracked in watched_bg, no premature wake.
+    fixture.runner.poll_background().await;
+    assert!(fixture.fake.woken.lock().unwrap().is_empty());
+
+    // Kill child without reaping so it transitions to zombie immediately, then poll wakes idle.
+    child.kill().unwrap();
+    for _ in 0..10_000 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let state = stat[stat.rfind(')').unwrap() + 1..]
+            .split_whitespace()
+            .next();
+        if state == Some("Z") {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    fixture.runner.poll_background().await;
+    until(|| !fixture.fake.woken.lock().unwrap().is_empty()).await;
+    let woken = fixture.fake.woken.lock().unwrap().clone();
+    assert_eq!(woken.len(), 1);
+    assert!(woken[0].contains("bg_live exited (code unknown)"));
+
+    // Subsequent polls never re-wake for the same job.
+    fixture.runner.poll_background().await;
+    assert_eq!(fixture.fake.woken.lock().unwrap().len(), 1);
+    let _ = child.wait();
+}
+
+#[tokio::test]
+async fn captured_mcp_output_replaces_harness_status_in_tool_finished() {
+    let fixture = runner_with(vec![
+        HarnessEvent::ToolStarted {
+            id: "call-1".into(),
+            name: "el_read".into(),
+            input: serde_json::json!({
+                "arguments": { "path": "foo.rs" },
+                "path": "foo.rs"
+            }),
+        },
+        HarnessEvent::ToolFinished {
+            id: "call-1".into(),
+            output: "Read foo.rs".into(),
+            status: Some("completed".into()),
+        },
+    ])
+    .await;
+
+    let out_dir = fixture
+        .data_root
+        .session_spill_dir("ses_1")
+        .join("mcp_outputs");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    std::fs::write(
+        out_dir.join("0001.json"),
+        r#"{"name":"read","args":{"path":"foo.rs"},"output":"actual file contents\n"}"#,
+    )
+    .unwrap();
+
+    prompt_once(&fixture).await;
+    let dir = fixture.data_root.session_events_dir("ses_1");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if EventLog::open(&dir)
+                .await
+                .unwrap()
+                .replay(None)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e.kind == EventKind::ToolFinished)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("ToolFinished stored");
+    let events = EventLog::open(&dir)
+        .await
+        .unwrap()
+        .replay(None)
+        .await
+        .unwrap();
+    let finished = events
+        .iter()
+        .find(|e| e.kind == EventKind::ToolFinished)
+        .expect("ToolFinished event");
+    assert_eq!(finished.data["output"], "actual file contents\n");
+    assert_eq!(std::fs::read_dir(&out_dir).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn a_configure_model_double_failure_evicts_the_handle_and_returns_error() {
+    let fixture = runner_with_stream(
+        vec![HarnessEvent::TurnFinished {
+            stop_reason: Some("end".into()),
+            usage: None,
+        }],
+        false,
+        Vec::new(),
+        true,
+    )
+    .await;
+    prompt_once(&fixture).await;
+    let queue = fixture.steers.queue("ses_1");
+    until(|| !queue.is_turn_active()).await;
+    assert_eq!(*fixture.fake.dropped.lock().unwrap(), 0);
+
+    fixture
+        .fake
+        .configure_results
+        .lock()
+        .unwrap()
+        .extend([Err("acp pipe closed".into()), Err("rollback failed".into())]);
+    let err = fixture
+        .runner
+        .configure_model("ses_1", "claude-opus-5-5", None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("acp pipe closed"), "unexpected error: {err}");
+    assert_eq!(*fixture.fake.closed.lock().unwrap(), 1);
+    until(|| *fixture.fake.dropped.lock().unwrap() == 1).await;
+
+    // With the dead handle evicted, the next configure succeeds and the next prompt respawns.
+    fixture
+        .runner
+        .configure_model("ses_1", "claude-opus-5-5", None)
+        .await
+        .unwrap();
+    prompt_once(&fixture).await;
+    assert_eq!(fixture.fake.wirings.lock().unwrap().len(), 2);
 }

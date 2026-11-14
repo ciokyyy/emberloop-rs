@@ -1,1 +1,1 @@
-Continue an existing reviewer with text, its ticketPath, and the captured startingPoint. The reviewer must belong to this Session. The same conversation remains available across tickets and follow-ups.
+Continue an existing subagent (`id`) with `text`. For `spec` and `standards` reviewers, also supply `ticketPath` and `startingPoint` (rejects `tier`). For `worker` and `scout`, omit `ticketPath` and `startingPoint`; optionally pass `tier` (`smol`, `mid`, or `top`) while idle to switch capability.

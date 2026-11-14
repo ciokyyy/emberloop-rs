@@ -132,23 +132,25 @@
 </script>
 
 <div class="relative min-h-0 flex-1">
-  {#if hasMore}
-    <button
-      class="btn absolute top-2 left-1/2 z-10 -translate-x-1/2 text-[12px] shadow-lg"
-      onclick={() => void loadEarlier()}
-      disabled={loadingMore}
-      data-testid="load-earlier"
-    >
-      {loadingMore ? 'Loading…' : 'Load earlier'}
-    </button>
-  {/if}
-
   <div
     bind:this={scroller}
     {onscroll}
     data-testid="feed-scroller"
-    class="h-full overflow-y-auto px-4 py-4"
+    class="h-full overflow-x-hidden overflow-y-auto px-4 py-4"
   >
+    {#if hasMore}
+      <div class="mx-auto mb-3 flex max-w-[760px] justify-center">
+        <button
+          class="btn text-[12px]"
+          onclick={() => void loadEarlier()}
+          disabled={loadingMore}
+          data-testid="load-earlier"
+        >
+          {loadingMore ? 'Loading…' : 'Load earlier'}
+        </button>
+      </div>
+    {/if}
+
     <!-- Rows stay in normal flow between two spacers. Absolute placement overlapped rows whenever a
          measured height lagged the DOM, so a window of real rows never stacks on another row. -->
     <div
@@ -211,7 +213,7 @@
     {:else if item.kind === 'assistant'}
       {@const html = renderMarkdown(item.text ?? '', sessionId ? sessionFileBase(sessionId) : '')}
       <div
-        class="md my-1.5 max-w-[92%] text-[15px]"
+        class="md my-1.5 min-w-0 max-w-[92%] text-[15px]"
         in:rise|global={{ skip: !arrived.has(item.id) }}
         use:fileEmbeds={html}
       >

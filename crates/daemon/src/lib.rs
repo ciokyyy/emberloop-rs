@@ -561,6 +561,7 @@ impl Daemon {
         );
         runner.watch_updates();
         runner.watch_idle();
+        runner.watch_background();
         let resume = updated.map_or_else(Vec::new, |pending| {
             let mut resume = Vec::new();
             if let Some(session) = pending.session.clone() {
@@ -638,6 +639,8 @@ impl Daemon {
             return Ok(None);
         };
         let toolbox = Toolbox::new(ToolConfig {
+            env_file: Some(self.config.config_root.join("env")),
+            tool_keys_file: Some(self.config.config_root.join("tool-keys.json")),
             mcp_file: Some(self.config.config_root.join("mcp.json")),
             global_skills: Some(self.config.global_skills.clone()),
             prompts_dir: Some(self.config.config_root.join("prompts")),
@@ -645,7 +648,8 @@ impl Daemon {
                 "http://{}:{}/api/sessions/{session_id}",
                 self.config.host, self.config.port
             )),
-            reviewer: meta.reviewer.is_some(),
+            reviewer: meta.reviewer.as_ref().is_some_and(|r| r.is_reviewer()),
+            subagent_role: meta.reviewer.as_ref().map(|r| r.role.clone()),
             image_input: self
                 .app_state
                 .models
@@ -699,48 +703,62 @@ impl Daemon {
             proxy_url,
             mcp_url: None,
             mcp_command,
-            env: vec![
-                (
-                    "EMBERLOOP_SESSION_URL".into(),
-                    format!(
-                        "http://{}:{}/api/sessions/{session_id}",
-                        self.config.host, self.config.port
+            env: {
+                let mut env = vec![
+                    (
+                        "EMBERLOOP_SESSION_URL".into(),
+                        format!(
+                            "http://{}:{}/api/sessions/{session_id}",
+                            self.config.host, self.config.port
+                        ),
                     ),
-                ),
-                (
-                    "EMBERLOOP_REVIEWER".into(),
-                    if meta.reviewer.is_some() { "1" } else { "0" }.into(),
-                ),
-                (
-                    "EMBERLOOP_IMAGE_INPUT".into(),
-                    if self
-                        .app_state
-                        .models
-                        .image_input(&meta.model)
-                        .await
-                        .unwrap_or(true)
-                    {
-                        "1"
-                    } else {
-                        "0"
-                    }
-                    .into(),
-                ),
-                (
-                    "EMBERLOOP_CTX_SPILL".into(),
-                    if self.app_state.settings.read().await.ctx_spill_enabled {
-                        "1"
-                    } else {
-                        "0"
-                    }
-                    .into(),
-                ),
-            ],
+                    (
+                        "EMBERLOOP_IMAGE_INPUT".into(),
+                        if self
+                            .app_state
+                            .models
+                            .image_input(&meta.model)
+                            .await
+                            .unwrap_or(true)
+                        {
+                            "1"
+                        } else {
+                            "0"
+                        }
+                        .into(),
+                    ),
+                    (
+                        "EMBERLOOP_CTX_SPILL".into(),
+                        if self.app_state.settings.read().await.ctx_spill_enabled {
+                            "1"
+                        } else {
+                            "0"
+                        }
+                        .into(),
+                    ),
+                ];
+                Self::push_subagent_env(&mut env, &meta);
+                env
+            },
             model: Some(meta.model.clone()),
             thought_level: meta.thought_level.clone(),
             resume_token: None,
             workdir: None,
         }))
+    }
+
+    pub(crate) fn push_subagent_env(env: &mut Vec<(String, String)>, meta: &store::SessionMeta) {
+        let is_reviewer = meta.reviewer.as_ref().is_some_and(|r| r.is_reviewer());
+        let role = meta
+            .reviewer
+            .as_ref()
+            .map(|r| r.role.clone())
+            .unwrap_or_default();
+        env.push((
+            "EMBERLOOP_REVIEWER".into(),
+            if is_reviewer { "1" } else { "0" }.into(),
+        ));
+        env.push(("EMBERLOOP_SUBAGENT_ROLE".into(), role));
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
@@ -867,11 +885,15 @@ pub fn mcp_tool_config(
         prompts_dir: Some(config_root.join("prompts")),
         session_url: std::env::var("EMBERLOOP_SESSION_URL").ok(),
         reviewer: std::env::var("EMBERLOOP_REVIEWER").as_deref() == Ok("1"),
+        subagent_role: std::env::var("EMBERLOOP_SUBAGENT_ROLE")
+            .ok()
+            .filter(|v| !v.is_empty()),
         image_input: std::env::var("EMBERLOOP_IMAGE_INPUT").as_deref() != Ok("0"),
         max_call_secs: std::env::var("EMBERLOOP_MAX_CALL_SECS")
             .ok()
             .and_then(|value| value.parse().ok()),
         ctx_spill_enabled: std::env::var("EMBERLOOP_CTX_SPILL").as_deref() == Ok("1"),
+        capture_mcp_output: std::env::var("EMBERLOOP_CAPTURE_MCP_OUTPUT").as_deref() == Ok("1"),
         ..ToolConfig::new(root, spill)
     }
 }

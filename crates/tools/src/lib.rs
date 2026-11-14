@@ -4,8 +4,10 @@ pub mod bash;
 mod bm25;
 pub mod browser;
 pub mod ctxsearch;
+pub mod docs;
 pub mod edit;
 pub mod execute;
+pub mod failedcalls;
 pub mod figcraft;
 pub mod find;
 pub mod graph;
@@ -29,6 +31,7 @@ pub mod tag;
 pub mod todo;
 pub mod websearch;
 pub mod write;
+use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -87,6 +90,7 @@ pub struct ToolConfig {
     pub prompts_dir: Option<PathBuf>,
     pub session_url: Option<String>,
     pub reviewer: bool,
+    pub subagent_role: Option<String>,
     /// False when the Session's model takes no image input: `read` then refuses image files.
     pub image_input: bool,
     /// A harness cuts an MCP call that blocks longer (Antigravity: 3 minutes) and then dies, so
@@ -95,6 +99,11 @@ pub struct ToolConfig {
     pub bin_dirs: Vec<PathBuf>,
     /// Whether oversized tool output spills to `ctx:` handles and `ctx_search` is available.
     pub ctx_spill_enabled: bool,
+    /// Record MCP tool results into `spill_dir/mcp_outputs/` for harnesses (like agy) that drop
+    /// live tool outputs on the wire.
+    pub capture_mcp_output: bool,
+    /// Tool names whose failures persist under `spill_dir/failed_calls/` for `retry_call`.
+    pub retry_allowlist: BTreeSet<String>,
 }
 impl ToolConfig {
     pub fn new(root: impl Into<PathBuf>, spill_dir: impl Into<PathBuf>) -> Self {
@@ -111,10 +120,13 @@ impl ToolConfig {
             prompts_dir: None,
             session_url: None,
             reviewer: false,
+            subagent_role: None,
             max_call_secs: None,
             image_input: true,
             bin_dirs: graph::default_bin_dirs(),
             ctx_spill_enabled: false,
+            capture_mcp_output: false,
+            retry_allowlist: ["spawn", "steer"].into_iter().map(str::to_string).collect(),
         }
     }
 }
@@ -137,10 +149,20 @@ pub struct Toolbox {
     overflow: Arc<OverflowStore>,
     background: Arc<background::BackgroundManager>,
     mcp: Arc<mcpclient::McpRegistry>,
+    failed_calls: failedcalls::FailedCallStore,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SubagentKind {
+    None,
+    Reviewer,
+    Scout,
+    Worker,
+}
+
 impl Toolbox {
     pub fn new(config: ToolConfig) -> io::Result<Self> {
         let spill_dir = config.spill_dir.clone();
+        let failed_calls = failedcalls::FailedCallStore::new(&spill_dir);
         let seen_dir = spill_dir
             .parent()
             .map(|session| session.join("seen"))
@@ -166,6 +188,7 @@ impl Toolbox {
             seen: Arc::new(SeenLines::open(seen_dir)),
             overflow,
             mcp,
+            failed_calls,
         })
     }
 
@@ -233,8 +256,16 @@ impl Toolbox {
     pub fn background(&self) -> &background::BackgroundManager {
         &self.background
     }
+    pub fn failed_calls(&self) -> &failedcalls::FailedCallStore {
+        &self.failed_calls
+    }
+
     pub fn image_input(&self) -> bool {
         self.config.image_input
+    }
+
+    pub fn capture_mcp_output(&self) -> bool {
+        self.config.capture_mcp_output
     }
 
     pub fn max_read_bytes(&self) -> usize {
@@ -289,14 +320,48 @@ impl Toolbox {
 
     pub async fn call(&self, name: &str, args: &Value) -> ToolResult<String> {
         match name {
-            "execute" => execute::run(Arc::new(self.clone()), args).await,
+            "execute" => {
+                let result = execute::run(Arc::new(self.clone()), args).await;
+                self.wrap_retry_error(name, args, result)
+            }
             other => self.call_inner(other, args).await,
+        }
+    }
+    fn subagent_kind(&self) -> SubagentKind {
+        match self.config.subagent_role.as_deref() {
+            Some(role) if emberloop_core::steer::is_reviewer_role(role) => SubagentKind::Reviewer,
+            Some("scout") => SubagentKind::Scout,
+            Some(_) => SubagentKind::Worker,
+            None if self.config.reviewer => SubagentKind::Reviewer,
+            None => SubagentKind::None,
+        }
+    }
+
+    pub(crate) fn is_scout(&self) -> bool {
+        self.subagent_kind() == SubagentKind::Scout
+    }
+
+    fn denied_reason(&self, name: &str) -> Option<String> {
+        match (self.subagent_kind(), name) {
+            (SubagentKind::Scout, "edit" | "write") => {
+                Some(format!("{name} is unavailable to scout Sessions"))
+            }
+            (SubagentKind::Reviewer, "edit") => {
+                Some("edit is unavailable to reviewer Sessions".into())
+            }
+            (
+                SubagentKind::Reviewer | SubagentKind::Scout | SubagentKind::Worker,
+                "spawn" | "steer" | "stop" | "result",
+            ) => Some(format!("{name} is unavailable to subagent Sessions")),
+            _ => None,
         }
     }
 
     pub(crate) fn tool_available(&self, name: &str) -> bool {
+        if self.denied_reason(name).is_some() {
+            return false;
+        }
         match name {
-            "edit" => !self.config.reviewer,
             "ctx_search" => self.config.ctx_spill_enabled,
             "spawn" | "steer" | "stop" | "result" | "submit" => self.config.session_url.is_some(),
             _ => true,
@@ -304,9 +369,14 @@ impl Toolbox {
     }
 
     pub async fn call_inner(&self, name: &str, args: &Value) -> ToolResult<String> {
-        if name == "edit" && self.config.reviewer {
-            return Err(ToolError::msg("edit is unavailable to reviewer Sessions"));
+        if let Some(reason) = self.denied_reason(name) {
+            return Err(ToolError::msg(reason));
         }
+        let result = self.dispatch_inner(name, args).await;
+        self.wrap_retry_error(name, args, result)
+    }
+
+    async fn dispatch_inner(&self, name: &str, args: &Value) -> ToolResult<String> {
         match name {
             "read" => {
                 if args
@@ -340,12 +410,13 @@ impl Toolbox {
                     .await
             }
             "websearch" => websearch::run(self, args).await,
+            "retry_call" => failedcalls::run_retry(self, args).await,
             "spawn" | "steer" | "stop" | "result" | "submit" => {
                 let url = self
                     .config
                     .session_url
                     .as_deref()
-                    .ok_or_else(|| ToolError::msg("Reviewer tools require a daemon Session"))?;
+                    .ok_or_else(|| ToolError::msg("Subagent tools require a daemon Session"))?;
                 let text = subagents::run(url, name, args).await?;
                 self.maybe_spill(text, name)
             }
@@ -353,7 +424,28 @@ impl Toolbox {
             other => Err(ToolError::msg(format!("unknown tool {other:?}"))),
         }
     }
-
+    fn wrap_retry_error(
+        &self,
+        name: &str,
+        args: &Value,
+        result: ToolResult<String>,
+    ) -> ToolResult<String> {
+        let Err(error) = result else {
+            return result;
+        };
+        if name == "retry_call" || !self.config.retry_allowlist.contains(name) {
+            return Err(error);
+        }
+        match self.failed_calls.record(name, args) {
+            Ok(id) => Err(ToolError::msg(format!(
+                "{error}\n\n[failed call #{id}] Retry with retry_call(id={id}, ...)"
+            ))),
+            Err(record_err) => {
+                tracing::warn!(tool = name, error = %record_err, "failed to record failed call for retry");
+                Err(error)
+            }
+        }
+    }
     pub(crate) fn maybe_spill(&self, content: String, origin: &str) -> ToolResult<String> {
         if !self.config.ctx_spill_enabled {
             return Ok(content);

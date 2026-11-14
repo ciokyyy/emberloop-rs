@@ -16,6 +16,8 @@ import type {
   SkillDetail,
   SkillHistory,
   SkillSummary,
+  SystemStatus,
+  TokenStatus,
   ToolKey
 } from './types';
 
@@ -200,7 +202,11 @@ export const api = {
   history: (id: string, before: number, limit = 8) =>
     request<SessionEvent[]>(
       `/api/sessions/${encodeURIComponent(id)}/history?before=${before}&limit=${limit}`
-    )
+    ),
+  systemStatus: (refresh = false) =>
+    request<SystemStatus>(`/api/status/system${refresh ? '?refresh=true' : ''}`),
+  tokenStatus: (month?: string) =>
+    request<TokenStatus>(`/api/status/tokens${month ? `?month=${encodeURIComponent(month)}` : ''}`)
 };
 
 export function eventsUrl(sessionId: string, after = 0, limit = 0): string {

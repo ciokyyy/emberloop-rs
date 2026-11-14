@@ -52,6 +52,10 @@ pub struct ReviewerReport {
     pub report: String,
 }
 
+/// True when `role` identifies a persistent code-review Subagent (`spec` or `standards`).
+pub fn is_reviewer_role(role: &str) -> bool {
+    matches!(role, "spec" | "standards")
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SteerEntry {
@@ -153,18 +157,26 @@ impl SteerQueue {
 
     /// Accept a report only after its queue entry is durable.
     pub async fn enqueue_report(&self, report: ReviewerReport) -> std::io::Result<SteerEntry> {
+        let header = if is_reviewer_role(&report.role) {
+            format!(
+                "Sub-agent report from {} reviewer ({}) for {} [{}]",
+                report.role, report.session_id, report.ticket_path, report.status
+            )
+        } else if report.ticket_path.is_empty() {
+            format!(
+                "Sub-agent report from {} ({}) [{}]",
+                report.role, report.session_id, report.status
+            )
+        } else {
+            format!(
+                "Sub-agent report from {} ({}) for {} [{}]",
+                report.role, report.session_id, report.ticket_path, report.status
+            )
+        };
         let entry = SteerEntry {
             id: generate_id("submit"),
             kind: SteerKind::Steer,
-            text: format!(
-                "Sub-agent report from {} reviewer ({}) for {} [{}]\n{}\n\n{}",
-                report.role,
-                report.session_id,
-                report.ticket_path,
-                report.status,
-                report.summary,
-                report.report
-            ),
+            text: format!("{header}\n{}\n\n{}", report.summary, report.report),
             images: Vec::new(),
             report: Some(report),
             state: SteerState::Pending,

@@ -2,7 +2,7 @@
 
 ## Reviewer subagents
 
-`reviewer.spec` and `reviewer.standards` are the authoritative pinned reviewer briefs, adapted from the original `code-review` skill. The skill dispatches assignments without duplicating these prompts. The five `tool.{spawn,steer,stop,result,submit}.description` ids describe the shared Session tools; register every prompt in `PROMPT_IDS` and `default_text`.
+`reviewer.spec` and `reviewer.standards` are the authoritative pinned reviewer briefs, adapted from the original `code-review` skill. The skill dispatches assignments without duplicating these prompts. The five `tool.{spawn,steer,stop,result,submit}.description` ids describe the shared Subagent tools (`spec`, `standards`, `worker`, `scout`); register every prompt in `PROMPT_IDS` and `default_text`.
 
 
 ## Purpose

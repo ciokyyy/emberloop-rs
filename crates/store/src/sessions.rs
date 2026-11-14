@@ -19,8 +19,18 @@ pub enum SessionState {
 pub struct ReviewerAssignment {
     pub parent_id: String,
     pub role: String,
+    #[serde(default)]
     pub ticket_path: String,
+    #[serde(default)]
     pub starting_point: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+}
+
+impl ReviewerAssignment {
+    pub fn is_reviewer(&self) -> bool {
+        emberloop_core::steer::is_reviewer_role(&self.role)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

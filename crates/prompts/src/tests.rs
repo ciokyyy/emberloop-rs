@@ -53,6 +53,7 @@ const OFFERED_TOOLS: &[&str] = &[
     "skill_search",
     "skill_manage",
     "prompt_propose",
+    "retry_call",
     "execute",
 ];
 /// Tools the proxy injects into every request.

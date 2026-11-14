@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::tag::{content_hash, lines_of};
-use crate::{skills, skillstore, ToolError, ToolResult, Toolbox};
+use crate::{docs, skills, skillstore, ToolError, ToolResult, Toolbox};
 
 #[derive(Deserialize)]
 struct ReadArgs {
@@ -122,6 +122,9 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     }
     if let Some(target) = parse_skill_target(&path_arg) {
         return read_skill(toolbox, target, args.offset, args.limit);
+    }
+    if let Some(target) = docs::parse_target(&path_arg) {
+        return docs::read(toolbox, target);
     }
     let path = toolbox_jail(toolbox).resolve(&path_arg)?;
     if path.is_dir() {

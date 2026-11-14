@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
-  import type { Model, Settings, ToolKey } from '$lib/api/types';
+  import type { FallbackLadder, Model, ModelRung, Settings, ToolKey } from '$lib/api/types';
   import { rise } from '$lib/motion';
   import { disablePush, pushSubscribed, sendTestPush } from '$lib/notify';
   import ModelPicker from './ModelPicker.svelte';
@@ -51,7 +51,45 @@
     { key: 'standards_reviewer', name: 'Standards reviewer', description: 'Checks repository standards and code smells.' }
   ] as const;
 
-  // Tool keys live in the runtime env file the tool shells read on every call, so a saved key
+  const tiers = [
+    { key: 'smol', name: 'Smol tier', description: 'Fast, low-cost preset for simple worker and scout tasks.' },
+    { key: 'mid', name: 'Mid tier', description: 'Balanced default preset when tier is omitted.' },
+    { key: 'top', name: 'Top tier', description: 'Highest-capability preset for complex worker and scout tasks.' }
+  ] as const;
+  const rungIds = new WeakMap<ModelRung, number>();
+  let nextRungId = 1;
+  const rungKey = (rung: ModelRung) => {
+    let id = rungIds.get(rung);
+    if (id === undefined) {
+      id = nextRungId++;
+      rungIds.set(rung, id);
+    }
+    return id;
+  };
+
+  const updateRung = (ladder: FallbackLadder, index: number, patch: Partial<ModelRung>) =>
+    ladder.map((rung, i) => {
+      if (i !== index) return rung;
+      const updated = { ...rung, ...patch };
+      rungIds.set(updated, rungKey(rung));
+      return updated;
+    });
+
+  const moveRung = (ladder: FallbackLadder, index: number, delta: -1 | 1) => {
+    const target = index + delta;
+    if (target < 0 || target >= ladder.length) return ladder;
+    const next = [...ladder];
+    [next[index], next[target]] = [next[target], next[index]];
+    return next;
+  };
+
+  const removeRung = (ladder: FallbackLadder, index: number) =>
+    ladder.length <= 1 ? ladder : ladder.filter((_, i) => i !== index);
+
+  const addRung = (ladder: FallbackLadder): FallbackLadder => [
+    ...ladder,
+    { model: ladder[ladder.length - 1]?.model ?? settings.default_model, reasoning_effort: null }
+  ];
   // applies to the next call with no restart. The API never returns a stored value, only whether one is set.
   const labels: Record<string, string> = { brave: 'Brave search', exa: 'Exa search', jina: 'Jina reader' };
   let toolKeys = $state<ToolKey[]>([]);
@@ -323,30 +361,89 @@
 
       <section class="flex flex-col gap-2" aria-labelledby="g-subagents">
         <h3 id="g-subagents" class="px-1 text-[14px] font-semibold text-fg-1">Sub-agents</h3>
-        <p class="px-1 text-[12px] text-fg-3">Defaults apply when a reviewer Session is created. Existing reviewers keep their model and reasoning effort.</p>
+        <p class="px-1 text-[12px] text-fg-3">Ordered fallback ladders for reviewers and subagent tiers. Transient errors retry up to twice before escalating to the next rung.</p>
+        {#snippet ladderEditor(prefix: string, ladder: FallbackLadder, onupdate: (next: FallbackLadder) => void)}
+          <div class="flex flex-col gap-2.5">
+            {#each ladder as rung, index (rungKey(rung))}
+              {@const efforts = models.find((model) => model.id === rung.model)?.efforts ?? []}
+              <div class="flex flex-col gap-2 rounded-lg border border-border bg-surface-0 p-2.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-[12px] font-medium text-fg-2">
+                    {index === 0 ? 'Rung 1 · Primary' : `Rung ${index + 1} · Fallback`}
+                  </span>
+                  <div class="flex items-center gap-1">
+                    <Button
+                      class="px-2 py-1 text-[11px]"
+                      aria-label={`Move ${prefix} rung ${index + 1} up`}
+                      disabled={index === 0}
+                      onclick={() => onupdate(moveRung(ladder, index, -1))}
+                    >↑</Button>
+                    <Button
+                      class="px-2 py-1 text-[11px]"
+                      aria-label={`Move ${prefix} rung ${index + 1} down`}
+                      disabled={index === ladder.length - 1}
+                      onclick={() => onupdate(moveRung(ladder, index, 1))}
+                    >↓</Button>
+                    <Button
+                      class="px-2 py-1 text-[11px]"
+                      aria-label={`Remove ${prefix} rung ${index + 1}`}
+                      disabled={ladder.length <= 1}
+                      onclick={() => onupdate(removeRung(ladder, index))}
+                    >Remove</Button>
+                  </div>
+                </div>
+                <ModelPicker
+                  {models}
+                  value={rung.model}
+                  label={`${prefix} rung ${index + 1} model`}
+                  onchange={(model) => onupdate(updateRung(ladder, index, { model, reasoning_effort: null }))}
+                />
+                {#if efforts.length}
+                  <span class="text-[12px] text-fg-3">Reasoning effort</span>
+                  <div class="seg flex-wrap" role="group" aria-label={`${prefix} rung ${index + 1} reasoning effort`}>
+                    {#each [null, ...efforts] as option (option)}
+                      <button
+                        type="button"
+                        aria-pressed={rung.reasoning_effort === option}
+                        onclick={() => onupdate(updateRung(ladder, index, { reasoning_effort: option }))}
+                      >{option ?? 'Default'}</button>
+                    {/each}
+                  </div>
+                {:else}
+                  <p class="text-[12px] text-fg-3">This model has no configurable reasoning effort.</p>
+                {/if}
+              </div>
+            {/each}
+            <Button
+              aria-label={`Add ${prefix} fallback`}
+              onclick={() => onupdate(addRung(ladder))}
+            >Add fallback</Button>
+          </div>
+        {/snippet}
         <div class="grid gap-3 sm:grid-cols-2">
           {#each subagents as agent (agent.key)}
-            {@const defaults = settings[agent.key]}
-            {@const efforts = models.find((model) => model.id === defaults.model)?.efforts ?? []}
             <div class="flex min-w-0 flex-col gap-3 rounded-xl border border-border bg-surface-1 p-3.5">
               <div>
                 <h4 class="text-[13px] font-semibold text-fg-1">{agent.name}</h4>
                 <p class="text-[12px] text-fg-3">{agent.description}</p>
               </div>
-              <ModelPicker {models} value={defaults.model} label={`${agent.name} model`}
-                onchange={(model) => change({ [agent.key]: { model, reasoning_effort: null } })} />
-              {#if efforts.length}
-                <span class="text-[12px] text-fg-3">Reasoning effort</span>
-                <div class="seg flex-wrap" role="group" aria-label={`${agent.name} reasoning effort`}>
-                  {#each [null, ...efforts] as option (option)}
-                    <button type="button" aria-pressed={defaults.reasoning_effort === option}
-                      onclick={() => change({ [agent.key]: { ...defaults, reasoning_effort: option } })}>{option ?? 'Default'}</button>
-                  {/each}
-                </div>
-              {:else}
-                <p class="text-[12px] text-fg-3">This model has no configurable reasoning effort.</p>
-              {/if}
+              {@render ladderEditor(agent.name, settings[agent.key], (next) => change({ [agent.key]: next }))}
               <p class="text-[12px] text-fg-3">The edit tool is unavailable. Shell and other tools remain available; this is not a sandbox.</p>
+            </div>
+          {/each}
+        </div>
+        <h4 class="px-1 pt-2 text-[13px] font-semibold text-fg-1">Worker and scout tiers</h4>
+        <p class="px-1 text-[12px] text-fg-3">Presets selected by tier (smol, mid, top) when spawning or steering workers and scouts.</p>
+        <div class="grid gap-3 sm:grid-cols-2">
+          {#each tiers as tier (tier.key)}
+            <div class="flex min-w-0 flex-col gap-3 rounded-xl border border-border bg-surface-1 p-3.5">
+              <div>
+                <h4 class="text-[13px] font-semibold text-fg-1">{tier.name}</h4>
+                <p class="text-[12px] text-fg-3">{tier.description}</p>
+              </div>
+              {@render ladderEditor(tier.name, settings.subagent_tiers[tier.key], (next) =>
+                change({ subagent_tiers: { ...settings.subagent_tiers, [tier.key]: next } })
+              )}
             </div>
           {/each}
         </div>

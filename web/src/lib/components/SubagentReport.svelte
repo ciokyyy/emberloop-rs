@@ -5,6 +5,13 @@
 
   let { report, route, projectId }: { report: ReviewerReport; route?: SteerRoute; projectId: string } = $props();
   const failed = $derived(report.status === 'error' || report.status === 'stopped');
+  const ROLE_LABELS: Record<string, string> = {
+    spec: 'Spec reviewer',
+    standards: 'Standards reviewer',
+    worker: 'Worker',
+    scout: 'Scout'
+  };
+  const roleLabel = $derived(ROLE_LABELS[report.role] ?? report.role);
 </script>
 
 <section aria-label={failed ? 'Sub-agent error' : 'Sub-agent report'}
@@ -12,12 +19,14 @@
   <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
     <span class="font-semibold">{failed ? 'Sub-agent error' : 'Sub-agent report'}</span>
     <a class="text-brand underline underline-offset-2" href={sessionPath(projectId, report.sessionId)}>
-      {report.role === 'spec' ? 'Spec reviewer' : 'Standards reviewer'}
+      {roleLabel}
     </a>
     <span class="chip">{report.status}</span>
     <span class="ml-auto text-[12px] text-fg-3">{route === 'pending' ? 'Queued' : 'Delivered'}</span>
   </div>
-  <div class="mt-1 break-all font-mono text-[12px] text-fg-3">{report.ticketPath}</div>
+  {#if report.ticketPath}
+    <div class="mt-1 break-all font-mono text-[12px] text-fg-3">{report.ticketPath}</div>
+  {/if}
   {#if report.summary}<p class="mt-2 break-words">{report.summary}</p>{/if}
   {#if report.report}
     <details class="mt-2">

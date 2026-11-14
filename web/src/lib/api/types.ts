@@ -77,10 +77,12 @@ export interface Model {
   updated_at: number;
 }
 
-export interface ReviewerSettings {
+export interface ModelRung {
   model: string;
   reasoning_effort: string | null;
 }
+
+export type FallbackLadder = ModelRung[];
 
 export interface ReviewerReport {
   sessionId: string;
@@ -91,12 +93,19 @@ export interface ReviewerReport {
   report: string;
 }
 
+export interface SubagentTiers {
+  smol: FallbackLadder;
+  mid: FallbackLadder;
+  top: FallbackLadder;
+}
+
 export interface Settings {
   title_generation: boolean;
   title_model: string;
   default_model: string;
-  spec_reviewer: ReviewerSettings;
-  standards_reviewer: ReviewerSettings;
+  spec_reviewer: FallbackLadder;
+  standards_reviewer: FallbackLadder;
+  subagent_tiers: SubagentTiers;
   proxy_compression: boolean;
   ponytail_default_level: string;
   todo_reminders: boolean;
@@ -229,3 +238,8 @@ export interface ToolKey {
   variable: string;
   set: boolean;
 }
+
+export type SystemStatus = components['schemas']['SystemStatusDto'];
+export type TokenStatus = components['schemas']['TokenStatusDto'];
+export type TokenTelemetryRow = components['schemas']['TokenTelemetryRowDto'];
+export type TokenSink = components['schemas']['TokenSinkDto'];

@@ -64,6 +64,8 @@ use crate::state::{AppState, Settings};
         crate::providers::cancel_claude_login,
         crate::providers::complete_claude_login,
         crate::subagents::action,
+        crate::status::get_system_status,
+        crate::status::get_token_status,
     ),
     components(
         schemas(
@@ -79,7 +81,9 @@ use crate::state::{AppState, Settings};
             PromptImageDto,
             SteerRequest,
             Settings,
-            crate::state::ReviewerSettings,
+            crate::state::ModelRung,
+            crate::state::FallbackLadder,
+            crate::state::SubagentTiers,
             crate::subagents::SubagentRequest,
             ToolKeyDto,
             ToolKeyRequest,
@@ -99,6 +103,19 @@ use crate::state::{AppState, Settings};
             crate::providers::CompleteLoginRequest,
             crate::providers::CompleteClaudeLoginRequest,
             crate::providers::SetKeyRequest,
+            crate::status::HostInfoDto,
+            crate::status::CpuStatsDto,
+            crate::status::MemoryStatsDto,
+            crate::status::DiskStatsDto,
+            crate::status::RuntimeSummaryDto,
+            crate::status::ProcessRowDto,
+            crate::status::StorageSegmentDto,
+            crate::status::StorageBreakdownDto,
+            crate::status::SystemStatusDto,
+            crate::status::TokenSummaryDto,
+            crate::status::TokenTelemetryRowDto,
+            crate::status::TokenSinkDto,
+            crate::status::TokenStatusDto,
         )
     ),
     tags(
@@ -524,6 +541,7 @@ pub async fn delete_session(
         .delete(&id)
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    crate::subagent_recovery::remove_run(&state, &id).await;
 
     Ok(Json(session_dto(deleted)))
 }
@@ -727,19 +745,19 @@ pub async fn cancel_session(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.event_bus.publish(appended);
+    crate::subagents::mark_cancelled(&state, &id).await;
     state
         .driver
         .cancel(&id)
         .await
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
     if let Some(child) = state.sessions.get(&id).await {
-        crate::subagents::notify_failure(
-            &state,
-            &child,
-            "stopped",
-            "Review stopped. Continue this reviewer explicitly when ready.",
-        )
-        .await?;
+        let message = if child.reviewer.as_ref().is_some_and(|r| r.is_reviewer()) {
+            "Review stopped. Continue this reviewer explicitly when ready."
+        } else {
+            "Subagent stopped. Continue this subagent explicitly when ready."
+        };
+        crate::subagents::notify_failure(&state, &child, "stopped", message).await?;
     }
     Ok(StatusCode::OK)
 }
@@ -1186,6 +1204,8 @@ pub fn build_router(state: AppState) -> Router {
             "/api/prompt-proposals/{id}",
             axum::routing::delete(discard_prompt_proposal),
         )
+        .route("/api/status/system", get(crate::status::get_system_status))
+        .route("/api/status/tokens", get(crate::status::get_token_status))
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .merge(providers)
         .merge(crate::transcribe::router())
