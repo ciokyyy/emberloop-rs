@@ -2971,6 +2971,57 @@ fn compress_args_name_the_range_that_is_malformed() {
 
 #[test]
 fn compress_empty_args_hint_at_cut_stream() {
+
+#[test]
+fn the_default_tail_refuses_the_incident_fold() {
+    let dir = tempdir().unwrap();
+    // Incident shape: the eight-question turn is fourth from the end, answers in the last three.
+    let mut contents: Vec<Value> = (0..118)
+        .map(|i| {
+            let role = if i <= 114 && i % 2 == 0 {
+                "model"
+            } else {
+                "user"
+            };
+            let text = match i {
+                114 => "1. Which port? 2. Which host? 3. Which name? 4. Which key? 5. Which path? 6. Which limit? 7. Which retry? 8. Which log?".to_string(),
+                115..=117 => format!("answers in turn {i}: 1. 8080. 2. localhost. 3. app. 4. key. 5. /srv. 6. 10. 7. 3. 8. info."),
+                _ if i % 2 == 0 => format!("model turn {i}"),
+                _ => format!("user turn {i}"),
+            };
+            json!({"role": role, "parts": [{"text": text}]})
+        })
+        .collect();
+    let call = || CompressCall {
+        start: 81,
+        end: 115,
+        summary: "The user answered the eight questions by number. ".repeat(8),
+        topic: None,
+    };
+    let before = contents.clone();
+    let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+    let error = compressor
+        .compress_batch(
+            &mut contents,
+            vec![call()],
+            &compress_policy(&api::state::Settings::default()),
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("includes the last 4 preserved turns"),
+        "{error}"
+    );
+    assert_eq!(contents, before);
+
+    let policy = CompressPolicy {
+        preserve_recent_messages: 3,
+        ..CompressPolicy::default()
+    };
+    compressor
+        .compress_batch(&mut contents, vec![call()], &policy)
+        .unwrap();
+}
+
     let error = parse_compress_calls(&json!({})).unwrap_err();
     assert!(
         error.contains("empty") && error.contains("re-issue"),

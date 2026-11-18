@@ -2201,7 +2201,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Reference `compress.preserveRecentMessages`.",
-            "default": 3,
+            "default": 4,
             "minimum": 0
           },
           "protected_tools": {

@@ -69,7 +69,7 @@ impl Default for Settings {
             max_context_limit: 20,
             min_pressure_benefit_tokens: 0,
             emergency_threshold_percent: 25,
-            preserve_recent_messages: 3,
+            preserve_recent_messages: 4,
             protected_tools: Vec::new(),
             inject_tool: true,
             inject_nudge: true,

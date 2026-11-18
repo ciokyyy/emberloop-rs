@@ -799,7 +799,7 @@ export interface components {
             /**
              * Format: int32
              * @description Reference `compress.preserveRecentMessages`.
-             * @default 3
+             * @default 4
              */
             preserve_recent_messages: number;
             /**

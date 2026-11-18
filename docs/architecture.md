@@ -94,7 +94,7 @@ flowchart TD
 every range against the history as it is now, then replaces the range with one
 summary turn. Validation is strict: a batch is all or nothing, turn 0 never
 folds, the latest user message is never folded, protected content ends a run,
-`preserve_recent_messages` (default 3) turns at the tail never fold, and a
+`preserve_recent_messages` (default 4) turns at the tail never fold, and a
 tool call whose result would land outside the range is rejected because the
 upstream would reject the split pair. The summary text is the model's; the
 originals go to `<session>/spill/<block id>.json` and the visible turn keeps a
