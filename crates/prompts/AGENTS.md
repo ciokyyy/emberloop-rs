@@ -25,7 +25,7 @@ Model-facing text as files (`include_str!` defaults under `prompts/*.md`):
 
 ## Attribution
 
-`nudge.first.md` and `nudge.pressure.md` adapt the nudge wording of billion-context (MIT) and its kernel acp-kernel (MIT), taken from the commit in `crates/proxy/parity/BASELINE`. The protocol paragraph and the range and breakdown lines are rewritten for turn indices and placeholders. The cache-cost line in `nudge.first.md` is new text: a fold restarts the provider prompt cache, so the model learns to space folds by about 50,000 tokens of new context. `nudge.emergency.md` is new text. The licence notice is the reference repository's `LICENSE`; the .md files carry no notice.
+`nudge.first.md` and `nudge.pressure.md` adapt the nudge wording of billion-context (MIT) and its kernel acp-kernel (MIT), taken from the commit in `crates/proxy/parity/BASELINE`. The protocol paragraph and the range and breakdown lines are rewritten for turn indices and placeholders. The cache-cost line in `nudge.first.md` is new text: a fold restarts the provider prompt cache, so the model learns to space folds by about 50,000 tokens of new context. The question-list clauses are new text too: `compress.md` and both nudge templates say a numbered assistant question list that a later turn answers by number keeps its question texts with the numbers and the answers beside them, and the `DROP` bullet says such a list is not back-and-forth discussion. `nudge.emergency.md` is new text, and the `nudge.pressure` body it concatenates carries the same clauses. The licence notice is the reference repository's `LICENSE`; the .md files carry no notice.
 
 ## Tests
 

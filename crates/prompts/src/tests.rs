@@ -575,3 +575,24 @@ fn the_propose_tool_has_a_default_description_and_prompt_id() {
     assert!(PROMPT_IDS.contains(&TOOL_PROMPT_PROPOSE));
     assert!(default_text(TOOL_PROMPT_PROPOSE).contains("approve"));
 }
+
+#[test]
+fn compress_keeps_an_answered_question_list() {
+    assert!(
+        default_text(COMPRESS).contains("keep each question text verbatim with its number"),
+        "{}",
+        default_text(COMPRESS)
+    );
+}
+
+#[test]
+fn nudges_keep_an_answered_question_list() {
+    for id in [NUDGE_FIRST, NUDGE_PRESSURE, NUDGE_EMERGENCY] {
+        let text = default_text(id);
+        assert!(
+            text.contains("keep the question text with the number"),
+            "{id}"
+        );
+        assert!(text.contains("is not back-and-forth discussion"), "{id}");
+    }
+}
