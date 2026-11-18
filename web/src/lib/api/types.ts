@@ -106,6 +106,7 @@ export interface Settings {
   spec_reviewer: FallbackLadder;
   standards_reviewer: FallbackLadder;
   subagent_tiers: SubagentTiers;
+  goldfish_tiers: SubagentTiers;
   proxy_compression: boolean;
   ponytail_default_level: string;
   todo_reminders: boolean;
@@ -152,7 +153,7 @@ export interface PromptImage {
 }
 
 export type SessionStatus = 'idle' | 'working' | 'failed' | 'paused';
-export type SteerRoute = 'pending' | 'injected' | 'idle' | 'cap';
+export type SteerRoute = 'pending' | 'injected' | 'idle' | 'cap' | 'retry';
 
 export type EventKind =
   | 'session_title'
@@ -242,4 +243,3 @@ export interface ToolKey {
 export type SystemStatus = components['schemas']['SystemStatusDto'];
 export type TokenStatus = components['schemas']['TokenStatusDto'];
 export type TokenTelemetryRow = components['schemas']['TokenTelemetryRowDto'];
-export type TokenSink = components['schemas']['TokenSinkDto'];

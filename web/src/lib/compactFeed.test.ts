@@ -449,3 +449,56 @@ describe('el bash exit header', () => {
     expect(parseErrorTail('exit code: 2\nline a\nline b')).toBe('line a\nline b');
   });
 });
+
+describe('dots feed intent, thinking, and submit classification', () => {
+  it('derives execute title from display.title, python comment, or tools.* calls instead of import tools', () => {
+    const items = compactFeed({
+      runs: [
+        {
+          name: 'execute',
+          input: JSON.stringify({ code: 'import tools, json\n# Inspect session logs\nprint(tools.read(path="a.txt"))' }),
+          output: 'ok',
+          status: 'completed',
+          elapsedMs: 1200,
+        },
+        {
+          name: 'execute',
+          input: JSON.stringify({ code: 'import tools, json\ntools.read(path="a.txt")\ntools.grep(pattern="foo")' }),
+          output: 'ok',
+          status: 'completed',
+          elapsedMs: 400,
+        },
+      ],
+    });
+    expect(items[0].title).toBe('Inspect session logs');
+    expect(items[0].duration).toBe('1s');
+    expect(items[1].title).toBe('Script: read, grep');
+    expect(items[1].duration).toBe('<1s');
+  });
+
+  it('skips finished empty thinking, keeps live empty pulse, and extracts first sentence', () => {
+    const items = compactFeed({
+      runs: [
+        { name: 'thinking', output: '   ', status: 'completed', thinking: true, live: false },
+        { name: 'thinking', output: '', status: 'running', thinking: true, live: true },
+        { name: 'thinking', output: 'First thought.\nSecond line.', status: 'completed', elapsedMs: 2100, thinking: true },
+      ],
+    });
+    expect(items.length).toBe(2);
+    expect(items[0]).toMatchObject({ type: 'thinking', empty: true, live: true });
+    expect(items[1]).toMatchObject({
+      type: 'thinking',
+      empty: false,
+      firstSentence: 'First thought.',
+      lineCount: 2,
+      duration: '2s',
+    });
+  });
+
+  it('routes submit to its own item type rather than ran', () => {
+    const items = compactFeed({
+      runs: [{ name: 'submit', input: JSON.stringify({ status: 'done', summary: 'Shipped v1' }), status: 'completed', elapsedMs: 300 }],
+    });
+    expect(items[0]).toMatchObject({ type: 'submit', title: 'Submitted report', target: 'Shipped v1', duration: '<1s' });
+  });
+});

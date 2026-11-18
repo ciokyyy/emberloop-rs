@@ -22,7 +22,7 @@ const FAMILIES = {
   grep: ['grep', 'rg', 'search'],
   find: ['find', 'search_graph', 'trace_path', 'get_file_outline', 'get_architecture', 'get_code_snippet', 'outline'],
   git: ['git'],
-  check: ['check'],
+  check: ['check', 'result', 'acp_status'],
   todo: ['todo', 'todos', 'todo_write', 'todowrite'],
   background: ['background'],
   ctx_search: ['ctx_search', 'ctxsearch', 'context'],
@@ -30,7 +30,10 @@ const FAMILIES = {
   fetch: ['fetch', 'webfetch', 'web_fetch'],
   spawn: ['spawn', 'task', 'agent'],
   steer: ['steer', 'tell'],
+  stop: ['stop'],
   cancel: ['cancel'],
+  propose: ['prompt_propose'],
+  retry: ['retry_call'],
   submit: ['submit', 'finish'],
   execute: ['execute'],
   compress: ['compress', 'fold'],
@@ -103,7 +106,14 @@ function toolInput(input: any = '') {
   if (!text) return { json: null, raw: '' };
   try {
     const value = JSON.parse(text);
-    return { json: value && typeof value === 'object' ? value : null, raw: text };
+    if (!value || typeof value !== 'object') return { json: null, raw: text };
+    const inner =
+      value.arguments && typeof value.arguments === 'object' && !Array.isArray(value.arguments)
+        ? { ...value.arguments, ...value }
+        : value.Arguments && typeof value.Arguments === 'object' && !Array.isArray(value.Arguments)
+          ? { ...value.Arguments, ...value }
+          : value;
+    return { json: inner, raw: text };
   } catch {
     return { json: null, raw: text };
   }
@@ -168,9 +178,12 @@ const PRIMARY_HANDLERS: Record<string, any> = {
     pick(json, ['id', 'session_id', 'sessionId', 'pane', 'target']) ||
     pick(json, ['action']),
   steer: (json: any) => pick(json, ['id', 'session_id', 'sessionId', 'pane', 'target']) || pick(json, ['action']),
+  stop: (json: any) => pick(json, ['id', 'session_id', 'sessionId']),
   cancel: (json: any) => pick(json, ['id', 'session_id', 'sessionId', 'pane', 'target']) || pick(json, ['action']),
   check: (json: any) => pick(json, ['id', 'session_id', 'sessionId', 'pane', 'target']) || pick(json, ['action']),
-  submit: (json: any) => firstLine(pick(json, ['status', 'summary', 'report']), 70),
+  propose: (json: any) => pick(json, ['id']),
+  retry: (json: any) => (json.id !== undefined ? `#${json.id}` : ''),
+  submit: (json: any) => firstLine(pick(json, ['summary', 'status', 'report']), 70),
   todo: (json: any) => pick(json, ['action']),
   execute: (json: any) => firstLine(pick(json, ['desc', 'description', 'intent']) || pick(json, ['code']), 70),
   compress: (json: any, raw: any) => pick(json, ['summary', 'range', 'blockId']) || json.toolAction || firstLine(raw),

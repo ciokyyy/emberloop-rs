@@ -289,3 +289,27 @@ fn the_no_rewrite_rule_lives_only_in_the_policy() {
         }
     }
 }
+
+#[test]
+fn the_spawn_schema_advertises_a_goldfish_with_a_persona() {
+    // `spawn` is advertised only where a Session URL exists.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("project");
+    std::fs::create_dir(&root).expect("root");
+    let mut config = ToolConfig::new(&root, dir.path().join("spill"));
+    config.session_url = Some("http://127.0.0.1/api/sessions/s1".into());
+    let server = McpServer::new(Arc::new(Toolbox::new(config).expect("toolbox")));
+    let tools = server.with_descriptions(prompt_descriptions()).tools();
+    let spawn = tools
+        .iter()
+        .find(|tool| tool.name == "spawn")
+        .expect("spawn");
+    let schema = schema(spawn);
+    let mut values = BTreeSet::new();
+    enum_values(&schema, &mut values);
+    assert!(values.contains("goldfish"), "{values:?}");
+    assert!(
+        schema["properties"]["persona"].is_object(),
+        "spawn has no persona property: {schema}"
+    );
+}

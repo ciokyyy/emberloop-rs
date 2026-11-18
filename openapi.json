@@ -1148,6 +1148,9 @@
           "200": {
             "description": "Prompt submitted"
           },
+          "400": {
+            "description": "Session is a one-shot goldfish"
+          },
           "404": {
             "description": "Session not found"
           }
@@ -1181,6 +1184,9 @@
         "responses": {
           "200": {
             "description": "Steer queued"
+          },
+          "400": {
+            "description": "The Session is a one-shot goldfish"
           },
           "404": {
             "description": "Session not found"
@@ -2169,6 +2175,15 @@
             "default": 25,
             "minimum": 0
           },
+          "goldfish_tiers": {
+            "$ref": "#/components/schemas/SubagentTiers",
+            "description": "A goldfish's per-tier ladders; an empty tier ladder inherits `subagent_tiers`.",
+            "default": {
+              "mid": [],
+              "smol": [],
+              "top": []
+            }
+          },
           "inject_nudge": {
             "type": "boolean",
             "description": "Reference `compress.injectNudge`.",
@@ -2402,6 +2417,13 @@
                 "enum": [
                   "spawn"
                 ]
+              },
+              "persona": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Persona id, required for the `goldfish` role."
               },
               "role": {
                 "type": "string"

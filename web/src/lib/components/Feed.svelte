@@ -11,6 +11,7 @@
   import Icon from './Icon.svelte';
   import ToolFeed from './ToolFeed.svelte';
   import SubagentReport from './SubagentReport.svelte';
+  import RetryRow from './RetryRow.svelte';
 
   let {
     feed,
@@ -139,7 +140,7 @@
     class="h-full overflow-x-hidden overflow-y-auto px-4 py-4"
   >
     {#if hasMore}
-      <div class="mx-auto mb-3 flex max-w-[760px] justify-center">
+      <div class="mb-3 flex justify-center">
         <button
           class="btn text-[12px]"
           onclick={() => void loadEarlier()}
@@ -154,7 +155,7 @@
     <!-- Rows stay in normal flow between two spacers. Absolute placement overlapped rows whenever a
          measured height lagged the DOM, so a window of real rows never stacks on another row. -->
     <div
-      class="mx-auto max-w-[760px]"
+      class="w-full"
       style="padding-top:{rows[0]?.start ?? 0}px;padding-bottom:{total - (rows.at(-1)?.end ?? 0)}px"
     >
       {#each rows as row (row.key)}
@@ -168,7 +169,7 @@
     </div>
 
     <!-- A queued steer keeps the log's column, so it never grows past the rows it joins. -->
-    <div class="mx-auto flex max-w-[760px] flex-col">
+    <div class="flex flex-col">
       {#each pinned as item (item.id)}
         {@render steerBubble(item)}
       {/each}
@@ -213,7 +214,7 @@
     {:else if item.kind === 'assistant'}
       {@const html = renderMarkdown(item.text ?? '', sessionId ? sessionFileBase(sessionId) : '')}
       <div
-        class="md my-1.5 min-w-0 max-w-[92%] text-[15px]"
+        class="md my-1.5 min-w-0 w-full text-[15px]"
         in:rise|global={{ skip: !arrived.has(item.id) }}
         use:fileEmbeds={html}
       >
@@ -225,28 +226,37 @@
       <div class="my-0.5" in:rise|global={{ skip: !arrived.has(item.id) }}>
         <button
           type="button"
-          class="flex w-full items-center gap-2 rounded px-2 py-1 text-left select-none hover:bg-[var(--surface-2)] focus-visible:ring-1 focus-visible:ring-[var(--border)] focus-visible:outline-none min-h-[28px] sm:min-h-[28px] min-h-[44px]"
+          class="group/row flex min-h-[44px] w-full items-center gap-2.5 rounded-lg px-2 text-left select-none hover:bg-surface-2 focus-visible:ring-1 focus-visible:ring-border focus-visible:outline-none sm:min-h-[32px]"
           aria-expanded={opened.has(item.id)}
           onclick={() => toggle(item.id)}
         >
-          <span
-            class="h-[7px] w-[7px] rounded-full bg-[var(--tool-compress)] shrink-0"
-            aria-hidden="true"
-          ></span>
-          <span class="font-medium text-[var(--fg-3)] shrink-0">{label}</span>
-          <span class="font-mono text-[12.5px] text-[var(--fg-2)] truncate flex-1">{item.text}</span>
+          <span class="flex h-2 w-2 shrink-0 items-center justify-center" aria-hidden="true">
+            <span class="h-[5px] w-[5px] rounded-full bg-fg-4"></span>
+          </span>
+          <span class="shrink-0 text-[13px] text-fg-3">{label}</span>
+          <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-4">{item.text}</span>
           {#if item.meta}
-            <span class="text-xs text-[var(--fg-4)] tabular-nums shrink-0">{item.meta}</span>
+            <span class="shrink-0 text-xs text-fg-4 tabular-nums">{item.meta}</span>
           {/if}
+          <span
+            class="shrink-0 text-[13px] leading-none text-fg-4 transition-transform duration-100 {opened.has(item.id)
+              ? 'rotate-90 opacity-100'
+              : 'opacity-40 group-hover/row:opacity-100'}"
+            aria-hidden="true"
+          >›</span>
         </button>
         {#if opened.has(item.id)}
           <div
-            class="expanded-box min-w-0 max-w-full overflow-x-auto [overflow-wrap:anywhere] bg-[#1c1c1e] border border-[#2c2c2e] rounded-lg p-2.5 my-1 font-mono text-[11.5px] text-[var(--fg-1)] whitespace-pre-wrap"
+            class="expanded-box min-w-0 max-w-full overflow-x-auto [overflow-wrap:anywhere] bg-code-bg border border-code-border rounded-lg p-2.5 my-1 font-mono text-[12px] text-fg-1 whitespace-pre-wrap"
           >{item.body || item.text || '(no details)'}</div>
         {/if}
       </div>
     {:else if item.kind === 'steer'}
       {@render steerBubble(item)}
+    {:else if item.kind === 'notice' && item.route === 'retry'}
+      <div in:rise|global={{ skip: !arrived.has(item.id) }}>
+        <RetryRow text={item.text} retry={item.retry} />
+      </div>
     {:else if item.kind === 'notice'}
       <div
         class="my-1.5 flex items-center gap-2 rounded-xl border bg-surface-1 px-3 py-2 text-[13px] {isReminder(
@@ -265,7 +275,7 @@
     {:else if item.kind === 'error'}
       <div
         class="my-2 rounded-xl border border-status-failed px-3 py-2 text-[13px]"
-        style="background:#2a2222;color:#ffb3ad"
+        style="background:var(--tool-failed-tint);color:var(--failed-fg)"
         in:rise|global={{ skip: !arrived.has(item.id) }}
       >{item.text}</div>
     {/if}

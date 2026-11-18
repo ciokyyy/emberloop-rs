@@ -51,7 +51,7 @@
 <div class="mx-auto flex max-w-[760px] flex-col gap-4">
 <h2 class="text-[17px] font-semibold tracking-[-0.01em]">Prompt cache</h2>
 {#if failure}
-  <div class="p-4 text-[13px]" role="alert" style="color:#ffb3ad">{failure}</div>
+  <div class="p-4 text-[13px]" role="alert" style="color:var(--failed-fg)">{failure}</div>
 {:else if rows === null}
   <div class="grid flex-1 place-items-center text-[13px] text-fg-3" role="status">Loading…</div>
 {:else if loaded.length === 0}

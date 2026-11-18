@@ -39,7 +39,12 @@ impl WireKind {
 
 /// The system text of one request: the pinned skill texts, then the Session's frozen catalog.
 pub fn prompt_text(pins: &PinnedPrompts, codebase_memory: bool, catalog: &str) -> String {
-    let mut ids = vec![prompts::POLICY, prompts::PONYTAIL, prompts::CAVEMAN];
+    let mut ids = vec![
+        prompts::POLICY,
+        prompts::PONYTAIL,
+        prompts::CAVEMAN,
+        prompts::SUPERPOWERS,
+    ];
     if codebase_memory {
         ids.push(prompts::SKILL_CODEBASE_MEMORY);
     }
@@ -212,6 +217,61 @@ pub fn remove_write_tool(request: &mut Value) {
     remove_tools(request, is_write_tool);
 }
 
+/// The only tools a goldfish may declare: read-only research, its plan and its report. No context
+/// tools: compression is off for a goldfish.
+pub const GOLDFISH_TOOLS: [&str; 7] = [
+    "read",
+    "grep",
+    "find",
+    "websearch",
+    "ctx_search",
+    "todo",
+    "submit",
+];
+
+/// Isolates a goldfish request: its system prompt becomes the persona plus the proxy policy, and
+/// only the `GOLDFISH_TOOLS` stay declared. Allowlist: any other name, built-in or not, goes.
+pub fn isolate_goldfish(wire: WireKind, request: &mut Value, pins: &PinnedPrompts, persona: &str) {
+    remove_tools(request, outside_goldfish_allowlist);
+    let mut text = persona.trim_end().to_string();
+    if let Some(policy) = pins
+        .text(prompts::POLICY_GOLDFISH)
+        .filter(|t| !t.trim().is_empty())
+    {
+        text.push_str("\n\n");
+        text.push_str(policy);
+    }
+    match wire {
+        WireKind::Google => request["systemInstruction"] = json!({ "parts": [{ "text": text }] }),
+        WireKind::OpenAiChat => {
+            let messages = request.get_mut("messages").and_then(Value::as_array_mut);
+            let mut system = vec![json!({ "role": "system", "content": text })];
+            if let Some(messages) = messages {
+                messages.retain(|m| {
+                    !matches!(
+                        m.get("role").and_then(Value::as_str),
+                        Some("system" | "developer")
+                    )
+                });
+                system.append(messages);
+                *messages = system;
+            } else {
+                request["messages"] = json!(system);
+            }
+        }
+        WireKind::Anthropic => request["system"] = json!(text),
+        WireKind::OpenAiResponses => request["instructions"] = json!(text),
+    }
+}
+
+fn outside_goldfish_allowlist(tool: &Value) -> bool {
+    // A Google holder is judged by its declarations; `remove_tools` filters those itself.
+    if tool.get("functionDeclarations").is_some() {
+        return false;
+    }
+    !GOLDFISH_TOOLS.contains(&tool_name(tool))
+}
+
 fn remove_tools(request: &mut Value, matches_tool: fn(&Value) -> bool) {
     let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) else {
         return;
@@ -233,21 +293,28 @@ fn remove_tools(request: &mut Value, matches_tool: fn(&Value) -> bool) {
     });
 }
 
+/// Bare tool name for filtering. Harnesses wrap MCP tools: `mcp__el__read` on most,
+/// `mcp_el_read` on Antigravity; `el_` is a bare prefix.
 fn tool_name(tool: &Value) -> &str {
     let name = tool
         .get("name")
         .or_else(|| tool.pointer("/function/name"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    name.rsplit("__").next().unwrap_or(name)
+    let bare = name
+        .strip_prefix("mcp__el__")
+        .or_else(|| name.strip_prefix("mcp__el_"))
+        .or_else(|| name.strip_prefix("mcp_el_"))
+        .unwrap_or_else(|| name.rsplit("__").next().unwrap_or(name));
+    bare.strip_prefix("el_").unwrap_or(bare)
 }
 
 fn is_edit_tool(tool: &Value) -> bool {
-    matches!(tool_name(tool), "edit" | "el_edit" | "Edit")
+    matches!(tool_name(tool), "edit" | "Edit")
 }
 
 fn is_write_tool(tool: &Value) -> bool {
-    matches!(tool_name(tool), "write" | "el_write" | "Write")
+    matches!(tool_name(tool), "write" | "Write")
 }
 
 struct ToolSpec {
@@ -1474,6 +1541,8 @@ mod tests {
     fn reviewer_filter_removes_only_edit_across_all_tool_shapes() {
         for tools in [
             json!([{"functionDeclarations":[{"name":"mcp__el__edit"},{"name":"bash"},{"name":"write"}]}]),
+            // Antigravity names MCP tools with one underscore: `mcp_el_edit`.
+            json!([{"functionDeclarations":[{"name":"mcp_el_edit"},{"name":"bash"},{"name":"write"}]}]),
             json!([{"type":"function","function":{"name":"mcp__el__edit"}}, {"type":"function","function":{"name":"bash"}}, {"type":"function","function":{"name":"write"}}]),
             json!([{"type":"function","name":"el_edit"},{"name":"bash"},{"name":"write"}]),
             json!([{"name":"Edit","input_schema":{}},{"name":"Bash"},{"name":"Write"}]),
@@ -1494,6 +1563,7 @@ mod tests {
     fn scout_filter_removes_write_across_all_tool_shapes() {
         for tools in [
             json!([{"functionDeclarations":[{"name":"mcp__el__write"},{"name":"bash"},{"name":"read"}]}]),
+            json!([{"functionDeclarations":[{"name":"mcp_el_write"},{"name":"bash"},{"name":"read"}]}]),
             json!([{"type":"function","function":{"name":"mcp__el__write"}}, {"type":"function","function":{"name":"bash"}}, {"type":"function","function":{"name":"read"}}]),
             json!([{"type":"function","name":"el_write"},{"name":"bash"},{"name":"read"}]),
             json!([{"name":"Write","input_schema":{}},{"name":"Bash"},{"name":"Read"}]),
@@ -1508,5 +1578,152 @@ mod tests {
         let mut request = json!({"tools":[{"functionDeclarations":[{"name":"write"}]}]});
         remove_write_tool(&mut request);
         assert_eq!(request["tools"], json!([]));
+    }
+
+    #[test]
+    fn goldfish_isolation_declares_exactly_the_allowlist_and_only_the_persona_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let pins =
+            PinnedPrompts::pin(&PromptStore::new(dir.path()), &PromptVars::default()).unwrap();
+        let drop = [
+            "edit",
+            "write",
+            "bash",
+            "background",
+            "execute",
+            "skill_search",
+            "skill_manage",
+            "prompt_propose",
+            "retry_call",
+            "compress",
+            "decompress",
+            "search_context",
+            "acp_status",
+            "Read",
+            "Bash",
+            "WebFetch",
+        ];
+        let keep = [
+            "read",
+            "grep",
+            "find",
+            "websearch",
+            "ctx_search",
+            "todo",
+            "submit",
+        ];
+        let google = |names: Vec<&str>| json!([{"functionDeclarations": names.iter().map(|n| json!({"name": n})).collect::<Vec<_>>()}]);
+        let chat = |names: Vec<&str>| {
+            Value::Array(
+                names
+                    .iter()
+                    .map(|n| json!({"type":"function","function":{"name":n}}))
+                    .collect(),
+            )
+        };
+        let flat = |names: Vec<&str>| {
+            Value::Array(
+                names
+                    .iter()
+                    .map(|n| json!({"name": n, "input_schema": {}}))
+                    .collect(),
+            )
+        };
+        // The harness mangles allowed names too: `mcp__el__read`, `el_grep`.
+        let mut all: Vec<&str> = drop.to_vec();
+        all.extend(keep);
+        all.extend(["mcp__el__read", "el_grep", "mcp_el_read", "mcp_el_grep"]);
+        all.extend(["mcp_el_edit", "mcp_el_write", "mcp_el_execute"]);
+        let shapes = [
+            (WireKind::Google, "systemInstruction", google(all.clone())),
+            (WireKind::OpenAiChat, "messages", chat(all.clone())),
+            (WireKind::Anthropic, "system", flat(all.clone())),
+            (WireKind::OpenAiResponses, "instructions", flat(all.clone())),
+        ];
+        let persona = "You are a goldfish reviewer.\n";
+        let expected = format!(
+            "You are a goldfish reviewer.\n\n{}",
+            pins.text(prompts::POLICY_GOLDFISH).unwrap()
+        );
+        let marker = "HARNESS-SYSTEM-MARKER";
+        for (wire, key, tools) in shapes {
+            let mut request = json!({"tools": tools, "messages": [
+                {"role": "user", "content": "hi"}
+            ]});
+            match wire {
+                WireKind::Google => {
+                    request["systemInstruction"] = json!({"parts":[{"text": marker}]})
+                }
+                WireKind::OpenAiChat => {
+                    request["messages"] = json!([
+                        {"role": "system", "content": marker},
+                        {"role": "developer", "content": marker},
+                        {"role": "user", "content": "hi"}
+                    ])
+                }
+                _ => request[key] = json!(marker),
+            }
+            isolate_goldfish(wire, &mut request, &pins, persona);
+
+            let tools = request["tools"].as_array().unwrap().clone();
+            let declared: Vec<Value> = tools
+                .iter()
+                .flat_map(
+                    |t| match t.get("functionDeclarations").and_then(Value::as_array) {
+                        Some(list) => list.clone(),
+                        None => vec![t.clone()],
+                    },
+                )
+                .collect();
+            let mut names: Vec<String> = declared
+                .iter()
+                .map(|t| tool_name(t).trim_start_matches("el_").to_string())
+                .collect();
+            names.sort();
+            names.dedup();
+            let mut want: Vec<String> = GOLDFISH_TOOLS.iter().map(|n| n.to_string()).collect();
+            want.sort();
+            assert_eq!(names, want, "{wire:?}");
+
+            let text = match wire {
+                WireKind::Google => request["systemInstruction"]["parts"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                WireKind::OpenAiChat => {
+                    let messages = request["messages"].as_array().unwrap();
+                    assert_eq!(messages.len(), 2, "{wire:?}");
+                    messages[0]["content"].as_str().unwrap().to_string()
+                }
+                _ => request[key].as_str().unwrap().to_string(),
+            };
+            assert_eq!(text, expected, "{wire:?}");
+            for absent in ["hashline", "execute", "compress", "background", "bash"] {
+                assert!(!text.contains(absent), "{wire:?} carried {absent}");
+            }
+            assert!(!request.to_string().contains(marker), "{wire:?}");
+            for id in [
+                prompts::PONYTAIL,
+                prompts::CAVEMAN,
+                prompts::SUPERPOWERS,
+                prompts::SKILL_CODEBASE_MEMORY,
+            ] {
+                let part = pins.text(id).unwrap_or_default().trim();
+                assert!(part.is_empty() || !text.contains(part), "{wire:?} {id}");
+            }
+        }
+        // Antigravity declares MCP tools as `mcp_el_<tool>`: the allowlisted ones must survive.
+        let mut agy = json!({"tools": google(vec![
+            "mcp_el_read",
+            "mcp_el_grep",
+            "mcp_el_edit",
+            "mcp_el_execute",
+            "mcp_el_bash",
+        ])});
+        isolate_goldfish(WireKind::Google, &mut agy, &pins, persona);
+        assert_eq!(
+            agy["tools"][0]["functionDeclarations"],
+            json!([{"name": "mcp_el_read"}, {"name": "mcp_el_grep"}])
+        );
     }
 }

@@ -28,6 +28,7 @@ export interface FeedItem {
   body?: string;
   finished?: boolean;
   route?: SteerRoute;
+  retry?: 'retrying' | 'finished';
   report?: ReviewerReport;
   optimistic?: boolean;
 }
@@ -69,13 +70,15 @@ const route = (value: unknown): SteerRoute | undefined =>
     : undefined;
 const isLive = (item?: FeedItem) => !!item && (item.kind === 'assistant' || item.kind === 'thinking') && !!item.live;
 
-function closeLive(items: FeedItem[]): FeedItem[] {
+function closeLive(items: FeedItem[], at?: number): FeedItem[] {
   const last = items.at(-1);
   if (!last || !isLive(last)) return items;
-  return [...items.slice(0, -1), { ...last, live: false }];
+  const elapsedMs = last.startedAt && at ? Math.max(0, at - last.startedAt) : last.elapsedMs;
+  return [...items.slice(0, -1), { ...last, live: false, ...(elapsedMs !== undefined ? { elapsedMs } : {}) }];
 }
 
-function statusOf(value: unknown): SessionStatus {
+/** The `state` a status event carries, and the frame the all-Session stream sends. */
+export function statusOf(value: unknown): SessionStatus {
   if (value === 'working') return 'working';
   if (value === 'failed') return 'failed';
   if (value === 'paused') return 'paused';
@@ -150,12 +153,12 @@ function startTool(items: FeedItem[], event: SessionEvent): FeedItem[] {
       tool: toolName(data) || row.tool,
       input: input || row.input,
       summary: toolSummary(data) || row.summary,
-      display: displayOf(data.display) ?? row.display
+      display: displayOf(data.display) ? { ...(row.display ?? {}), ...displayOf(data.display) } : row.display
     };
     return next;
   }
   return [
-    ...closeLive(items),
+    ...closeLive(items, event.at),
     {
       id: id || nextId('tool'),
       kind: 'tool',
@@ -218,7 +221,7 @@ function finishTool(items: FeedItem[], event: SessionEvent): FeedItem[] {
     meta: meta || row.meta,
     body: output || row.body,
     output: output || row.output,
-    display: display ?? row.display,
+    display: display ? { ...(row.display ?? {}), ...display } : row.display,
     status,
     elapsedMs: row.startedAt && event.at ? Math.max(0, event.at - row.startedAt) : row.elapsedMs,
     finished: true
@@ -248,7 +251,22 @@ function deliver(items: FeedItem[], event: SessionEvent, kind: 'steer' | 'notice
   return next;
 }
 
-function appendChunk(state: FeedState, kind: 'assistant' | 'thinking', chunk: string): FeedState {
+/** A harness retry banner is one row: each notice replaces the attempt it followed in place, and a
+ *  cycle the feed has moved past starts a row of its own at the tail. */
+function retryRow(state: FeedState, data: Record<string, unknown>): FeedState {
+  const item: FeedItem = {
+    id: `retry-${state.items.length}`,
+    kind: 'notice',
+    text: text(data.text),
+    route: 'retry',
+    retry: data.state === 'finished' ? 'finished' : 'retrying'
+  };
+  const last = state.items.at(-1);
+  if (last?.route === 'retry') return { ...state, items: [...state.items.slice(0, -1), { ...item, id: last.id }] };
+  return { ...state, items: [...state.items, item] };
+}
+
+function appendChunk(state: FeedState, kind: 'assistant' | 'thinking', chunk: string, at?: number): FeedState {
   const last = state.items.at(-1);
   if (last?.kind === kind && last.live) {
     return {
@@ -258,7 +276,10 @@ function appendChunk(state: FeedState, kind: 'assistant' | 'thinking', chunk: st
   }
   return {
     ...state,
-    items: [...closeLive(state.items), { id: nextId(kind), kind, text: chunk, live: true }]
+    items: [
+      ...closeLive(state.items, at),
+      { id: nextId(kind), kind, text: chunk, live: true, ...(at ? { startedAt: at } : {}) }
+    ]
   };
 }
 
@@ -318,7 +339,7 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
   switch (event.kind) {
     case 'status': {
       const status = statusOf(data.state ?? data.status);
-      return { ...state, status, items: status === 'working' ? state.items : closeLive(state.items) };
+      return { ...state, status, items: status === 'working' ? state.items : closeLive(state.items, event.at) };
     }
 
     case 'todos':
@@ -338,7 +359,7 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
       return {
         ...state,
         items: [
-          ...closeLive(state.items),
+          ...closeLive(state.items, event.at),
           {
             id: nextId('user'),
             kind: 'user',
@@ -349,16 +370,16 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
       };
     }
     case 'assistant_chunk':
-      return appendChunk(state, 'assistant', text(data.text));
+      return appendChunk(state, 'assistant', text(data.text), event.at);
 
     case 'thinking_chunk':
-      return appendChunk(state, 'thinking', text(data.text));
+      return appendChunk(state, 'thinking', text(data.text), event.at);
 
     case 'tool_started':
       return { ...state, items: startTool(state.items, event) };
 
     case 'tool_finished':
-      return { ...state, items: closeLive(finishTool(state.items, event)) };
+      return { ...state, items: closeLive(finishTool(state.items, event), event.at) };
 
     case 'steer_queued': {
       const steerText = text(data.text);
@@ -398,6 +419,8 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
       return { ...state, items: deliver(state.items, event, 'steer') };
 
     case 'notice':
+      // A harness retry banner is one status row: the finish replaces the attempt it followed.
+      if (data.route === 'retry') return retryRow(state, data);
       if (data.route === 'pending') {
         return {
           ...state,

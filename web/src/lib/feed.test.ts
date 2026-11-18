@@ -120,6 +120,27 @@ describe('feed reducer', () => {
     expect(state.items[2].text).toBe('daemon lost');
   });
 
+  it('folds a harness retry banner and its finish into one status row', () => {
+    const state = run(
+      ev('notice', { text: 'Retrying (attempt 1/3, waiting 2s)', route: 'retry', state: 'retrying' }),
+      ev('notice', { text: 'Retry finished', route: 'retry', state: 'finished' }, 2),
+      ev('notice', { text: 'Retrying (attempt 2/3, waiting 4s)', route: 'retry', state: 'retrying' }, 3)
+    );
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]).toMatchObject({ kind: 'notice', route: 'retry', retry: 'retrying' });
+    expect(state.items[0].text).toBe('Retrying (attempt 2/3, waiting 4s)');
+  });
+
+  it('starts a later retry cycle at the tail, not where the earlier row sat', () => {
+    const state = run(
+      ev('notice', { text: 'Retrying (attempt 1/3, waiting 2s)', route: 'retry', state: 'retrying' }),
+      ev('notice', { text: 'Retry finished', route: 'retry', state: 'finished' }, 2),
+      ev('assistant_chunk', { text: 'done' }, 3),
+      ev('notice', { text: 'Retrying (attempt 1/3, waiting 2s)', route: 'retry', state: 'retrying' }, 4)
+    );
+    expect(state.items.map((item) => item.kind)).toEqual(['notice', 'assistant', 'notice']);
+  });
+
   it('renders folds as tool rows and hides nudges', () => {
     const state = run(
       ev('compression', {
@@ -268,4 +289,32 @@ it('replaces optimistic user and steer items in place when server events arrive'
   const afterSteer = applyEvent(afterPrompt, ev('steer_queued', { id: 'srv-2', text: 'wait' }, 2));
   expect(afterSteer.items).toHaveLength(2);
   expect(afterSteer.items[1]).toMatchObject({ id: 'srv-2', kind: 'steer', text: 'wait', route: 'pending', optimistic: false });
+});
+
+it('merges display metadata from tool_started and tool_finished without losing title', () => {
+  const state = run(
+    ev('tool_started', {
+      id: 'e1',
+      name: 'el_execute',
+      input: { code: 'print(1)' },
+      display: { title: 'Checking logs' },
+    }),
+    ev('tool_finished', {
+      id: 'e1',
+      output: '[saved exec #1]',
+      display: { children: [{ name: 'read', target: 'a.log', ms: 5, status: 'completed' }] },
+    }, 2)
+  );
+  expect(state.items[0].display).toEqual({
+    title: 'Checking logs',
+    children: [{ name: 'read', target: 'a.log', ms: 5, status: 'completed' }],
+  });
+});
+
+it('measures thinking elapsedMs when a tool call closes the live thinking span', () => {
+  const state = run(
+    { ...ev('thinking_chunk', { text: 'Inspecting files.' }, 1), at: 1000 },
+    { ...ev('tool_started', { id: 'r1', name: 'el_read', input: { path: 'a.rs' } }, 2), at: 5500 }
+  );
+  expect(state.items[0]).toMatchObject({ kind: 'thinking', live: false, elapsedMs: 4500 });
 });

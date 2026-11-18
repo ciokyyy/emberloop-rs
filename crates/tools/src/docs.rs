@@ -153,7 +153,7 @@ fn render_config(toolbox: &Toolbox) -> String {
 
 ### `settings.json`
 
-Stored at `<data root>/settings.json` beside the `sessions/` directory and `projects.json`; a save rewrites the whole file. Keys (snake_case) include `default_model`, `title_generation`, `title_model`, `spec_reviewer` and `standards_reviewer` (fallback ladders), `subagent_tiers` (`smol`, `mid`, `top`, one fallback ladder each), `proxy_compression`, the compression thresholds `max_context_limit`, `min_pressure_benefit_tokens`, `emergency_threshold_percent`, `preserve_recent_messages`, `protected_tools`, `inject_tool`, `inject_nudge`, `tier2_trigger` and `tier3_trigger`, `ctx_spill_enabled`, `skills_review_interval`, and the `todo_*` toggles.
+Stored at `<data root>/settings.json` beside the `sessions/` directory and `projects.json`; a save rewrites the whole file. Keys (snake_case) include `default_model`, `title_generation`, `title_model`, `spec_reviewer` and `standards_reviewer` (fallback ladders), `subagent_tiers` and `goldfish_tiers` (`smol`, `mid`, `top`, one fallback ladder each; an empty `goldfish_tiers` ladder inherits the matching `subagent_tiers` one), `proxy_compression`, the compression thresholds `max_context_limit`, `min_pressure_benefit_tokens`, `emergency_threshold_percent`, `preserve_recent_messages`, `protected_tools`, `inject_tool`, `inject_nudge`, `tier2_trigger` and `tier3_trigger`, `ctx_spill_enabled`, `skills_review_interval`, and the `todo_*` toggles.
 
 ### Runtime `env`
 
@@ -170,6 +170,20 @@ Prompt overrides live in `<prompts dir>/<id>.md`; the sibling `prompt-proposals/
 ### `skills`
 
 Skills are folders containing `SKILL.md` with YAML frontmatter (`name`, `description`, optional `metadata.origin`). A project skill under `<project>/.agents/skills` wins over a global skill of the same name.
+
+#### Grouping skills into modules
+
+Skills stay flat, one folder per skill, in each skills root. Grouping lives in a separate `skill-modules.json` in that root (global and `<project>/.agents/skills`):
+
+```json
+{{"media": {{"about": "audio, video, image tasks", "skills": ["name-a", "name-b"]}}}}
+```
+
+- A module named in both roots merges: `about` from the project file, members are the union. A skill belongs to at most one module, first one wins.
+- A mapped name with no skill is skipped with a warning. A missing file means no modules; a malformed one means no modules plus a warning. Unmapped skills stay in the always-on catalog, so keep the three to five most used skills unmapped.
+- When you install or create a skill, assign it to an existing module or create one, through the `skill_manage` `module` field or by editing the JSON.
+- A module `about` must be a sharp "use when" trigger: it is what tells the model when to load the module. List the module's skills with `skill_search "<module>"`.
+- The catalog is frozen per Session, so mapping changes apply to new Sessions only. Mapping is by name, so updating or reinstalling a skill never needs re-mapping.
 "#,
         project_skills.display()
     )

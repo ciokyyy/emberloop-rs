@@ -16,7 +16,8 @@ struct SkillArgs {
     limit: Option<usize>,
 }
 
-/// Ranked skills for `query`, each with its origin, clipped description and SKILL.md path.
+/// Ranked skills for `query`, each with its module, origin, clipped description and SKILL.md
+/// path. A query naming a module lists every member first, heading by the module's `about`.
 pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     let SkillArgs { query, limit } = serde_json::from_value(args.clone())?;
     let query = query.trim();
@@ -28,32 +29,72 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
         .unwrap_or(DEFAULT_LIMIT)
         .min(MAX_LIMIT);
     let found = skills::discover(toolbox.global_skills(), toolbox.root());
+    let modules = skills::modules(toolbox.global_skills(), toolbox.root());
     let docs: Vec<Vec<String>> = found
         .iter()
-        .map(|skill| bm25::tokens(&skill.search_text()))
+        .map(|skill| bm25::tokens(&search_text(skill, &modules)))
         .collect();
-    let scores = bm25::scores(&docs, &bm25::query_terms(query));
-    let mut hits: Vec<(f64, &skills::Skill)> = scores
+    let mut hits: Vec<(f64, &skills::Skill)> = bm25::scores(&docs, &bm25::query_terms(query))
         .into_iter()
         .zip(&found)
         .filter(|(score, _)| *score > 0.0)
         .collect();
     hits.sort_by(|a, b| b.0.total_cmp(&a.0));
-    hits.truncate(limit);
-    if hits.is_empty() {
+    let named = modules
+        .iter()
+        .find(|module| module.name.eq_ignore_ascii_case(query));
+    let members: Vec<&skills::Skill> = named
+        .map(|module| {
+            module
+                .skills
+                .iter()
+                .filter_map(|name| found.iter().find(|skill| &skill.name == name))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut ordered: Vec<&skills::Skill> = members.clone();
+    ordered.extend(
+        hits.iter()
+            .map(|(_, skill)| *skill)
+            .filter(|skill| !members.iter().any(|member| member.name == skill.name)),
+    );
+    ordered.truncate(members.len() + limit);
+    if ordered.is_empty() {
         return Ok(format!("query {query:?}: nothing matched\n"));
     }
-    let mut out = format!("query {query:?}: {} match(es)\n", hits.len());
-    for (_, skill) in hits {
-        let description: String = skill.description.chars().take(DESCRIPTION_CHARS).collect();
+    let mut out = format!("query {query:?}: {} match(es)\n", ordered.len());
+    if let Some(module) = named {
         out.push_str(&format!(
-            "- {} [{}]: {description}\n  {}\n",
+            "module {}: {}\n",
+            module.name,
+            clipped(&module.about)
+        ));
+    }
+    for skill in ordered {
+        let module = skills::module_of(&modules, &skill.name)
+            .map(|module| format!(" [{module}]"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "- {}{module} [{}]: {description}\n  {}\n",
             skill.name,
             skill.origin,
-            skill.path.display()
+            skill.path.display(),
+            description = clipped(&skill.description)
         ));
     }
     Ok(out)
+}
+
+/// What `skill_search` ranks a skill by: its module name, then its own search text.
+fn search_text(skill: &skills::Skill, modules: &[skills::Module]) -> String {
+    match skills::module_of(modules, &skill.name) {
+        Some(module) => format!("{module} {}", skill.search_text()),
+        None => skill.search_text(),
+    }
+}
+
+fn clipped(text: &str) -> String {
+    text.chars().take(DESCRIPTION_CHARS).collect()
 }
 
 #[cfg(test)]
@@ -161,5 +202,83 @@ mod tests {
         let tb = toolbox(&global, &project);
         let out = run(&tb, &json!({"query": "zebra", "limit": 1})).unwrap();
         assert!(out.contains("1 match(es)"), "{out}");
+    }
+
+    fn write_modules(root: &Path, text: &str) {
+        fs::write(root.join(crate::skills::MODULES_FILE), text).unwrap();
+    }
+
+    fn line_index(out: &str, start: &str) -> usize {
+        out.lines()
+            .position(|line| line.starts_with(start))
+            .unwrap_or_else(|| panic!("no line starting {start:?} in {out}"))
+    }
+
+    #[test]
+    fn module_name_query_lists_all_members_first_and_shows_about() {
+        let (_dir, global, project) = fixture();
+        write_skill(&global, "clip", "trim video", "ffmpeg");
+        write_skill(&global, "sound", "mix audio", "sox");
+        write_skill(
+            &global,
+            "loud",
+            "media media media",
+            &"media media media\n".repeat(20),
+        );
+        write_modules(
+            &global,
+            r#"{"media": {"about": "audio and video work", "skills": ["clip", "sound"]}}"#,
+        );
+        let tb = toolbox(&global, &project);
+
+        let out = run(&tb, &json!({"query": "Media", "limit": 1})).unwrap();
+        assert!(out.contains("audio and video work"), "{out}");
+        assert!(out.contains("trim video"), "{out}");
+        assert!(out.contains("mix audio"), "{out}");
+        let clip = line_index(&out, "- clip [media] [human]");
+        let sound = line_index(&out, "- sound [media] [human]");
+        assert!(clip < sound, "{out}");
+        assert!(sound < line_index(&out, "- loud "), "{out}");
+    }
+
+    #[test]
+    fn module_name_is_part_of_the_search_text() {
+        let (_dir, global, project) = fixture();
+        write_skill(&global, "clip", "trim video", "ffmpeg");
+        write_skill(&global, "sound", "mix audio", "sox");
+        write_skill(&global, "noise", "zebra", "body");
+        write_modules(
+            &global,
+            r#"{"media-kit": {"about": "audio and video work", "skills": ["clip", "sound"]}}"#,
+        );
+        let tb = toolbox(&global, &project);
+
+        let out = run(&tb, &json!({"query": "media"})).unwrap();
+        assert!(out.contains("clip") && out.contains("sound"), "{out}");
+        assert!(!out.contains("noise"), "{out}");
+    }
+
+    #[test]
+    fn module_member_hit_shows_the_module_tag() {
+        let (_dir, global, project) = fixture();
+        write_skill(&global, "clip", "trim video", "ffmpeg");
+        write_modules(
+            &global,
+            r#"{"media": {"about": "audio and video work", "skills": ["clip"]}}"#,
+        );
+        let tb = toolbox(&global, &project);
+
+        let out = run(&tb, &json!({"query": "clip"})).unwrap();
+        assert!(out.contains("- clip [media] [human]: trim video"), "{out}");
+    }
+
+    #[test]
+    fn unmapped_hit_line_is_unchanged() {
+        let (_dir, global, project) = fixture();
+        write_skill(&global, "plain", "zebra helper", "body");
+        let tb = toolbox(&global, &project);
+
+        let out = run(&tb, &json!({"query": "zebra"})).unwrap();
+        assert!(out.contains("- plain [human]: zebra helper"), "{out}");
     }
 }

@@ -83,7 +83,7 @@ wiring: base_url_env(proxy_url), mcp_config(mcp_url), disable_native_tools()
 
 ### F. Tools (MCP server in the daemon)
 
-Shared rules: every path resolves inside the Project root after symlink resolution; output over the overflow threshold spills to `spill/` and returns a head/tail summary with a handle; each call emits `tool_started` and `tool_finished` events.
+Shared rules: `read`, `edit`, `write` and `bash` views resolve any path the account can open, relative paths against the Project root and `~` from `HOME`, after symlink resolution; `grep` and `find` stay inside the Project root. Output over the overflow threshold spills to `spill/` and returns a head/tail summary with a handle; each call emits `tool_started` and `tool_finished` events.
 
 - **`read`**: `path`, `offset`, `limit`. Plain text only, 2 MiB cap, numbered lines. Records the lines shown in the seen-line store and returns `[path#TAG] (lines A-B)`. Directories return a listing.
 - **`edit`**: hashline only, ported from the Go grammar: header `[path#TAG]`, ops `PUT N.=M:`, `PUT <N:`, `PUT >N:`, `PUT >$:`, `CUT N`, `CUT N.=M`, body lines start with `+`. The tag is the first two bytes of the file's sha256 as four hex digits. A patch applies against the original in one pass, anchors only on lines the tag's view showed, and returns the new tag with the changed lines in context. A stale tag is refused with the current lines in phase 1; rebase is phase 2.

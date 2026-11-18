@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Install the vendored ember skill pack into the global skills root (~/.agents/skills/ember-*).
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+skills="$HOME/.agents/skills"
+mkdir -p "$skills"
+for src in "$root"/vendor/ember/ember-*/; do
+  name="$(basename "$src")"
+  # vendor/ember is the source of truth: replace the installed copy so deleted files do not linger.
+  rm -rf "${skills:?}/$name"
+  cp -a "$src" "$skills/$name"
+  printf 'Installed %s to %s.\n' "$name" "$skills/$name"
+done

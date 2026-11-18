@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -40,6 +41,8 @@ struct Entry {
     adopted: bool,
     /// The pid now belongs to some other process; never signal it.
     lost: bool,
+    /// A caller's own resources (a socket server, a temp dir), dropped when the job is reaped.
+    keepalive: Option<Box<dyn Any + Send>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -76,19 +79,32 @@ impl BackgroundManager {
 
     // Real waits: a short one so a quick command's first line lands in the
     // reply, and a 100 ms poll of a pid outside our process tree.
-    #[allow(clippy::disallowed_methods)]
     pub async fn spawn(&self, command: &str, prelude: &str) -> ToolResult<String> {
+        self.spawn_with(None, |log| {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c")
+                .arg(format!("{prelude}exec 2>&1\n{command}"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(log))
+                .stderr(Stdio::null());
+            cmd
+        })
+        .await
+    }
+
+    /// Starts a process the caller built. `build` receives the job's log file, which it must send
+    /// stdout to; `keepalive` lives exactly as long as the job, so `stop` ends it too.
+    #[allow(clippy::disallowed_methods)]
+    pub async fn spawn_with(
+        &self,
+        keepalive: Option<Box<dyn Any + Send>>,
+        build: impl FnOnce(File) -> tokio::process::Command,
+    ) -> ToolResult<String> {
         fs::create_dir_all(&self.dir)?;
         let id = self.next_id();
         let log = self.dir.join(format!("{id}.log"));
-        let file = File::create(&log)?;
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c")
-            .arg(format!("{prelude}exec 2>&1\n{command}"))
-            .current_dir(&self.root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(file))
-            .stderr(Stdio::null());
+        let mut cmd = build(File::create(&log)?);
+        cmd.current_dir(&self.root);
         #[cfg(unix)]
         cmd.process_group(0);
         let child = cmd.spawn()?;
@@ -106,6 +122,7 @@ impl BackgroundManager {
                 status: None,
                 adopted: false,
                 lost: false,
+                keepalive,
             },
         );
         write_meta(
@@ -233,6 +250,7 @@ impl BackgroundManager {
             Ok(Ok(status)) => {
                 let label = status_label(&status);
                 entry.child = None;
+                entry.keepalive = None;
                 entry.status = Some(label.clone());
                 mark_notice_emitted(&self.dir, id);
                 Ok(format!("{}\n", wait_reply(&label)))
@@ -282,6 +300,7 @@ impl BackgroundManager {
                 entry.status.as_deref().unwrap_or("unknown")
             ));
         };
+        entry.keepalive = None;
         crate::bash::kill_group(entry.pid);
         let _ = child.wait().await;
         entry.status = Some("stopped".to_string());
@@ -328,6 +347,7 @@ fn refresh_status(entry: &mut Entry, dir: &Path, id: &str) -> String {
             Ok(Some(status)) => {
                 let label = status_label(&status);
                 entry.child = None;
+                entry.keepalive = None;
                 entry.status = Some(label.clone());
                 mark_notice_emitted(dir, id);
                 label
@@ -509,6 +529,7 @@ fn load_adopted(dir: &Path) -> (HashMap<String, Entry>, Vec<String>) {
                 status,
                 adopted,
                 lost,
+                keepalive: None,
             },
         );
     }

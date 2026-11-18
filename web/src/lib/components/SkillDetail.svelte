@@ -69,7 +69,7 @@
     <pre class="whitespace-pre-wrap rounded-lg border border-border bg-sidebar p-3 font-mono text-[12px] text-fg-2">{skill.text}</pre>
 
     <div class="grid gap-0.5">
-      <p class="px-2 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-3">Files ({skill.files.length})</p>
+      <p class="px-2 pt-1.5 pb-1 text-[11px] font-medium text-fg-3">Files ({skill.files.length})</p>
       {#each skill.files as file (file.path)}
         <details class="row px-3">
           <summary class="flex h-[34px] cursor-pointer items-center gap-2 text-[12px] text-fg-2">
@@ -85,7 +85,7 @@
     </div>
 
     <div class="grid gap-2">
-      <p class="px-2 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-3">History ({history?.backups.length ?? 0})</p>
+      <p class="px-2 pt-1.5 pb-1 text-[11px] font-medium text-fg-3">History ({history?.backups.length ?? 0})</p>
       {#if history}
         {#each entries(history, skill) as entry (entry.at + entry.file)}
           <div class="grid gap-1.5">

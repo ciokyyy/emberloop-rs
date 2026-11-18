@@ -103,4 +103,15 @@ storage` segmented bar) and monthly subscription-only token/call telemetry
 (`< November 2026 >`, `Export CSV`, 4 KPIs with avg/p95 latency, search +
 multi-facet `Filter bar` with active chips, sortable `@tanstack/svelte-table`
 grouped view with summary footer, and `Top token sinks` breakdown).
+The `Tool feed · Astryx dark` page (`953482739713`) holds the tool-feed redesign
+(`Feed · now · desktop` for the earlier look, `Feed · new · desktop`/`phone`, and
+the adopted `Feed · quiet · dots` grammar alongside `Feed · quiet · desktop`,
+`Feed · quiet · verb tags`, `Tool row · states`, `Tool feed · groups & density`,
+`Tool feed · thinking by model`, and `Icon families`). Adopted in code: full-width
+chat feed and full-width composer, Lucide/file-extension icons kept for chrome and
+read/edit file rows, `32 px` (`44 px` mobile) tool rows anchored by an `8 px` box
+holding a `5 px` status dot (`fg-4` idle, `status-working` running, `status-failed`
+failed), plain-language intent as title (`display.title` / comment / child summary),
+mono target chips, always-visible durations, and every row (including the last)
+closed by default except failed rows (`#2A2222` tint, error tail open).
 Change the mock and the code in the same pass, and keep this file's table true.

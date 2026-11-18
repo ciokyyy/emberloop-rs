@@ -36,6 +36,21 @@ fn tool_guidance_keeps_edits_anchored_and_graph_calls_discoverable() {
     assert!(default_text(SKILL_CODEBASE_MEMORY).contains("not a complete runtime call graph"));
 }
 
+#[test]
+fn skill_creation_assigns_a_module_in_the_tool_text_and_in_the_review() {
+    let manage = default_text(TOOL_SKILL_MANAGE);
+    assert!(manage.contains("`module`"), "{manage}");
+    assert!(manage.contains("`module_about`"), "{manage}");
+    assert!(manage.contains("at most 80 characters"), "{manage}");
+    let review = default_text(REVIEW_SKILLS);
+    assert!(
+        review.contains("Every new skill joins a module"),
+        "{review}"
+    );
+    assert!(review.contains("`module: \"\"`"), "{review}");
+    assert!(review.contains("never changes its module"), "{review}");
+}
+
 /// Tools the harness is offered, as `tools::mcp` declares them. The prompts crate
 /// cannot depend on the tools crate (it is far heavier and `tool_specs` is private),
 /// so this list is pinned here and must be kept in step with that declaration.
@@ -574,6 +589,20 @@ fn discarding_or_approving_a_missing_proposal_is_not_found() {
 fn the_propose_tool_has_a_default_description_and_prompt_id() {
     assert!(PROMPT_IDS.contains(&TOOL_PROMPT_PROPOSE));
     assert!(default_text(TOOL_PROMPT_PROPOSE).contains("approve"));
+}
+
+/// The injected text names the skill instead of copying it, so a skill update needs no rebuild.
+#[test]
+fn superpowers_points_at_the_skill_and_an_override_wins() {
+    assert!(PROMPT_IDS.contains(&SUPERPOWERS));
+    assert!(default_text(SUPERPOWERS).contains("el://skills/ember-flow/SKILL.md"));
+    assert!(!default_text(SUPERPOWERS).contains("EXTREMELY-IMPORTANT"));
+
+    let dir = tempdir().unwrap();
+    write_override(dir.path(), SUPERPOWERS, "custom bootstrap");
+    let store = PromptStore::new(dir.path());
+    let pins = PinnedPrompts::pin(&store, &vars()).unwrap();
+    assert_eq!(pins.text(SUPERPOWERS), Some("custom bootstrap"));
 }
 
 #[test]

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ArrowDown, ArrowUp } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
   import type { FallbackLadder, Model, ModelRung, Settings, ToolKey } from '$lib/api/types';
@@ -377,13 +378,13 @@
                       aria-label={`Move ${prefix} rung ${index + 1} up`}
                       disabled={index === 0}
                       onclick={() => onupdate(moveRung(ladder, index, -1))}
-                    >↑</Button>
+                    ><ArrowUp size={12} /></Button>
                     <Button
                       class="px-2 py-1 text-[11px]"
                       aria-label={`Move ${prefix} rung ${index + 1} down`}
                       disabled={index === ladder.length - 1}
                       onclick={() => onupdate(moveRung(ladder, index, 1))}
-                    >↓</Button>
+                    ><ArrowDown size={12} /></Button>
                     <Button
                       class="px-2 py-1 text-[11px]"
                       aria-label={`Remove ${prefix} rung ${index + 1}`}
@@ -443,6 +444,21 @@
               </div>
               {@render ladderEditor(tier.name, settings.subagent_tiers[tier.key], (next) =>
                 change({ subagent_tiers: { ...settings.subagent_tiers, [tier.key]: next } })
+              )}
+            </div>
+          {/each}
+        </div>
+        <h4 class="px-1 pt-2 text-[13px] font-semibold text-fg-1">Goldfish reviewers</h4>
+        <p class="px-1 text-[12px] text-fg-3">Ladders for goldfish reviewers. Use a model family different from your main model, so reviewers do not share its blind spots. Emberloop cannot enforce this. An empty ladder uses the matching subagent ladder.</p>
+        <div class="grid gap-3 sm:grid-cols-2">
+          {#each tiers as tier (tier.key)}
+            <div class="flex min-w-0 flex-col gap-3 rounded-xl border border-border bg-surface-1 p-3.5">
+              <div>
+                <h4 class="text-[13px] font-semibold text-fg-1">Goldfish {tier.name.toLowerCase()}</h4>
+                <p class="text-[12px] text-fg-3">{tier.description}</p>
+              </div>
+              {@render ladderEditor(`Goldfish ${tier.name.toLowerCase()}`, settings.goldfish_tiers[tier.key], (next) =>
+                change({ goldfish_tiers: { ...settings.goldfish_tiers, [tier.key]: next } })
               )}
             </div>
           {/each}

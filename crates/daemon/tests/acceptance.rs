@@ -568,6 +568,7 @@ async fn planned_update_resumes_active_agents_and_reviewers_but_not_idle_reviewe
             ticket_path: "ticket.md".into(),
             starting_point: "abc123".into(),
             tier: None,
+            persona: None,
         });
         std::fs::create_dir_all(env.daemon.data_root.session_dir(id)).unwrap();
         env.daemon.sessions.save(&meta).await.unwrap();

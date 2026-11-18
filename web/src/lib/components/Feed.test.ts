@@ -98,3 +98,11 @@ it('renders Scout sub-agent reports in the feed', () => {
   expect(view.getByRole('link', { name: 'Scout' }).getAttribute('href')).toContain('ses_scout');
   expect(view.getByText('Found 3 callers')).toBeTruthy();
 });
+
+it('renders a harness retry notice as a muted status row, not a bubble', () => {
+  const item: FeedItem = { id: 'retry', kind: 'notice', route: 'retry', retry: 'retrying', text: 'Retrying (attempt 1/3, waiting 2s)' };
+  const view = render(Feed, { feed: state([item]) });
+  const row = view.getByTestId('retry-row');
+  expect(row.getAttribute('data-state')).toBe('retrying');
+  expect(row.parentElement?.className ?? '').not.toContain('rounded-xl');
+});

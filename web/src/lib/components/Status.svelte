@@ -106,7 +106,7 @@
 
     {#if tab === 'system'}
       {#if systemError}
-        <p class="rounded-lg border border-status-failed/40 bg-status-failed/10 px-3 py-2 text-[13px] text-[#ffb3ad]">
+        <p class="rounded-lg border border-status-failed/40 bg-status-failed/10 px-3 py-2 text-[13px] text-failed-fg">
           {systemError}
         </p>
       {/if}
@@ -125,7 +125,7 @@
       {/if}
     {:else}
       {#if tokenError}
-        <p class="rounded-lg border border-status-failed/40 bg-status-failed/10 px-3 py-2 text-[13px] text-[#ffb3ad]">
+        <p class="rounded-lg border border-status-failed/40 bg-status-failed/10 px-3 py-2 text-[13px] text-failed-fg">
           {tokenError}
         </p>
       {/if}

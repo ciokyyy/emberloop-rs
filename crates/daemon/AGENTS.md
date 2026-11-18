@@ -2,7 +2,7 @@
 
 ## Reviewer subagents
 
-Runner and manual harness wiring call `push_subagent_env` to pass `EMBERLOOP_SESSION_URL`, `EMBERLOOP_REVIEWER` (`1` for `spec`/`standards` via `ReviewerAssignment::is_reviewer`, `0` otherwise), and `EMBERLOOP_SUBAGENT_ROLE` (for any subagent); stdio MCP reads them into `ToolConfig`. The API error watcher starts after the event persister. Startup recovers report delivery after binding the listener. See Versioning and update for continuation rules.
+Runner and manual harness wiring call `push_subagent_env` to pass `EMBERLOOP_SESSION_URL`, `EMBERLOOP_REVIEWER` (`1` for `spec`/`standards` via `ReviewerAssignment::is_reviewer`, `0` otherwise), and `EMBERLOOP_SUBAGENT_ROLE` (for any subagent); stdio MCP reads them into `ToolConfig`. The API error watcher and the submit watcher start after the event persister. Startup recovers report delivery after binding the listener. See Versioning and update for continuation rules.
 
 
 ## Purpose

@@ -5,7 +5,7 @@
 //! same name. A malformed skill is skipped with a warning, so one bad file hides no other.
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +13,8 @@ use crate::skillstore;
 
 /// Project skills live under this path, relative to the project root.
 pub const PROJECT_SKILLS: &str = ".agents/skills";
+/// Groups skill folders into modules, in each skills root.
+pub const MODULES_FILE: &str = "skill-modules.json";
 /// Opening bytes of a skill body that `skill_search` indexes; the rest is not searched.
 const SEARCH_BODY_BYTES: usize = 2048;
 /// Descriptions show at most this many characters in a catalog line or a search hit.
@@ -217,12 +219,20 @@ pub(crate) fn with_agent_origin(text: &str) -> Option<String> {
 const CATALOG_LINES: usize = 50;
 
 /// The catalog a Session freezes: `intro`, then one `- name: description` line per skill. Project
-/// skills come first, each group ordered by latest `view`. Empty when no skill is found.
+/// skills come first, each group ordered by latest `view`. A skill in a module is not listed
+/// individually; each module with a member follows the list as one line. Empty when no skill is
+/// found.
 pub fn catalog(intro: &str, global: Option<&Path>, project: &Path) -> String {
     let mut skills = discover(global, project);
     if skills.is_empty() {
         return String::new();
     }
+    let modules = modules(global, project);
+    let grouped: HashSet<&str> = modules
+        .iter()
+        .flat_map(|module| module.skills.iter().map(String::as_str))
+        .collect();
+    skills.retain(|skill| !grouped.contains(skill.name.as_str()));
     let project_views = last_views(&project.join(PROJECT_SKILLS));
     let global_views = global.map(last_views).unwrap_or_default();
     skills.sort_by_key(|skill| {
@@ -247,6 +257,60 @@ pub fn catalog(intro: &str, global: Option<&Path>, project: &Path) -> String {
             skills.len() - CATALOG_LINES
         ));
     }
+    for module in modules.iter().filter(|module| !module.skills.is_empty()) {
+        let about: String = module.about.chars().take(DESCRIPTION_CHARS).collect();
+        out.push_str(&format!(
+            "- {} ({} skills): {about}. Use skill_search \"{}\" to list.\n",
+            module.name,
+            module.skills.len(),
+            module.name
+        ));
+    }
+    out
+}
+
+/// The index `read` answers `el://skills` with: a line per module, then the names of the skills no
+/// module holds. It lists catalogues, never skill bodies, so the answer stays small enough for a
+/// harness to pass on whole.
+pub fn index(global: Option<&Path>, project: &Path) -> String {
+    let skills = discover(global, project);
+    if skills.is_empty() {
+        return String::new();
+    }
+    let modules: Vec<Module> = modules(global, project)
+        .into_iter()
+        .filter(|module| !module.skills.is_empty())
+        .collect();
+    let grouped: HashSet<&str> = modules
+        .iter()
+        .flat_map(|module| module.skills.iter().map(String::as_str))
+        .collect();
+    let loose: Vec<&str> = skills
+        .iter()
+        .filter(|skill| !grouped.contains(skill.name.as_str()))
+        .map(|skill| skill.name.as_str())
+        .collect();
+    let mut out = format!(
+        "Skills: {}. Modules: {}. Read one with el://skills/<name>; skill_search lists and ranks them.\n",
+        skills.len(),
+        modules.len()
+    );
+    for module in &modules {
+        let about: String = module.about.chars().take(DESCRIPTION_CHARS).collect();
+        out.push_str(&format!(
+            "\n- {} ({} skills): {about}",
+            module.name,
+            module.skills.len()
+        ));
+    }
+    if !loose.is_empty() {
+        out.push_str(&format!(
+            "\n- ungrouped ({}): {}",
+            loose.len(),
+            loose.join(", ")
+        ));
+    }
+    out.push('\n');
     out
 }
 
@@ -272,12 +336,111 @@ fn last_views(root: &Path) -> HashMap<String, u64> {
     views
 }
 
+/// A group of skills the catalog lists as one line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Module {
+    pub name: String,
+    pub about: String,
+    /// The named skills that exist, in merge order.
+    pub skills: Vec<String>,
+}
+
+/// The modules of both skills roots, sorted by name. A module named in both roots merges: the
+/// project's `about`, then both member lists, global first. A member that names no skill, or a
+/// skill an earlier module already holds, is dropped.
+pub fn modules(global: Option<&Path>, project: &Path) -> Vec<Module> {
+    let existing: HashSet<String> = discover(global, project)
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect();
+    let mut modules = read_modules(&project.join(PROJECT_SKILLS).join(MODULES_FILE));
+    let mut at: HashMap<String, usize> = modules
+        .iter()
+        .enumerate()
+        .map(|(index, module)| (module.name.clone(), index))
+        .collect();
+    for module in global
+        .map(|root| read_modules(&root.join(MODULES_FILE)))
+        .unwrap_or_default()
+    {
+        match at.get(&module.name) {
+            Some(&index) => {
+                let mut skills = module.skills;
+                skills.append(&mut modules[index].skills);
+                modules[index].skills = skills;
+            }
+            None => {
+                at.insert(module.name.clone(), modules.len());
+                modules.push(module);
+            }
+        }
+    }
+    modules.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut claimed: HashSet<String> = HashSet::new();
+    for module in &mut modules {
+        let name = module.name.clone();
+        module
+            .skills
+            .retain(|skill| claim(&name, skill, &existing, &mut claimed));
+    }
+    modules
+}
+
+/// True when `skill` exists and no earlier module or earlier entry has claimed it.
+fn claim(
+    module: &str,
+    skill: &str,
+    existing: &HashSet<String>,
+    claimed: &mut HashSet<String>,
+) -> bool {
+    let keep = existing.contains(skill) && claimed.insert(skill.to_string());
+    if !keep {
+        tracing::warn!(module, %skill, "skill module drops a missing or already claimed skill");
+    }
+    keep
+}
+
+/// The module `skill` belongs to, when one names it.
+pub fn module_of<'a>(modules: &'a [Module], skill: &str) -> Option<&'a str> {
+    modules
+        .iter()
+        .find(|module| module.skills.iter().any(|member| member == skill))
+        .map(|module| module.name.as_str())
+}
+
+/// One root's modules, or a warning when the file is there but unreadable as modules.
+fn read_modules(path: &Path) -> Vec<Module> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    match serde_json::from_str::<BTreeMap<String, ModuleEntry>>(&text) {
+        Ok(entries) => entries
+            .into_iter()
+            .map(|(name, entry)| Module {
+                name,
+                about: entry.about,
+                skills: entry.skills,
+            })
+            .collect(),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "skipping malformed skill modules file");
+            Vec::new()
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ModuleEntry {
+    about: String,
+    skills: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use super::{catalog, discover, valid_name, Skill};
+    use super::{catalog, discover, index, module_of, modules, valid_name, Skill};
 
     fn usage(root: &Path, name: &str, time: u64) {
         fs::create_dir_all(root).unwrap();
@@ -304,9 +467,37 @@ mod tests {
             skill(&global, &name, &frontmatter(&name, "short"));
         }
         let text = catalog("INTRO", Some(&global), dir.path());
-        assert!(text.starts_with("INTRO"), "{text}");
         assert_eq!(catalog_names(&text).len(), 50);
         assert_eq!(text.lines().last(), Some("1 more skills: use skill_search"));
+    }
+
+    #[test]
+    fn index_lists_modules_and_only_the_skills_no_module_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        let root = project.join(".agents/skills");
+        skill(&root, "grouped", &frontmatter("grouped", "in a module"));
+        skill(&root, "solo", &frontmatter("solo", "by itself"));
+        fs::write(
+            root.join("skill-modules.json"),
+            r#"{"tools": {"about": "Use when tooling.", "skills": ["grouped"]}}"#,
+        )
+        .unwrap();
+
+        let text = index(None, &project);
+        assert!(
+            text.contains("- tools (1 skills): Use when tooling."),
+            "{text}"
+        );
+        assert!(text.contains("- ungrouped (1): solo"), "{text}");
+        assert!(
+            !text.contains("- grouped"),
+            "a module member is not listed alone: {text}"
+        );
+        assert!(
+            !text.contains("by itself"),
+            "the index carries no descriptions: {text}"
+        );
     }
 
     #[test]
@@ -483,5 +674,166 @@ mod tests {
         let text = skill.search_text();
         assert!(text.contains("Heading"), "{text}");
         assert!(!text.contains("tail-marker"), "{text}");
+    }
+
+    fn modules_file(root: &Path, json: &str) {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join("skill-modules.json"), json).unwrap();
+    }
+
+    #[test]
+    fn catalog_collapses_a_module_into_one_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global");
+        for name in ["audio", "plain", "video"] {
+            skill(&global, name, &frontmatter(name, "short"));
+        }
+        modules_file(
+            &global,
+            r#"{"media": {"about": "audio and video", "skills": ["audio", "video"]}}"#,
+        );
+
+        let text = catalog("INTRO", Some(&global), dir.path());
+        assert!(text.contains("- plain: short\n"), "{text}");
+        assert!(!text.contains("- audio:"), "{text}");
+        let line = "- media (2 skills): audio and video. Use skill_search \"media\" to list.";
+        assert!(text.contains(line), "{text}");
+        let plain = text
+            .lines()
+            .position(|line| line == "- plain: short")
+            .unwrap();
+        let media = text
+            .lines()
+            .position(|line| line.starts_with("- media "))
+            .unwrap();
+        assert!(plain < media, "{text}");
+    }
+
+    #[test]
+    fn a_module_named_in_both_roots_merges_with_the_project_about() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global");
+        let project = dir.path().join("project");
+        for name in ["both", "ga", "pa"] {
+            skill(&global, name, &frontmatter(name, "short"));
+        }
+        skill(
+            &project.join(".agents/skills"),
+            "pa",
+            &frontmatter("pa", "short"),
+        );
+        modules_file(
+            &global,
+            r#"{"media": {"about": "global media", "skills": ["ga", "both"]}}"#,
+        );
+        modules_file(
+            &project.join(".agents/skills"),
+            r#"{"media": {"about": "project media", "skills": ["both", "pa"]}, "alpha": {"about": "a", "skills": []}}"#,
+        );
+
+        let found = modules(Some(&global), &project);
+        let names: Vec<&str> = found.iter().map(|module| module.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "media"]);
+        assert_eq!(found[1].about, "project media");
+        assert_eq!(found[1].skills, vec!["ga", "both", "pa"]);
+
+        let text = catalog("INTRO", Some(&global), &project);
+        assert!(!text.contains("- ga:"), "{text}");
+        assert!(!text.contains("- pa:"), "{text}");
+        assert!(
+            text.contains("- media (3 skills): project media."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn missing_module_file_leaves_every_skill_unmapped() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global");
+        skill(&global, "audio", &frontmatter("audio", "short"));
+
+        assert!(modules(Some(&global), dir.path()).is_empty());
+        assert_eq!(
+            catalog_names(&catalog("INTRO", Some(&global), dir.path())),
+            vec!["audio"]
+        );
+    }
+
+    #[test]
+    fn malformed_module_file_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global");
+        skill(&global, "audio", &frontmatter("audio", "short"));
+        modules_file(&global, r#"{"media": {"about": 1}}"#);
+
+        assert!(modules(Some(&global), dir.path()).is_empty());
+        assert_eq!(
+            catalog_names(&catalog("INTRO", Some(&global), dir.path())),
+            vec!["audio"]
+        );
+    }
+
+    #[test]
+    fn a_module_member_without_a_skill_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global");
+        skill(&global, "audio", &frontmatter("audio", "short"));
+        modules_file(
+            &global,
+            r#"{"media": {"about": "a", "skills": ["audio", "ghost"]}}"#,
+        );
+
+        let found = modules(Some(&global), dir.path());
+        assert_eq!(found[0].skills, vec!["audio"]);
+        let text = catalog("INTRO", Some(&global), dir.path());
+        assert!(text.contains("- media (1 skills): a."), "{text}");
+
+        modules_file(
+            &global,
+            r#"{"ghostly": {"about": "g", "skills": ["ghost"]}}"#,
+        );
+        let text = catalog("INTRO", Some(&global), dir.path());
+        assert!(!text.contains("ghostly"), "{text}");
+        assert_eq!(catalog_names(&text), vec!["audio"]);
+    }
+
+    #[test]
+    fn a_skill_belongs_to_the_first_module_that_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global");
+        skill(&global, "shared", &frontmatter("shared", "short"));
+        modules_file(
+            &global,
+            r#"{"beta": {"about": "b", "skills": ["shared"]}, "alpha": {"about": "a", "skills": ["shared"]}}"#,
+        );
+
+        let found = modules(Some(&global), dir.path());
+        let names: Vec<&str> = found.iter().map(|module| module.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert_eq!(found[0].skills, vec!["shared"]);
+        assert!(found[1].skills.is_empty());
+        assert_eq!(module_of(&found, "shared"), Some("alpha"));
+        assert_eq!(module_of(&found, "other"), None);
+
+        let text = catalog("INTRO", Some(&global), dir.path());
+        assert!(text.contains("- alpha (1 skills): a."), "{text}");
+        assert!(!text.contains("- beta ("), "{text}");
+    }
+
+    #[test]
+    fn a_skill_in_modules_of_both_roots_goes_to_the_first_module() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global");
+        let project = dir.path().join("project");
+        skill(&global, "shared", &frontmatter("shared", "short"));
+        modules_file(&global, r#"{"beta": {"about": "b", "skills": ["shared"]}}"#);
+        modules_file(
+            &project.join(".agents/skills"),
+            r#"{"alpha": {"about": "a", "skills": ["shared"]}}"#,
+        );
+
+        let found = modules(Some(&global), &project);
+        assert_eq!(module_of(&found, "shared"), Some("alpha"));
+        assert!(found[1].skills.is_empty());
     }
 }

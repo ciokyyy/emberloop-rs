@@ -493,6 +493,7 @@ impl Daemon {
         let _ = figcraft::ensure(&config.config_root);
         let mut proxy_config = ProxyConfig::new(random_secret())
             .with_codebase_memory(codebase_memory)
+            .with_global_skills(Some(config.global_skills.clone()))
             .with_review_tools(Arc::new(review::ReviewExecutor {
                 sessions: sessions.clone(),
                 projects: projects.clone(),
@@ -581,6 +582,7 @@ impl Daemon {
         app_state = app_state.with_driver(runner).with_provider_login(login);
         api::persist::spawn_persister(app_state.clone());
         api::subagents::watch_errors(app_state.clone());
+        api::subagents::watch_submits(app_state.clone());
         api::push::watch(app_state.clone());
 
         spawn_archival_sweep(data_root.clone(), sessions.clone());

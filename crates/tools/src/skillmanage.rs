@@ -2,12 +2,12 @@
 //! all or nothing; only agent-origin skills change; every change keeps a backup; a patch or a
 //! write needs a prior read of the file it changes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::skills::{self, Front, Skill};
@@ -18,6 +18,7 @@ use crate::{ToolError, ToolResult, Toolbox};
 const MAX_SKILL_CHARS: usize = 100_000;
 const MAX_SUPPORT_BYTES: usize = 1 << 20;
 const MAX_DESCRIPTION_CHARS: usize = 1024;
+const MAX_ABOUT_CHARS: usize = 80;
 
 #[derive(Deserialize)]
 struct Args {
@@ -39,6 +40,12 @@ struct CreateOp {
     content: String,
     #[serde(default)]
     scope: Option<String>,
+    /// The module the new skill joins; `""` leaves it ungrouped.
+    #[serde(default)]
+    module: Option<String>,
+    /// The `about` line for a module this call creates.
+    #[serde(default)]
+    module_about: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -168,7 +175,17 @@ fn lock_keys(toolbox: &Toolbox, ops: &[Op]) -> ToolResult<Vec<(PathBuf, String)>
     let mut keys = BTreeSet::new();
     for op in ops {
         check_name(op.name())?;
-        keys.insert((root_for(toolbox, op)?, op.name().to_string()));
+        let root = root_for(toolbox, op)?;
+        if let Op::Create(create) = op {
+            if create
+                .module
+                .as_deref()
+                .is_some_and(|module| !module.is_empty())
+            {
+                keys.insert((root.clone(), skills::MODULES_FILE.to_string()));
+            }
+        }
+        keys.insert((root, op.name().to_string()));
     }
     Ok(keys.into_iter().collect())
 }
@@ -250,12 +267,158 @@ fn create(toolbox: &Toolbox, op: &CreateOp, undo: &mut Vec<Undo>) -> ToolResult<
     let content = skills::with_agent_origin(&op.content)
         .ok_or_else(|| ToolError::msg("SKILL.md needs frontmatter"))?;
     check_skill_text(&op.name, &content)?;
+    let mapping = module_write(toolbox, &root, op)?;
     let dir = root.join(&op.name);
     make_dirs(&dir, undo)?;
     let file = dir.join("SKILL.md");
     undo.push(Undo::Remove(file.clone()));
     fs::write(&file, &content)?;
-    record_written(toolbox, &file, content.as_bytes())
+    record_written(toolbox, &file, content.as_bytes())?;
+    match mapping {
+        Some(bytes) => write_modules(&root, &bytes, undo),
+        None => Ok(()),
+    }
+}
+
+/// One `skill-modules.json` entry. A plain `BTreeMap` of these keeps the file's keys sorted.
+#[derive(Deserialize, Serialize)]
+struct ModuleEntry {
+    about: String,
+    skills: Vec<String>,
+}
+
+fn modules_path(root: &Path) -> PathBuf {
+    root.join(skills::MODULES_FILE)
+}
+
+/// One root's module entries. A missing file is empty; an unreadable or malformed one is an error,
+/// so a rewrite never discards what it could not parse.
+fn read_modules(root: &Path) -> ToolResult<BTreeMap<String, ModuleEntry>> {
+    let path = modules_path(root);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => return Err(error.into()),
+    };
+    serde_json::from_str(&text)
+        .map_err(|error| ToolError::msg(format!("{} is not valid JSON: {error}", path.display())))
+}
+
+/// The module file `create` writes: the target root's entries with the new skill in `op.module`.
+/// `None` when no mapping is needed. Module membership follows the skill name, so only `create`
+/// touches this file.
+fn module_write(toolbox: &Toolbox, root: &Path, op: &CreateOp) -> ToolResult<Option<Vec<u8>>> {
+    let mut entries = read_modules(root)?;
+    let merged = skills::modules(toolbox.global_skills(), toolbox.root());
+    let Some(module) = op.module.as_deref() else {
+        if entries.is_empty() && merged.is_empty() {
+            return Ok(None);
+        }
+        return Err(needs_module(&merged));
+    };
+    if module.is_empty() {
+        return Ok(None);
+    }
+    check_module_name(module)?;
+    if let Some(other) = listed_in(toolbox, root, &op.name, module) {
+        return Err(ToolError::msg(format!(
+            "skill {:?} is already listed in module {other:?}",
+            op.name
+        )));
+    }
+    match entries.get_mut(module) {
+        Some(entry) => {
+            if !entry.skills.iter().any(|skill| skill == &op.name) {
+                entry.skills.push(op.name.clone());
+            }
+        }
+        None => {
+            let about = match merged.iter().find(|known| known.name == module) {
+                Some(known) => known.about.clone(),
+                None => new_about(module, op.module_about.as_deref())?,
+            };
+            let entry = ModuleEntry {
+                about,
+                skills: vec![op.name.clone()],
+            };
+            entries.insert(module.to_string(), entry);
+        }
+    }
+    Ok(Some(serde_json::to_vec_pretty(&entries)?))
+}
+
+/// The refusal for a `create` that names no module once modules exist: every module the agent can
+/// pick, as `name: about`.
+fn needs_module(modules: &[skills::Module]) -> ToolError {
+    let listed: Vec<String> = modules
+        .iter()
+        .map(|module| format!("{}: {}", module.name, module.about))
+        .collect();
+    ToolError::msg(format!(
+        "create needs a module once skills are grouped; existing modules: {}. Pass module: \"<name>\" (with module_about for a new module), or module: \"\" for a cross-cutting skill",
+        listed.join("; ")
+    ))
+}
+
+fn check_module_name(name: &str) -> ToolResult<()> {
+    if skills::valid_name(name) {
+        return Ok(());
+    }
+    Err(ToolError::msg(format!(
+        "module name {name:?} must start with a-z or 0-9 and use only a-z, 0-9, '.', '_' or '-' (at most 64)"
+    )))
+}
+
+/// The `about` of a module this call creates: one use-when line, at most 80 characters.
+fn new_about(module: &str, about: Option<&str>) -> ToolResult<String> {
+    let about = about.map(str::trim).unwrap_or_default();
+    if about.is_empty() {
+        return Err(ToolError::msg(format!(
+            "module {module:?} is new; give module_about: one \"Use when ...\" line"
+        )));
+    }
+    if about.chars().count() > MAX_ABOUT_CHARS {
+        return Err(ToolError::msg(format!(
+            "module_about is over {MAX_ABOUT_CHARS} characters"
+        )));
+    }
+    Ok(about.to_string())
+}
+
+/// The other module that already lists `skill`, in either root.
+fn listed_in(toolbox: &Toolbox, root: &Path, skill: &str, module: &str) -> Option<String> {
+    let project = toolbox.root().join(skills::PROJECT_SKILLS);
+    for root in [Some(root), toolbox.global_skills(), Some(project.as_path())]
+        .into_iter()
+        .flatten()
+    {
+        let Ok(entries) = read_modules(root) else {
+            continue;
+        };
+        for (name, entry) in entries {
+            if name != module && entry.skills.iter().any(|member| member == skill) {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// Writes one root's module file through a temp name and a rename, so a reader never sees half a
+/// map. Rollback puts the old bytes back.
+fn write_modules(root: &Path, bytes: &[u8], undo: &mut Vec<Undo>) -> ToolResult<()> {
+    let path = modules_path(root);
+    match fs::read(&path) {
+        Ok(before) => undo.push(Undo::Restore {
+            path: path.clone(),
+            bytes: before,
+        }),
+        Err(_) => undo.push(Undo::Remove(path.clone())),
+    }
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    fs::write(&tmp, bytes)?;
+    fs::rename(&tmp, &path)?;
+    Ok(())
 }
 
 fn patch(toolbox: &Toolbox, op: &PatchOp, undo: &mut Vec<Undo>) -> ToolResult<()> {
@@ -759,5 +922,147 @@ mod tests {
         let skill_md = json!({"op": "remove_file", "name": "tidy", "path": "SKILL.md"});
         assert!(call(&e.tb, vec![skill_md]).is_err());
         assert!(e.global.join("tidy/SKILL.md").is_file());
+    }
+
+    /// A `skill-modules.json` in one skills root.
+    fn module_file(root: &Path, text: &str) {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join("skill-modules.json"), text).unwrap();
+    }
+
+    /// The parsed `skill-modules.json` of one skills root.
+    fn modules_json(root: &Path) -> Value {
+        serde_json::from_str(&fs::read_to_string(root.join("skill-modules.json")).unwrap()).unwrap()
+    }
+
+    fn create_in(name: &str, module: &str, about: Option<&str>) -> Value {
+        let mut op = json!({"op": "create", "name": name, "module": module,
+            "content": skill_text(name, "test skill", "body")});
+        if let Some(about) = about {
+            op["module_about"] = json!(about);
+        }
+        op
+    }
+
+    const MEDIA: &str = r#"{"media": {"about": "images and video", "skills": []}}"#;
+
+    #[test]
+    fn create_without_a_module_is_refused_and_lists_the_modules_once_one_exists() {
+        let e = env();
+        module_file(&e.global, MEDIA);
+        let err = call(&e.tb, vec![create("fresh", &skill_text("fresh", "d", "b"))]).unwrap_err();
+        assert!(err.contains("media: images and video"), "{err}");
+        assert!(err.contains("module"), "{err}");
+        assert!(!e.global.join("fresh").exists());
+    }
+
+    #[test]
+    fn create_joins_an_existing_module_and_keeps_its_about() {
+        let e = env();
+        module_file(&e.global, MEDIA);
+        call(&e.tb, vec![create_in("fresh", "media", Some("ignored"))]).unwrap();
+        let file = modules_json(&e.global);
+        assert_eq!(file["media"]["about"], "images and video");
+        assert_eq!(file["media"]["skills"], json!(["fresh"]));
+        assert!(e.global.join("fresh/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn create_makes_a_new_module_only_with_a_use_when_about() {
+        let e = env();
+        module_file(&e.global, MEDIA);
+        let err = call(&e.tb, vec![create_in("fresh", "writing", None)]).unwrap_err();
+        assert!(err.contains("module_about"), "{err}");
+        assert!(!e.global.join("fresh").exists());
+        let long = "x".repeat(81);
+        let err = call(&e.tb, vec![create_in("fresh", "writing", Some(&long))]).unwrap_err();
+        assert!(err.contains("80"), "{err}");
+        call(
+            &e.tb,
+            vec![create_in(
+                "fresh",
+                "writing",
+                Some("Use when writing prose"),
+            )],
+        )
+        .unwrap();
+        let file = modules_json(&e.global);
+        assert_eq!(file["writing"]["about"], "Use when writing prose");
+        assert_eq!(file["writing"]["skills"], json!(["fresh"]));
+    }
+
+    #[test]
+    fn create_with_an_empty_module_stays_ungrouped_and_leaves_the_file_alone() {
+        let e = env();
+        module_file(&e.global, MEDIA);
+        call(&e.tb, vec![create_in("fresh", "", None)]).unwrap();
+        assert!(e.global.join("fresh/SKILL.md").is_file());
+        assert_eq!(
+            fs::read_to_string(e.global.join("skill-modules.json")).unwrap(),
+            MEDIA
+        );
+    }
+
+    #[test]
+    fn a_failed_call_restores_the_module_file_too() {
+        let e = env();
+        module_file(&e.global, MEDIA);
+        let err = call(
+            &e.tb,
+            vec![
+                create_in("fresh", "media", None),
+                patch("missing", "a", "b"),
+            ],
+        );
+        assert!(err.is_err());
+        assert!(!e.global.join("fresh").exists());
+        assert_eq!(
+            fs::read_to_string(e.global.join("skill-modules.json")).unwrap(),
+            MEDIA
+        );
+    }
+
+    #[test]
+    fn a_project_scoped_create_maps_into_the_project_root_and_copies_the_about() {
+        let e = env();
+        module_file(&e.global, MEDIA);
+        let op = json!({"op": "create", "name": "here", "scope": "project", "module": "media",
+            "content": skill_text("here", "project skill", "body")});
+        call(&e.tb, vec![op]).unwrap();
+        let project_skills = e.project.join(".agents/skills");
+        let file = modules_json(&project_skills);
+        assert_eq!(file["media"]["about"], "images and video");
+        assert_eq!(file["media"]["skills"], json!(["here"]));
+        assert_eq!(
+            fs::read_to_string(e.global.join("skill-modules.json")).unwrap(),
+            MEDIA
+        );
+    }
+
+    #[test]
+    fn create_without_a_module_is_allowed_when_no_module_exists_anywhere() {
+        let e = env();
+        call(&e.tb, vec![create("fresh", &skill_text("fresh", "d", "b"))]).unwrap();
+        assert!(e.global.join("fresh/SKILL.md").is_file());
+        assert!(!e.global.join("skill-modules.json").exists());
+    }
+
+    #[test]
+    fn a_skill_listed_in_another_module_or_with_a_bad_module_name_is_refused() {
+        let e = env();
+        module_file(
+            &e.global,
+            r#"{"media": {"about": "images", "skills": ["fresh"]}}"#,
+        );
+        let err = call(
+            &e.tb,
+            vec![create_in("fresh", "writing", Some("Use when writing"))],
+        )
+        .unwrap_err();
+        assert!(err.contains("media"), "{err}");
+        assert!(!e.global.join("fresh").exists());
+        let err = call(&e.tb, vec![create_in("fresh", "Bad Module", Some("x"))]).unwrap_err();
+        assert!(err.contains("module name"), "{err}");
+        assert!(!e.global.join("fresh").exists());
     }
 }

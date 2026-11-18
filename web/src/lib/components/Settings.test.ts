@@ -14,6 +14,11 @@ const saved: SettingsData = {
     mid: [{ model: 'model', reasoning_effort: null }],
     top: [{ model: 'model', reasoning_effort: null }]
   },
+  goldfish_tiers: {
+    smol: [],
+    mid: [],
+    top: [{ model: 'model', reasoning_effort: 'high' }]
+  },
   proxy_compression: true, ponytail_default_level: 'full', todo_reminders: true,
   todo_reminders_max: 3, todo_auto_expand: true, todo_hide_when_done: true,
   max_context_limit: 75, min_pressure_benefit_tokens: 0, emergency_threshold_percent: 95,
@@ -59,6 +64,28 @@ it('saves intelligence tier presets and resets effort on model change without mu
     }
   }));
   expect(saved.subagent_tiers.smol).toEqual([{ model: 'model', reasoning_effort: null }]);
+});
+
+it('edits goldfish tier ladders separately and leaves empty ladders empty', async () => {
+  const onsave = vi.fn();
+  const view = render(Settings, { settings: saved, models, onsave });
+  const top = within(view.getByRole('group', { name: 'Goldfish top tier rung 1 reasoning effort', hidden: true }));
+  await fireEvent.click(top.getByRole('button', { name: 'low', hidden: true }));
+  await fireEvent.click(view.getByRole('button', { name: 'Add Goldfish smol tier fallback', hidden: true }));
+  await fireEvent.click(view.getByRole('button', { name: 'Save' }));
+  expect(onsave).toHaveBeenCalledWith(expect.objectContaining({
+    goldfish_tiers: {
+      smol: [{ model: 'model', reasoning_effort: null }],
+      mid: [],
+      top: [{ model: 'model', reasoning_effort: 'low' }]
+    },
+    subagent_tiers: {
+      smol: [{ model: 'model', reasoning_effort: null }],
+      mid: [{ model: 'model', reasoning_effort: null }],
+      top: [{ model: 'model', reasoning_effort: null }]
+    }
+  }));
+  expect(saved.goldfish_tiers.top).toEqual([{ model: 'model', reasoning_effort: 'high' }]);
 });
 
 it('adds, reorders, and removes fallback ladder rungs without mutating saved settings', async () => {

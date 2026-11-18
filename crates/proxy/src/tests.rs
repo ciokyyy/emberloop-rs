@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router as AxumRouter};
 use emberloop_core::events::{EventBus, EventKind};
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use prompts::{default_text, PromptStore};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -46,6 +46,12 @@ fn the_skill_catalog_is_read_once_so_a_later_skill_never_changes_the_prompt() {
     );
 }
 
+/// Lets a reply head reach the client before the body breaks.
+#[allow(clippy::disallowed_methods)] // a real flush delay; the rest of the suite is sleep-free
+async fn await_head_flush() {
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+}
+
 #[derive(Clone)]
 struct FakeUpstream {
     calls: Arc<AtomicUsize>,
@@ -54,6 +60,9 @@ struct FakeUpstream {
     hang: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     /// The next call answers 500 instead of its usual response.
     fail_next: Arc<AtomicBool>,
+    /// The next this-many calls answer with this content type and a body that breaks before it
+    /// ends, as a connection dropped mid-reply does.
+    broken_body: Arc<Mutex<Option<(&'static str, usize)>>>,
     /// The next this-many calls answer 502, as a gateway in front of the provider does.
     bad_gateways: Arc<AtomicUsize>,
     /// Every call from this 1-based number on answers 400 (0 = never), as a request with an orphaned tool result does.
@@ -76,6 +85,7 @@ impl FakeUpstream {
             sse: Arc::new(Mutex::new(VecDeque::new())),
             hang: Arc::new(Mutex::new(None)),
             fail_next: Arc::new(AtomicBool::new(false)),
+            broken_body: Arc::new(Mutex::new(None)),
             bad_gateways: Arc::new(AtomicUsize::new(0)),
             reject_from: Arc::new(AtomicUsize::new(0)),
             stall: Arc::new(AtomicBool::new(false)),
@@ -147,6 +157,30 @@ async fn fake_upstream(
     }
     if fake.fail_next.swap(false, Ordering::SeqCst) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "upstream failed").into_response();
+    }
+    let broken = {
+        let mut knob = fake.broken_body.lock().unwrap();
+        match knob.as_mut() {
+            Some((content_type, left)) if *left > 0 => {
+                *left -= 1;
+                Some(*content_type)
+            }
+            _ => None,
+        }
+    };
+    if let Some(content_type) = broken {
+        let half = Bytes::from(sse_event(json!([{"text": "half"}])));
+        // The head lands, then the body breaks: a provider connection dropped mid-reply.
+        let reply = futures::stream::once(async { Ok::<_, std::io::Error>(half) }).chain(
+            futures::stream::once(async {
+                await_head_flush().await;
+                Err(std::io::Error::other("body broke"))
+            }),
+        );
+        return Response::builder()
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from_stream(reply))
+            .unwrap();
     }
     if let Some(response) = fake.sse.lock().unwrap().pop_front() {
         return Response::builder()
@@ -456,6 +490,7 @@ async fn injects_tools_prompts_and_meters_usage() {
         .unwrap();
     assert!(system.contains("Ponytail"));
     assert!(system.contains("CAVEMAN MODE ACTIVE — level: ultra"));
+    assert!(system.contains("el://skills/ember-flow/SKILL.md"));
     assert!(system.contains("demo"));
 
     let comp_event = events.try_recv().expect("compression event");
@@ -487,6 +522,7 @@ async fn reviewer_prompts_are_pinned_and_edit_is_removed_on_the_model_wire() {
         ticket_path: "ticket.md".into(),
         starting_point: "abc123".into(),
         tier: None,
+        persona: None,
     });
     fixture.sessions.save(&meta).await.unwrap();
     let mut request = body(conversation());
@@ -519,6 +555,7 @@ async fn worker_subagents_keep_edit_and_do_not_receive_reviewer_prompts() {
         ticket_path: String::new(),
         starting_point: String::new(),
         tier: None,
+        persona: None,
     });
     fixture.sessions.save(&meta).await.unwrap();
     let mut request = body(conversation());
@@ -551,6 +588,7 @@ async fn scout_subagents_drop_edit_and_write_and_do_not_receive_reviewer_prompts
         ticket_path: String::new(),
         starting_point: String::new(),
         tier: None,
+        persona: None,
     });
     fixture.sessions.save(&meta).await.unwrap();
     let mut request = body(conversation());
@@ -2933,44 +2971,6 @@ fn compress_args_accept_a_ranges_array_or_the_single_form() {
     let short = parse_compress_calls(&json!({"start": 1, "end": 20, "summary": "tiny"}));
     assert!(short.unwrap_err().contains("summary too short"));
 }
-#[test]
-fn a_small_early_fold_in_a_big_history_is_refused() {
-    let big = "x".repeat(400_000);
-    let contents = vec![
-        json!({"role": "user", "parts": [{"text": "a"}]}),
-        json!({"role": "model", "parts": [{"text": "b"}]}),
-        json!({"role": "user", "parts": [{"text": big}]}),
-    ];
-    let call = |start, end| CompressCall {
-        start,
-        end,
-        summary: String::new(),
-        topic: None,
-    };
-    let error = refuse_cache_costly_folds(&contents, &[call(0, 2)]).unwrap_err();
-    assert!(error.contains("cache restarts"), "{error}");
-    assert!(refuse_cache_costly_folds(&contents, &[call(0, 3)]).is_ok());
-}
-
-#[test]
-fn compress_args_name_the_range_that_is_malformed() {
-    let error = parse_compress_calls(&json!({
-        "ranges": [
-            {"start": 1, "end": 3, "summary": "a"},
-            {"start": 4, "summary": "b"}
-        ]
-    }))
-    .unwrap_err();
-    assert!(error.contains("range 2"), "{error}");
-    assert!(error.contains("end"), "{error}");
-
-    assert!(parse_compress_calls(&json!({"ranges": []})).is_err());
-    assert!(parse_compress_calls(&json!({"ranges": "nope"})).is_err());
-    assert!(parse_compress_calls(&json!({})).is_err());
-}
-
-#[test]
-fn compress_empty_args_hint_at_cut_stream() {
 
 #[test]
 fn the_default_tail_refuses_the_incident_fold() {
@@ -3022,6 +3022,44 @@ fn the_default_tail_refuses_the_incident_fold() {
         .unwrap();
 }
 
+#[test]
+fn a_small_early_fold_in_a_big_history_is_refused() {
+    let big = "x".repeat(400_000);
+    let contents = vec![
+        json!({"role": "user", "parts": [{"text": "a"}]}),
+        json!({"role": "model", "parts": [{"text": "b"}]}),
+        json!({"role": "user", "parts": [{"text": big}]}),
+    ];
+    let call = |start, end| CompressCall {
+        start,
+        end,
+        summary: String::new(),
+        topic: None,
+    };
+    let error = refuse_cache_costly_folds(&contents, &[call(0, 2)]).unwrap_err();
+    assert!(error.contains("cache restarts"), "{error}");
+    assert!(refuse_cache_costly_folds(&contents, &[call(0, 3)]).is_ok());
+}
+
+#[test]
+fn compress_args_name_the_range_that_is_malformed() {
+    let error = parse_compress_calls(&json!({
+        "ranges": [
+            {"start": 1, "end": 3, "summary": "a"},
+            {"start": 4, "summary": "b"}
+        ]
+    }))
+    .unwrap_err();
+    assert!(error.contains("range 2"), "{error}");
+    assert!(error.contains("end"), "{error}");
+
+    assert!(parse_compress_calls(&json!({"ranges": []})).is_err());
+    assert!(parse_compress_calls(&json!({"ranges": "nope"})).is_err());
+    assert!(parse_compress_calls(&json!({})).is_err());
+}
+
+#[test]
+fn compress_empty_args_hint_at_cut_stream() {
     let error = parse_compress_calls(&json!({})).unwrap_err();
     assert!(
         error.contains("empty") && error.contains("re-issue"),
@@ -4326,6 +4364,68 @@ async fn a_gateway_that_keeps_failing_gives_up_with_its_status() {
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
 
+/// A connection that drops before the body ends is retried while nothing has reached the harness.
+#[tokio::test]
+async fn a_body_that_breaks_before_it_ends_is_retried_before_the_harness_sees_it() {
+    let fake = text_only_fake();
+    *fake.broken_body.lock().unwrap() = Some(("application/json", 1));
+    let fixture = fixture_config(fake, |config| config.with_retry_backoff(Duration::ZERO)).await;
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&response).contains("done"));
+}
+
+#[tokio::test]
+async fn a_body_that_keeps_breaking_gives_up_marked_as_an_interruption() {
+    let fake = text_only_fake();
+    *fake.broken_body.lock().unwrap() = Some(("application/json", 10));
+    let fixture = fixture_config(fake, |config| config.with_retry_backoff(Duration::ZERO)).await;
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.starts_with("stream was interrupted: "), "{text}");
+}
+
+/// The Session event the subagent supervisor classifies must carry the same marker as the wire
+/// error, or a dropped stream reads as a hard failure and the worker dies.
+#[tokio::test]
+async fn a_stream_that_breaks_publishes_the_interruption_marker() {
+    let fake = text_only_fake();
+    *fake.broken_body.lock().unwrap() = Some(("text/event-stream", 10));
+    let fixture = fixture_config(fake, |config| config.with_retry_backoff(Duration::ZERO)).await;
+    let mut events = fixture.events.subscribe();
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.contains("stream was interrupted"), "{text}");
+    let mut message = None;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == EventKind::Error {
+            message = event.data["message"].as_str().map(str::to_string);
+        }
+    }
+    let message = message.expect("an error event");
+    assert!(message.contains("stream was interrupted"), "{message}");
+}
+
 #[tokio::test]
 async fn a_follow_up_the_upstream_rejects_ends_the_turn_with_an_error_event() {
     let fake = FakeUpstream::sse(vec![sse_event(json!([{
@@ -4896,4 +4996,297 @@ async fn a_google_stream_publishes_one_usage_event_not_its_cache_less_early_read
         }
     }
     assert_eq!(cached, vec![Some(90)]);
+}
+
+/// The turns a harness sends once the el `submit` MCP tool answered: the model's call and its
+/// result, both named by the bridge's wrapper tool, as the real wires carry them.
+fn submit_conversation(result: &str) -> Value {
+    json!([
+        { "role": "user", "parts": [{ "text": "review it" }] },
+        { "role": "model", "parts": [{
+            "functionCall": {
+                "id": "call_submit",
+                "name": "call_mcp_tool",
+                "args": {
+                    "ServerName": "el",
+                    "ToolName": "submit",
+                    "status": "done",
+                    "report": "r",
+                    "summary": "s"
+                }
+            }
+        }]},
+        { "role": "user", "parts": [{
+            "functionResponse": {
+                "id": "call_submit",
+                "name": "call_mcp_tool",
+                "response": { "output": format!("Created At: 1\nCompleted At: 2\n{result}") }
+            }
+        }]}
+    ])
+}
+
+async fn mark_subagent(fixture: &Fixture, role: &str) {
+    let mut meta = fixture.sessions.get("ses_1").await.unwrap();
+    meta.reviewer = Some(store::sessions::ReviewerAssignment {
+        parent_id: "parent".into(),
+        role: role.into(),
+        ticket_path: String::new(),
+        starting_point: String::new(),
+        tier: None,
+        persona: None,
+    });
+    fixture.sessions.save(&meta).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_accepted_submit_ends_the_subagent_turn_without_a_provider_round() {
+    let fixture = fixture_sse(vec![sse_event(json!([{ "text": "one more look" }]))]).await;
+    mark_subagent(&fixture, "worker").await;
+
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(submit_conversation(
+            "{\"id\":\"submit_ab\",\"status\":\"done\"}",
+        )),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fixture.fake.calls(), 0);
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.contains("\"finishReason\":\"STOP\""));
+    assert!(!text.contains("one more look"));
+}
+
+#[tokio::test]
+async fn an_accepted_submit_answers_a_buffered_subagent_request_with_an_empty_turn() {
+    let fixture = fixture().await;
+    mark_subagent(&fixture, "worker").await;
+
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(submit_conversation(
+            "{\"id\":\"submit_ab\",\"status\":\"done\"}",
+        )),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fixture.fake.calls(), 0);
+    let answer: Value = serde_json::from_slice(&response).unwrap();
+    assert_eq!(answer["candidates"][0]["finishReason"], "STOP");
+    assert_eq!(answer["candidates"][0]["content"]["parts"], json!([]));
+}
+
+#[tokio::test]
+async fn an_accepted_submit_closes_the_anthropic_stream_the_harness_parses() {
+    let fixture = fixture().await;
+    mark_subagent(&fixture, "worker").await;
+    let request = json!({
+        "model": "claude-x",
+        "stream": true,
+        "max_tokens": 64,
+        "messages": [
+            { "role": "user", "content": [{ "type": "text", "text": "review it" }] },
+            { "role": "assistant", "content": [{
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "mcp__el__submit",
+                "input": { "status": "done", "report": "r", "summary": "s" }
+            }]},
+            { "role": "user", "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": "{\"id\":\"submit_cd\",\"status\":\"blocked\"}"
+            }]}
+        ]
+    });
+
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "claude/v1/messages",
+        request,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fixture.fake.calls(), 0);
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.contains("event: message_start"));
+    assert!(text.contains("\"stop_reason\":\"end_turn\""));
+    assert!(text.contains("event: message_stop"));
+}
+
+#[tokio::test]
+async fn a_rejected_submit_goes_back_to_the_model_as_a_tool_result() {
+    let fixture = fixture_sse(vec![sse_event(json!([{ "text": "fixed" }]))]).await;
+    mark_subagent(&fixture, "worker").await;
+    let rejected = "400 Bad Request: status must be done or blocked";
+
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(submit_conversation(rejected)),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fixture.fake.calls(), 1);
+    assert!(fixture.fake.body(0).to_string().contains(rejected));
+    assert!(String::from_utf8_lossy(&response).contains("fixed"));
+}
+
+#[tokio::test]
+async fn a_plain_session_keeps_the_round_after_an_accepted_submit_result() {
+    let fixture = fixture_sse(vec![sse_event(json!([{ "text": "plain" }]))]).await;
+
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(submit_conversation(
+            "{\"id\":\"submit_ef\",\"status\":\"done\"}",
+        )),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fixture.fake.calls(), 1);
+    assert!(String::from_utf8_lossy(&response).contains("plain"));
+}
+
+async fn mark_goldfish(fixture: &Fixture, persona: &str) {
+    let mut meta = fixture.sessions.get("ses_1").await.unwrap();
+    meta.reviewer = Some(store::sessions::ReviewerAssignment {
+        parent_id: "parent".into(),
+        role: "goldfish".into(),
+        ticket_path: String::new(),
+        starting_point: String::new(),
+        tier: None,
+        persona: Some(persona.into()),
+    });
+    fixture.sessions.save(&meta).await.unwrap();
+}
+
+/// A fixture whose Project holds persona `egm-test`, with `ses_1` marked a goldfish using it.
+async fn goldfish_fixture() -> Fixture {
+    let fixture = fixture().await;
+    let root = fixture.projects.get("proj_1").await.unwrap().root;
+    let agents = root.join(".agents/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("p.md"),
+        "---\nname: egm-test\ndescription: d\n---\nPERSONA-BODY-MARKER\n",
+    )
+    .unwrap();
+    mark_goldfish(&fixture, "egm-test").await;
+    fixture
+}
+
+#[tokio::test]
+async fn a_goldfish_request_carries_the_persona_policy_and_the_exact_tool_allowlist() {
+    let fixture = goldfish_fixture().await;
+    let mut request = body(conversation());
+    request["systemInstruction"] = json!({"parts": [{"text": "HARNESS-SYSTEM-MARKER"}]});
+    let declared = [
+        "read",
+        "grep",
+        "find",
+        "websearch",
+        "ctx_search",
+        "todo",
+        "submit",
+        "bash",
+        "edit",
+        "execute",
+        "compress",
+        "acp_status",
+    ];
+    request["tools"] = json!([{"functionDeclarations": declared
+        .iter()
+        .map(|name| json!({"name": name}))
+        .collect::<Vec<_>>()}]);
+
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        request,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let upstream = fixture.fake.body(0);
+    let mut names: Vec<&str> = upstream["tools"][0]["functionDeclarations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["name"].as_str())
+        .collect();
+    names.sort_unstable();
+    let mut want = crate::wire::GOLDFISH_TOOLS.to_vec();
+    want.sort_unstable();
+    assert_eq!(names, want, "no proxy tool joins a goldfish allowlist");
+    let system = upstream["systemInstruction"]["parts"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(system.starts_with("PERSONA-BODY-MARKER"));
+    for absent in [
+        "HARNESS-SYSTEM-MARKER",
+        "lazy senior developer",
+        "CAVEMAN MODE",
+        "el://skills/ember-flow",
+        "hashline",
+        "execute",
+    ] {
+        assert!(!system.contains(absent), "{absent}");
+    }
+}
+
+#[tokio::test]
+async fn a_goldfish_request_over_the_window_is_folded_without_a_nudge() {
+    let fixture = goldfish_fixture().await;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    let mut history = warm_history(20);
+    history.push(json!({ "role": "user", "parts": [{ "text": "continue" }] }));
+    let mut request = body(Value::Array(history));
+    let settings = api::state::Settings {
+        preserve_recent_messages: 0,
+        ..api::state::Settings::default()
+    };
+    let outcome = prepare_request(
+        &runtime,
+        WireKind::Google,
+        &mut request,
+        50_000,
+        &settings,
+        false,
+    )
+    .unwrap();
+    assert!(outcome.preflight.is_some(), "the overflow fold still ran");
+    assert!(outcome.nudge.is_none(), "a goldfish gets no nudge");
+}
+
+#[tokio::test]
+async fn a_goldfish_with_an_unknown_persona_is_refused_before_any_upstream_call() {
+    let fixture = fixture().await;
+    mark_goldfish(&fixture, "no-such-persona").await;
+
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        body(conversation()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(fixture.fake.calls(), 0);
 }

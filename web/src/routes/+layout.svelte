@@ -3,7 +3,7 @@
   import { beforeNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
-  import { api, eventsUrl } from '$lib/api';
+  import { api, eventsUrl, statusEventsUrl } from '$lib/api';
   import type {
     Model,
     Project,
@@ -17,6 +17,7 @@
   import SessionDialog from '$lib/components/SessionDialog.svelte';
   import CacheView from '$lib/components/CacheView.svelte';
   import Composer from '$lib/components/Composer.svelte';
+  import { isOneShot } from '$lib/composer';
   import Feed from '$lib/components/Feed.svelte';
   import DraftSession from '$lib/components/DraftSession.svelte';
   import NewSessionDialog from '$lib/components/NewSessionDialog.svelte';
@@ -32,8 +33,9 @@
   import FigcraftView from '$lib/components/FigcraftView.svelte';
   import ProjectDrawer from '$lib/components/ProjectDrawer.svelte';
   import SessionMenu from '$lib/components/SessionMenu.svelte';
-  import { PanelsTopLeft, RotateCw } from '@lucide/svelte';
-  import { applyEvent, applySnapshot, emptyFeedState, type FeedState } from '$lib/feed';
+  import { Menu, PanelsTopLeft, RotateCw } from '@lucide/svelte';
+  import { applyEvent, applySnapshot, emptyFeedState, statusOf, type FeedState } from '$lib/feed';
+  import { firstThinkingSentence } from '$lib/compactFeed';
   import { chosenWindow } from '$lib/contextMeter';
   import { toPromptImage } from '$lib/images';
   import { modelIconId } from '$lib/brands';
@@ -58,6 +60,7 @@
       mid: [{ model: 'gemini-3.8-flash', reasoning_effort: null }],
       top: [{ model: 'gemini-3.8-flash', reasoning_effort: null }]
     },
+    goldfish_tiers: { smol: [], mid: [], top: [] },
     proxy_compression: true,
     ponytail_default_level: 'full',
     todo_reminders: true,
@@ -99,6 +102,9 @@
   let notice = $state<{ title: string; failed: boolean; sessionId: string } | null>(null);
 
   let source: EventSource | null = null;
+  // Every Session's status: a Session this page never opened still shows as working.
+  let statusSource: EventSource | null = null;
+  let sessionsRefreshedAt = 0;
   let retry: ReturnType<typeof setTimeout> | null = null;
   // The pending SSE batch and its animation frame, so a replay folds into one update per frame.
   let frame: number | null = null;
@@ -130,13 +136,19 @@
   const activeProject = $derived(scopeProject ?? projectOf ?? projects[0] ?? null);
   const draftOf = $derived(models.find((model) => model.id === draftModel) ?? null);
   const working = $derived(feed.status === 'working');
-  // activeTool names the call the trailing run of the feed is making right now.
-  const activeTool = $derived.by(() => {
+  // activeTool names the call the trailing run of the feed is making right now;
+  // activeToolTitle carries any agy/ACP intent string alongside it.
+  const activeTail = $derived.by(() => {
     const tail = feed.items.at(-1);
-    if (tail?.kind === 'thinking') return 'thinking';
-    if (tail?.kind !== 'tool' || tail.finished) return '';
-    return tail.tool || tail.name || '';
+    if (tail?.kind === 'thinking') {
+      return { tool: 'thinking', title: tail.text?.trim() ? firstThinkingSentence(tail.text) : '' };
+    }
+    if (tail?.kind !== 'tool' || tail.finished) return { tool: '', title: '' };
+    const title = typeof tail.display?.title === 'string' ? tail.display.title : '';
+    return { tool: tail.tool || tail.name || '', title };
   });
+  const activeTool = $derived(activeTail.tool);
+  const activeToolTitle = $derived(activeTail.title);
   const currentModel = $derived(models.find((model) => model.id === current?.model) ?? null);
   const contextSize = $derived(chosenWindow(currentModel?.context_window, feed.usage?.window));
 
@@ -145,6 +157,7 @@
 
   onMount(() => {
     void boot();
+    openStatusStream();
     void registerWorker();
     // A focused page plays its own alert; the daemon needs to know it is here, not gone.
     const gesture = () => unlockSound();
@@ -152,6 +165,7 @@
     window.addEventListener('keydown', gesture, { once: true });
     return () => {
       closeStream();
+      statusSource?.close();
       window.removeEventListener('pointerdown', gesture);
       window.removeEventListener('keydown', gesture);
     };
@@ -192,6 +206,37 @@
     flush = null;
     source?.close();
     source = null;
+  }
+
+  // The daemon seeds this stream with every Session's current status, then sends each change.
+  // EventSource reconnects on its own, and the reconnect re-seeds, so there is no retry timer.
+  function openStatusStream() {
+    const stream = new EventSource(statusEventsUrl());
+    stream.addEventListener('status', (message) => {
+      try {
+        const frame = JSON.parse((message as MessageEvent).data) as {
+          sessionId: string;
+          status?: { state?: unknown };
+        };
+        statuses = { ...statuses, [frame.sessionId]: statusOf(frame.status?.state) };
+        // A subagent Session the list has not seen yet: refresh, so its family can show it.
+        if (!sessions.some((session) => session.id === frame.sessionId)) void refreshSessions();
+      } catch {
+        // A malformed frame leaves the map as it is.
+      }
+    });
+    statusSource = stream;
+  }
+
+  // At most one list refresh per five seconds, however many unknown Sessions arrive together.
+  async function refreshSessions() {
+    if (Date.now() - sessionsRefreshedAt < 5000) return;
+    sessionsRefreshedAt = Date.now();
+    try {
+      sessions = await api.listSessions();
+    } catch (cause) {
+      fail(cause);
+    }
   }
 
   function openStream(id: string, startAfter = 0) {
@@ -552,7 +597,7 @@
 
   <main class="flex min-w-0 flex-1 flex-col">
     <header class="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
-      <button class="btn {view === 'design' ? '' : 'md:hidden'}" aria-label="Open sessions" onclick={() => (drawer = true)}>☰</button>
+      <button class="btn {view === 'design' ? '' : 'md:hidden'}" aria-label="Open sessions" onclick={() => (drawer = true)}><Menu size={16} /></button>
       <SessionMenu session={current} project={projectOf}>
         <h1 class="truncate text-[14px] font-semibold tracking-[-0.01em] text-fg-1">
           {view === 'new'
@@ -609,7 +654,7 @@
     {#if error}
       <div
         class="flex items-center gap-3 border-b border-status-failed px-4 py-2 text-[13px]"
-        style="background:#2a2222;color:#ffb3ad"
+        style="background:var(--tool-failed-tint);color:var(--failed-fg)"
         transition:slideDown
       >
         <span class="flex-1">{error}</span>
@@ -622,7 +667,7 @@
         class="flex items-center gap-3 border-b px-4 py-2 text-[13px]"
         class:border-status-failed={notice.failed}
         class:border-border={!notice.failed}
-        style={notice.failed ? 'background:#2a2222;color:#ffb3ad' : 'background:#20221f;color:#dfe3d8'}
+        style={notice.failed ? 'background:var(--tool-failed-tint);color:var(--failed-fg)' : 'background:var(--surface-1);color:var(--fg-2)'}
         transition:slideDown
       >
         <span class="flex-1">{notice.title}</span>
@@ -670,18 +715,21 @@
       {/key}
     {:else if current}
       <Feed {feed} projectId={current.projectId} sessionId={current.id} {hasMore} {loadingMore} onloadmore={loadEarlier} />
-      <!-- The plan card and the turn line sit in the composer's own column, right above it. -->
+      <!-- The plan card and the turn line sit full-width right above the composer. -->
       <div class="px-4">
-        <div class="mx-auto max-w-[760px] pb-1">
+        <div class="w-full pb-1">
           <PlanCard
             items={feed.todos}
             autoExpand={settings.todo_auto_expand}
             hideWhenDone={settings.todo_hide_when_done}
           />
-          <WorkingIndicator status={feed.status} tool={activeTool} class="pb-1" />
+          <WorkingIndicator status={feed.status} tool={activeTool} intent={activeToolTitle} class="pb-1" />
         </div>
       </div>
       {#key selected}
+        {#if isOneShot(current.reviewerRole)}
+          <p class="px-4 pb-3 text-center text-[12px] text-fg-3">One-shot Goldfish: ask the main Session for follow-up.</p>
+        {:else}
         <Composer
           sessionId={selected ?? ''}
           working={working}
@@ -694,6 +742,7 @@
           onsubmit={sendPrompt}
           oncancel={cancel}
         />
+        {/if}
         <SessionDialog bind:open={detailsOpen} bind:tab={detailsTab} {models}
           model={current.model} thoughtLevel={current.thoughtLevel ?? ''}
           used={feed.usage?.used ?? null} size={contextSize} breakdown={feed.usage?.breakdown ?? null}

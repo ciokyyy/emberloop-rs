@@ -7,3 +7,8 @@ export function shouldSend(event: Pick<KeyboardEvent, 'key' | 'shiftKey'>): bool
 export function resolveComposerAction(working: boolean): ComposerAction {
   return working ? 'steer' : 'prompt';
 }
+
+/** A one-shot Goldfish shows no composer: its Session takes no second prompt. */
+export function isOneShot(role?: string | null): boolean {
+  return role === 'goldfish';
+}

@@ -20,6 +20,13 @@ metadata:
 - Drop `opaque` parts (thinking, signatures, unknown blocks): they hold only a digest, and the target cannot replay them. Drop empty text parts and turns left empty. Merge same-role neighbours.
 - Verified live both ways: DeepSeek chat, Haiku (Anthropic), and gpt Responses accept each other's translated tool-call history. DeepSeek accepts a history with `reasoning_content` stripped.
 - Not covered yet: images, Google wire, undeclared old tool names, ID format rules.
+- Recognize a call or its result from the core turns, never from the raw wire: `extract_core_contents` already normalizes `functionCall{id,name,args}` / `functionResponse{id,name,response}` for all four wires, so one detector works everywhere. A harness MCP bridge names the wrapper tool (`call_mcp_tool`) and carries the real name in `args.ToolName`; a newer harness names it `mcp__el__<tool>` or `el_<tool>`, and agy uses the single-underscore `mcp_el_<tool>`. A detector can match the last `_`-separated segment; a filter that must recognize whole names has to strip the full prefix chain (`mcp__el__`, `mcp__el_`, `mcp_el_`, `el_`) first, or agy declarations match nothing.
+
+## Proxy-authored wire answers
+- When the proxy answers a request itself instead of calling the provider, the answer must still satisfy the harness parser on that wire: the required terminal frames and the exact error each parser raises are in `references/wire-stream-terminators.md`.
+- Return it through `response_with(200, Some(content_type), Bytes::from(body))` with `text/event-stream` or `application/json`, and never build a `SseState` around it: that path publishes usage the provider never reported.
+- Intercept in `handle_generation` right after the body is parsed, before `queue.begin_request()`, `inject_steer` and `prepare_request`: a pending steer then stays queued for the next run and no nudge gate is consumed.
+- Assert the provider was never called (`fixture.fake.calls() == 0`) in `crates/proxy/src/tests.rs`, one test per wire. To make the Session a subagent, save a `store::sessions::ReviewerAssignment` on its meta before the first request: the runtime is built once and caches `subagent_role`.
 
 ## ACP session config options
 - Never hardcode a config option id. Read the ones the harness advertises in its `session/new` response and send a level under the advertised id; agy advertises `thinking_level` (`acp_server/config_options.py`: `MODEL_ID = "model"`, `MODE_ID = "mode"`, `THINKING_LEVEL_ID = "thinking_level"`), while other harnesses use `thought_level`, and pi's fake harness advertises only `model`.
@@ -35,6 +42,10 @@ metadata:
 - The tool-result turn (last capture per run) is the useful history. Replay it translated to every other wire, declaring the source tool name (`Bash`/`bash`) in the target request.
 - Verified: Claude Code, pi-deepseek, pi-gpt, pi-haiku histories all replay on all three wires (12/12 200).
 - Cleanup: stop forwarders with the `background` tool `stop`, never `pkill -f` (it kills its own shell). Delete scratch HOME dirs: they hold the key.
+
+## Goldfish isolation
+- Test tool-name filtering with the harness's own spelling, never only canonical names: a filter that drops unknown names still leaves a plain allowlist's survivor set unchanged, so the test passes while every harness-shaped declaration is gone. Feed a request holding only `mcp_el_read`/`mcp_el_edit`-style names and assert the allowed ones survive and the forbidden ones are removed.
+- After any change to a harness launch, `wire::isolate_goldfish` or the goldfish read jail, run the marker probe in `references/goldfish-isolation-probe.md`.
 
 ## Driver
 - Spike in `crates/proxy/tests/translate_spike.rs`: offline round-trip tests, plus an `#[ignore]` `cli` test (`TR_FROM`/`TR_TO` in chat|anthropic|responses, `TR_IN`, `TR_OUT`). Build with `cargo test -p proxy --test translate_spike --no-run`, run the newest `target/debug/deps/translate_spike-*` binary with `--ignored cli` from a Python loop.

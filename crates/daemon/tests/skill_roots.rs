@@ -35,5 +35,11 @@ async fn mcp_reads_global_skills_only_when_given_the_global_root() {
         None,
     ))
     .unwrap();
-    assert!(without_root.call("read", &args).await.is_err());
+    let catalog = without_root
+        .call("read", &json!({ "path": "el://skills" }))
+        .await
+        .unwrap();
+    assert!(!catalog.contains("foo"), "{catalog}");
+    let read = without_root.call("read", &args).await.unwrap();
+    assert!(read.contains("name: foo"), "{read}");
 }

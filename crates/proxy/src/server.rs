@@ -32,6 +32,7 @@ use crate::meter;
 use crate::nudge::{self, NudgeConfig, NudgeKind, NudgeState};
 use crate::review::{self, ReviewTools};
 use crate::splice::{turn_key, Splice, SpliceStore};
+use crate::submit;
 use crate::token::{TokenError, TokenSigner};
 use crate::tokens::turns_tokens;
 use crate::turnkeys;
@@ -69,6 +70,8 @@ pub struct ProxyConfig {
     pub codebase_memory: bool,
     /// Runs the background skill review's tool calls; the daemon injects it.
     pub review_tools: Option<Arc<dyn ReviewTools>>,
+    /// The global skills root: with the Project root it locates a goldfish's persona.
+    pub global_skills: Option<std::path::PathBuf>,
     /// How long one upstream round may take to answer or to produce its next chunk.
     pub round_timeout: Duration,
     /// The wait before the first retry of a failed send; the next waits twice as long.
@@ -85,6 +88,7 @@ impl ProxyConfig {
             provider_origin: None,
             codebase_memory: false,
             review_tools: None,
+            global_skills: None,
             round_timeout: DEFAULT_ROUND_TIMEOUT,
             retry_backoff: DEFAULT_RETRY_BACKOFF,
         }
@@ -116,6 +120,11 @@ impl ProxyConfig {
 
     pub fn with_codebase_memory(mut self, codebase_memory: bool) -> Self {
         self.codebase_memory = codebase_memory;
+        self
+    }
+
+    pub fn with_global_skills(mut self, global_skills: Option<std::path::PathBuf>) -> Self {
+        self.global_skills = global_skills;
         self
     }
 
@@ -168,6 +177,15 @@ pub enum ProxyError {
     Compression(String),
     #[error("lock poisoned")]
     Lock,
+    #[error("persona {0} not found")]
+    Persona(String),
+}
+
+/// Where a goldfish's persona is read from; resolved on every request, so an edit lands at once.
+struct GoldfishPersona {
+    id: String,
+    global_skills: Option<std::path::PathBuf>,
+    project_root: std::path::PathBuf,
 }
 
 #[derive(Clone)]
@@ -201,6 +219,7 @@ struct SessionRuntime {
     /// Frozen skill catalog and pinned reviewer instructions, read once per Session runtime.
     catalog: String,
     subagent_role: Option<String>,
+    goldfish: Option<GoldfishPersona>,
     /// Set by an emergency nudge; while set, every outgoing request truncates its older large
     /// results, so the truncated prefix stays byte-identical. Cleared by a fold or a reset.
     /// In memory only: a restarted proxy starts clear.
@@ -235,6 +254,7 @@ impl SessionRuntime {
             nudge_file,
             catalog,
             subagent_role: None,
+            goldfish: None,
             splices: Mutex::new(SpliceStore::open(splices_file)),
             ctx: Mutex::new(ctx),
             compressor: Mutex::new(Box::new(
@@ -383,6 +403,13 @@ impl ProxyState {
         let mut runtime = SessionRuntime::new(pins, spill, splices)?;
         if let Some(reviewer) = &meta.reviewer {
             runtime.subagent_role = Some(reviewer.role.clone());
+            if let (true, Some(persona)) = (reviewer.role == "goldfish", &reviewer.persona) {
+                runtime.goldfish = Some(GoldfishPersona {
+                    id: persona.clone(),
+                    global_skills: self.inner.config.global_skills.clone(),
+                    project_root: project.as_ref().map(|p| p.root.clone()).unwrap_or_default(),
+                });
+            }
             if reviewer.is_reviewer() {
                 let id = if reviewer.role == "spec" {
                     prompts::REVIEWER_SPEC
@@ -565,6 +592,17 @@ async fn handle_generation(
 ) -> Result<Response<Body>, ProxyError> {
     let runtime = state.runtime(session_id).await?;
     let mut request: Value = serde_json::from_slice(&body)?;
+    // A subagent that already delivered its report waits for the parent's steer: an accepted
+    // submit ends the turn instead of starting a model round the harness never asked for.
+    if runtime.subagent_role.is_some() && submit::accepted(wire, &request) {
+        dump_request(session_id, "in", &request);
+        let (content_type, answer) = submit::answer(wire, &request, path, query);
+        return Ok(response_with(
+            StatusCode::OK,
+            Some(content_type),
+            Bytes::from(answer),
+        ));
+    }
     let queue = state.inner.steers.queue(session_id);
     queue.begin_request().await;
     dump_request(session_id, "in", &request);
@@ -638,7 +676,15 @@ async fn handle_generation(
         sse.nudge_text = nudge_text;
         return Ok(streaming_response(sse));
     }
-    let first_bytes = response.bytes().await?;
+    let first_bytes = read_body_with_replay(
+        &state.inner.client,
+        &state.inner.config,
+        &url,
+        headers,
+        &request,
+        response,
+    )
+    .await?;
     buffered_generation(
         state,
         runtime,
@@ -792,27 +838,39 @@ fn prepare_request(
 ) -> Result<PrepareOutcome, ProxyError> {
     let request = request_body_mut(request);
 
-    match runtime.subagent_role.as_deref() {
-        Some(role) if emberloop_core::steer::is_reviewer_role(role) => {
-            // Reviewers keep write (non-source reports/notes if needed) and drop edit.
-            crate::wire::remove_edit_tool(request);
+    if let Some(goldfish) = &runtime.goldfish {
+        // A goldfish gets its persona and an exact tool allowlist, never the Session prompts and
+        // never the context tools: compression is off for it. Only the overflow fold stays.
+        let persona = api::personas::resolve_persona(
+            goldfish.global_skills.as_deref(),
+            &goldfish.project_root,
+            &goldfish.id,
+        )
+        .ok_or_else(|| ProxyError::Persona(goldfish.id.clone()))?;
+        crate::wire::isolate_goldfish(wire, request, &runtime.pins, &persona);
+    } else {
+        match runtime.subagent_role.as_deref() {
+            Some(role) if emberloop_core::steer::is_reviewer_role(role) => {
+                // Reviewers keep write (non-source reports/notes if needed) and drop edit.
+                crate::wire::remove_edit_tool(request);
+            }
+            Some("scout") => {
+                crate::wire::remove_edit_tool(request);
+                crate::wire::remove_write_tool(request);
+            }
+            _ => {}
         }
-        Some("scout") => {
-            crate::wire::remove_edit_tool(request);
-            crate::wire::remove_write_tool(request);
+        if settings.proxy_compression && settings.inject_tool {
+            inject_tools_for_wire(wire, request, &runtime.pins);
         }
-        _ => {}
+        inject_prompts_for_wire(
+            wire,
+            request,
+            &runtime.pins,
+            codebase_memory,
+            &runtime.catalog,
+        );
     }
-    if settings.proxy_compression && settings.inject_tool {
-        inject_tools_for_wire(wire, request, &runtime.pins);
-    }
-    inject_prompts_for_wire(
-        wire,
-        request,
-        &runtime.pins,
-        codebase_memory,
-        &runtime.catalog,
-    );
     let Some(mut contents) = extract_core_contents(wire, request) else {
         return Ok(PrepareOutcome {
             nudge: None,
@@ -865,11 +923,12 @@ fn prepare_request(
     let history = Arc::new(contents);
     *lock(&runtime.last_history)? = Arc::clone(&history);
     let mut outgoing = Cow::Borrowed(history.as_slice());
-    let (nudge, gate) = if settings.proxy_compression && settings.inject_nudge {
-        inject_nudge(runtime, &mut outgoing, window, settings)?
-    } else {
-        (None, None)
-    };
+    let (nudge, gate) =
+        if settings.proxy_compression && settings.inject_nudge && runtime.goldfish.is_none() {
+            inject_nudge(runtime, &mut outgoing, window, settings)?
+        } else {
+            (None, None)
+        };
     if nudge
         .as_ref()
         .is_some_and(|report| report.kind == NudgeKind::Emergency.name())
@@ -2010,14 +2069,59 @@ async fn send_generation(
     body: &Value,
     config: &ProxyConfig,
 ) -> Result<(StatusCode, Option<String>, Bytes), ProxyError> {
-    let round_timeout = config.round_timeout;
+    let mut attempt = 0;
+    loop {
+        match send_generation_once(client, url, headers, body, config).await {
+            Err(error) if is_interrupted(&error) && attempt < SEND_RETRIES => {
+                // The body broke before it ended, so nothing reached the harness yet.
+                backoff(config.retry_backoff * 2u32.pow(attempt)).await;
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
+async fn send_generation_once(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &HeaderMap,
+    body: &Value,
+    config: &ProxyConfig,
+) -> Result<(StatusCode, Option<String>, Bytes), ProxyError> {
     let response = send_stream(client, url, headers, body, config).await?;
     let status = axum_status(response.status());
     let content_type = header_value(response.headers(), header::CONTENT_TYPE.as_str());
-    let bytes = timeout(round_timeout, response.bytes())
+    let bytes = timeout(config.round_timeout, response.bytes())
         .await
         .map_err(|_| ProxyError::Timeout)??;
     Ok((status, content_type, bytes))
+}
+
+/// Reads a whole non-streamed body, replaying the request while the connection breaks before the
+/// body ends: no byte has reached the harness yet, so the replay is invisible to it.
+async fn read_body_with_replay(
+    client: &reqwest::Client,
+    config: &ProxyConfig,
+    url: &str,
+    headers: &HeaderMap,
+    sent: &Value,
+    mut response: reqwest::Response,
+) -> Result<Bytes, ProxyError> {
+    let mut attempt = 0;
+    loop {
+        match response.bytes().await {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) if is_truncated(&error) && attempt < SEND_RETRIES => {
+                backoff(config.retry_backoff * 2u32.pow(attempt)).await;
+                attempt += 1;
+                response = send_stream(client, url, headers, sent, config).await?;
+            }
+            // shortcut: a replay answered with a non-success status is passed on as body text,
+            // upgrade if a provider starts flapping statuses between attempts.
+            Err(error) => return Err(ProxyError::Upstream(error)),
+        }
+    }
 }
 
 /// Copy the client headers onto a generation request, minus the ones the proxy
@@ -2153,6 +2257,7 @@ fn error_response(error: &ProxyError) -> Response<Body> {
         | ProxyError::Timeout
         | ProxyError::Splice(_)
         | ProxyError::Compression(_)
+        | ProxyError::Persona(_)
         | ProxyError::Lock => StatusCode::BAD_GATEWAY,
         ProxyError::Upstream(_) | ProxyError::UpstreamStatus(_) => StatusCode::BAD_GATEWAY,
     };
@@ -2975,10 +3080,12 @@ async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error
             Ok(Some(Err(error))) => {
                 state.done = true;
                 let error = ProxyError::Upstream(error);
+                // The same wording the wire carries: the subagent supervisor classifies this
+                // event, and an unprefixed decode error reads as a hard failure.
                 publish_error(
                     &state.proxy.inner.events,
                     &state.session_id,
-                    format!("{error}"),
+                    error_text(&error),
                 );
                 return Some((Ok(error_event(&error)), state));
             }
@@ -3066,13 +3173,23 @@ fn sse_error(message: &str) -> String {
     format!("data: {}\n\n", json!({ "error": { "message": message } }))
 }
 
+/// A dropped connection mid-reply: nothing the provider answered can be trusted, and a harness
+/// retry policy may try again.
+fn is_interrupted(error: &ProxyError) -> bool {
+    matches!(error, ProxyError::Upstream(err) if is_truncated(err))
+}
+
+/// The provider closed the connection before the body it promised ended.
+fn is_truncated(error: &reqwest::Error) -> bool {
+    error.is_decode() || error.is_body()
+}
+
 /// Decode and body failures say "stream was interrupted" so harness retry policies retry them.
 fn error_text(error: &ProxyError) -> String {
-    match error {
-        ProxyError::Upstream(err) if err.is_decode() || err.is_body() => {
-            format!("stream was interrupted: {error}")
-        }
-        _ => error.to_string(),
+    if is_interrupted(error) {
+        format!("stream was interrupted: {error}")
+    } else {
+        error.to_string()
     }
 }
 

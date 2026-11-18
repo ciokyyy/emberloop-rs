@@ -20,6 +20,8 @@ pub struct Settings {
     pub spec_reviewer: FallbackLadder,
     pub standards_reviewer: FallbackLadder,
     pub subagent_tiers: SubagentTiers,
+    /// A goldfish's per-tier ladders; an empty tier ladder inherits `subagent_tiers`.
+    pub goldfish_tiers: SubagentTiers,
     pub default_model: String,
     pub proxy_compression: bool,
     pub ponytail_default_level: String,
@@ -60,6 +62,7 @@ impl Default for Settings {
             spec_reviewer: FallbackLadder::default(),
             standards_reviewer: FallbackLadder::default(),
             subagent_tiers: SubagentTiers::default(),
+            goldfish_tiers: SubagentTiers::empty(),
             proxy_compression: true,
             ponytail_default_level: "full".to_string(),
             todo_reminders: true,
@@ -155,6 +158,17 @@ pub struct SubagentTiers {
     pub top: FallbackLadder,
 }
 
+impl SubagentTiers {
+    /// Every ladder empty: the owner (a goldfish) inherits `subagent_tiers` tier by tier.
+    pub fn empty() -> Self {
+        Self {
+            smol: FallbackLadder(Vec::new()),
+            mid: FallbackLadder(Vec::new()),
+            top: FallbackLadder(Vec::new()),
+        }
+    }
+}
+
 /// `settings.json` at the data root: an update to the daemon keeps every choice.
 pub fn save_settings(root: &Path, settings: &Settings) -> Result<(), String> {
     let file = settings_file(root);
@@ -199,6 +213,9 @@ pub struct AppState {
     pub subagent_gate: Arc<tokio::sync::Mutex<()>>,
     pub(crate) subagent_runs:
         Arc<tokio::sync::Mutex<HashMap<String, crate::subagent_recovery::SubagentRun>>>,
+    /// Per-subagent-turn submit enforcement (see `subagent_submit`).
+    pub(crate) subagent_submits:
+        Arc<tokio::sync::Mutex<HashMap<String, crate::subagent_submit::SubmitGuard>>>,
     pub(crate) subagent_retry_backoffs: [std::time::Duration; 2],
     /// Web Push: the VAPID keypair and the browsers that subscribed.
     pub push: Arc<crate::push::Push>,
@@ -247,6 +264,7 @@ impl AppState {
             designs: Arc::new(crate::design::Designs::default()),
             subagent_gate: Arc::new(tokio::sync::Mutex::new(())),
             subagent_runs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            subagent_submits: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             subagent_retry_backoffs: [
                 std::time::Duration::from_secs(2),
                 std::time::Duration::from_secs(5),

@@ -34,7 +34,7 @@
 
   {#each [{ label: 'This project', list: scope }, { label: 'Global', list: shared }] as group (group.label)}
     <div class="grid gap-0.5">
-      <p class="px-2 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-3">
+      <p class="px-2 pt-1.5 pb-1 text-[11px] font-medium text-fg-3">
         {group.label} ({group.list.length})
       </p>
       {#each group.list as skill (skill.path)}

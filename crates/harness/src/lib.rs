@@ -41,6 +41,8 @@ pub enum HarnessEvent {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     ToolFinished {
         id: String,

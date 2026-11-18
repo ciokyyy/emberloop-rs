@@ -172,9 +172,10 @@ rewrite one and the next Session's declarations carry it.
 - **Files and shell.** `read` returns numbered lines and records them for the
   edit tool's anchors; `edit` takes a hashline patch against the view a read
   produced; `write` creates new files; `grep` and `find` search content and
-  paths; `bash` runs a shell; `background` starts and reads long processes. Every
-  path a tool touches is resolved inside the project root after symlinks
-  (`jail.rs`).
+  paths; `bash` runs a shell; `background` starts and reads long processes.
+  `read`, `edit`, `write` and `bash` views reach any path the account can open
+  (`~` expands, a relative path joins the project root) after symlinks;
+  `grep` and `find` stay inside the project root (`jail.rs`).
 - **`execute`** runs one Python script that calls the tools as functions, so a
   batch of reads or a loop costs one turn. It reaches the code graph
   (`graph.rs`) and the other tools through the same `Toolbox`.

@@ -32,6 +32,16 @@ Stroke: `strokeWeight:2`, `strokeAlign:"center"`, `fill:"none"`, `strokeCap:"rou
 
 A relative moveto is relative to the start of its own `<path>`. After concatenation it continues from the previous subpath's end point: `M18 6 6 18` + `m6 6 12 12` draws down to y=36 and the layer bbox becomes 18x30 instead of 12x12. Prefix such a subpath with an absolute `M0 0` (`M0 0m6 6 12 12`) and never uppercase the `m` - that makes the following implicit lineto absolute and shifts the glyph.
 
+## Comparing icon families
+
+The app and the repo ship only lucide, so a family comparison needs the other sets fetched as untrusted data into a fresh directory (`<project>/.tmp/icons-dl/`, via `curl` from jsDelivr): `@phosphor-icons/core@2/assets/regular/<name>.svg`, `@tabler/icons@3/icons/outline/<name>.svg`, `heroicons@2/24/outline/<name>.svg`. Names differ per family (`microphone`, `paper-clip`, `player-stop`, `cog-6-tooth`, `caret-right`), and some sets lack a glyph (heroicons has no git-branch): leave that box empty rather than substitute.
+
+- Parse each svg with `xml.etree`, convert every shape to a `d` (see above), skip a path with `stroke="none"` (tabler's background square), and join. Phosphor is fill-based on a 256 grid (`fill` colour, no stroke); lucide, tabler and heroicons are strokes on a 24 grid with weights 2, 2 and 1.5.
+- A vector created with `path` and no `width`/`height` keeps the path's own bbox at its path-unit position. Read it back with `get_node`, then `node.set` `x,y,width,height` multiplied by `size/viewBox`, and scale `strokeWeight` the same way.
+- Lower-case `m` subpaths: rewrite the first pair as `M a b` and turn the remaining pairs into `l` (`m6 6 12 12` becomes `M6 6l12 12`); this keeps the implicit lineto relative.
+- Draw one row per family with the same 14 actions at the size the UI uses (14 px for a heavy-looking set). Do a bounds walk (each vector inside its box, width above 2) before export; a wrong `m` shows up as a 10x17 or 22x12 vector.
+- Budget the 500-call cap: one glyph is a box, a create, a `get_node` and a `node.set`, so about 70 glyphs per `execute`.
+
 ## Icons the app draws inline
 
 When a component writes its own `<svg>` instead of using lucide (sidebar tabs, sliders, pickaxe), copy that `d` string verbatim from the component source so the mock and the code agree. Keep its own `strokeWidth` (the sidebar inline set uses 1.75).

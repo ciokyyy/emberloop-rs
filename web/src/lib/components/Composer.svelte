@@ -265,11 +265,11 @@
 </script>
 
 <div class="px-4 pb-4 pt-1">
-  <div class="mx-auto max-w-[760px]">
+  <div class="w-full">
     {#if errors.length}
       <div
         class="mb-2 rounded-xl border border-status-failed px-3 py-1.5 text-[12px]"
-        style="background:#2a2222;color:#ffb3ad"
+        style="background:var(--tool-failed-tint);color:var(--failed-fg)"
         transition:slideDown
       >
         {#each errors as error, index (index)}<p>{error}</p>{/each}

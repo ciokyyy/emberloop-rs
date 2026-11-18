@@ -45,6 +45,10 @@
   --color-tool-grep: var(--tool-grep);
   --color-tool-misc: var(--tool-misc);
   --color-tool-compress: var(--tool-compress);
+  --color-tool-failed-tint: var(--tool-failed-tint);
+  --color-failed-fg: var(--failed-fg);
+  --color-code-bg: var(--code-bg);
+  --color-code-border: var(--code-border);
 
   /* Tailwind transitions and animations ride the same scale. */
   --default-transition-duration: var(--dur-standard);
@@ -84,6 +88,9 @@
   --tool-agent: #b392f0;
   --tool-thinking: #c3a6ff;
   --tool-failed-tint: #2a2222;
+  --failed-fg: #ffb3ad;
+  --code-bg: #1c1c1e;
+  --code-border: #2c2c2e;
   /* Motion scale from the Go app: one easing, three durations. motion.ts reads them. */
   --dur-instant: 100ms;
   --dur-standard: 180ms;
@@ -372,7 +379,7 @@
 
   .del {
     display: block;
-    background: #2a2222;
+    background: var(--tool-failed-tint);
     color: #ff9a94;
   }
 

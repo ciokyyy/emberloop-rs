@@ -149,12 +149,18 @@ impl ClaudeHarness {
     fn launch(&self, session_id: &str, wiring: &HarnessWiring) -> Result<Launch, HarnessError> {
         let config_dir = self.homes.join(session_id);
         std::fs::create_dir_all(&config_dir)?;
+        // A goldfish reads the Project, never the Project's instruction files: its cwd stays the
+        // empty agent-work dir even when a workdir is wired.
+        let goldfish = wiring
+            .env
+            .iter()
+            .any(|(key, value)| key == "EMBERLOOP_SUBAGENT_ROLE" && value == "goldfish");
         let cwd = match &wiring.workdir {
-            Some(dir) => {
+            Some(dir) if !goldfish => {
                 std::fs::create_dir_all(dir)?;
                 dir.clone()
             }
-            None => {
+            _ => {
                 let dir = config_dir.join("agent-work");
                 std::fs::create_dir_all(&dir)?;
                 dir
@@ -908,6 +914,39 @@ mod tests {
     }
 
     #[test]
+    fn instruction_files_never_reach_the_model_so_a_goldfish_sees_only_its_persona() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = harness(dir.path()).launch("s1", &wiring()).unwrap();
+        let env = |key: &str| {
+            launch
+                .env
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(env("CLAUDE_CODE_DISABLE_CLAUDE_MDS"), Some("1"));
+        assert_eq!(env("CLAUDE_CODE_DISABLE_AUTO_MEMORY"), Some("1"));
+        // The default cwd is the Session's own empty dir: no AGENTS.md or CLAUDE.md to find.
+        assert!(launch.cwd.ends_with("s1/agent-work"));
+        assert_eq!(std::fs::read_dir(&launch.cwd).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_wired_workdir_never_gives_a_goldfish_instruction_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "PROJECT-MARKER\n").unwrap();
+        let mut wiring = wiring();
+        wiring.workdir = Some(project.clone());
+        wiring.env = vec![("EMBERLOOP_SUBAGENT_ROLE".into(), "goldfish".into())];
+        let launch = harness(dir.path()).launch("s1", &wiring).unwrap();
+        assert!(launch.cwd.ends_with("s1/agent-work"), "{:?}", launch.cwd);
+        assert_ne!(launch.cwd, project);
+        assert_eq!(std::fs::read_dir(&launch.cwd).unwrap().count(), 0);
+    }
+
+    #[test]
     fn no_effort_flag_for_an_unknown_level() {
         let dir = tempfile::tempdir().unwrap();
         let mut wiring = wiring();
@@ -995,6 +1034,7 @@ mod tests {
                     id: "toolu_1".into(),
                     name: "mcp__el__bash".into(),
                     input: serde_json::json!({"command": "ls"}),
+                    title: None,
                 },
                 HarnessEvent::ToolFinished {
                     id: "toolu_1".into(),

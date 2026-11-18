@@ -48,10 +48,10 @@ The wiki is a historical record. It never claims to describe how things are now,
 
 ## Procedures
 
-Some procedures you run live in other skills, installed beside this one. To run one, read its `SKILL.md` at the path below, relative to this skill's directory, and follow it.
+Some procedures you run live in other skills. To run one, read its `SKILL.md` at the path below and follow it.
 
-- **Retro** (`../retro/SKILL.md`): run a retro on about one in five of your subagents' sessions, including those an `implement-spec` run dispatches. Pick first the ones where something went wrong. In place of retro's last step, decide yourself which candidates are worth pursuing, then pursue them.
-- **Large chunks of work**: write a spec with `../to-spec/SKILL.md`, break it into tickets with `../to-tickets/SKILL.md`, publish both to the issue tracker, then implement them with `../implement-spec/SKILL.md`.
+- **Retro** (`el://skills/retro/SKILL.md`): run a retro on about one in five of your subagents' sessions, including those an `ember-build` run dispatches. Pick first the ones where something went wrong. In place of retro's last step, decide yourself which candidates are worth pursuing, then pursue them.
+- **Large chunks of work**: write a spec with `el://skills/ember-design/SKILL.md`, break it into tickets with `el://skills/ember-slice/SKILL.md`, publish both to the issue tracker, then implement them with `el://skills/ember-build/SKILL.md`.
 
 ## Strategic View
 

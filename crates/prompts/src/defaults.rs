@@ -4,7 +4,9 @@
 
 pub const PONYTAIL: &str = include_str!("../prompts/ponytail.md");
 pub const CAVEMAN: &str = include_str!("../prompts/caveman.md");
+pub const SUPERPOWERS: &str = include_str!("../prompts/superpowers.md");
 pub const POLICY: &str = include_str!("../prompts/policy.md");
+pub const POLICY_GOLDFISH: &str = include_str!("../prompts/policy.goldfish.md");
 pub const SKILL_CODEBASE_MEMORY: &str = include_str!("../prompts/skill.codebase-memory.md");
 pub const SKILL_CATALOG: &str = include_str!("../prompts/skill.catalog.md");
 pub const REVIEW_SKILLS: &str = include_str!("../prompts/review.skills.md");

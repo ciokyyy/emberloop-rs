@@ -1,14 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use std::sync::Arc;
-use std::time::Duration;
-
-use api::sse::{session_events_handler, EventsQuery};
+use api::sse::{session_events_handler, status_events_handler, EventsQuery};
 use api::AppState;
 use axum::body::Body;
-use axum::extract::Query;
+use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use emberloop_core::events::{EventBus, EventKind, SessionEvent};
 use futures::StreamExt;
+use std::sync::Arc;
+use std::time::Duration;
 use store::{DataRoot, ProjectsStore, SessionsStore};
 use tempfile::tempdir;
 
@@ -242,6 +241,57 @@ async fn first_load_ends_with_a_snapshot_of_the_current_status_and_usage() {
     let value: serde_json::Value = serde_json::from_str(data.trim()).unwrap();
     assert_eq!(value["status"]["state"], "working");
     assert_eq!(value["usage"]["inputTokens"], 270000);
+}
+
+#[tokio::test]
+async fn the_status_stream_seeds_every_session_then_follows_live_changes() {
+    let dir = tempdir().unwrap();
+    let state = state(&dir).await;
+    for id in ["s1", "s2"] {
+        state
+            .sessions
+            .insert(store::SessionMeta {
+                id: id.into(),
+                ..store::SessionMeta::default()
+            })
+            .await
+            .unwrap();
+        state
+            .get_event_log(id)
+            .await
+            .unwrap()
+            .append(SessionEvent::new(
+                id,
+                0,
+                EventKind::Status,
+                serde_json::json!({"state": "working"}),
+            ))
+            .await
+            .unwrap();
+    }
+    let response = status_events_handler(State(state.clone()))
+        .await
+        .into_response();
+    state.event_bus.publish(SessionEvent::new(
+        "s2",
+        0,
+        EventKind::Status,
+        serde_json::json!({"state": "idle"}),
+    ));
+    let frames = frames(response.into_body(), 3).await;
+    let body = |frame: &str| {
+        let data = frame.lines().find_map(|line| line.strip_prefix("data:"));
+        serde_json::from_str::<serde_json::Value>(data.unwrap().trim()).unwrap()
+    };
+    let mut seeded: Vec<String> = frames
+        .iter()
+        .take(2)
+        .map(|frame| body(frame)["sessionId"].as_str().unwrap().to_string())
+        .collect();
+    seeded.sort();
+    assert_eq!(seeded, ["s1", "s2"]);
+    assert_eq!(body(&frames[2])["sessionId"], "s2");
+    assert_eq!(body(&frames[2])["status"]["state"], "idle");
 }
 
 #[tokio::test]

@@ -23,6 +23,8 @@ struct ExecuteArgs {
     code: String,
     #[serde(default)]
     timeout: Option<u64>,
+    #[serde(default)]
+    background: bool,
 }
 
 #[derive(Deserialize)]
@@ -46,14 +48,31 @@ struct BridgeResponse {
     error: Option<String>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct ExecChild {
+    name: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    target: String,
+    ms: u64,
+    status: String,
+}
+
+/// MIME type and base64 data of an image a script read.
+pub type Image = (&'static str, String);
+
 struct BridgeState {
     session_dir: PathBuf,
     exec_id: u64,
     pending_store: Mutex<HashMap<String, Value>>,
+    children: Mutex<Vec<ExecChild>>,
+    /// Images the script read: the bridge answers text only, so the execute result carries them.
+    images: Mutex<Vec<Image>>,
+    /// A background script has no caller left to flush on exit 0, so each `store` lands now.
+    flush_store: bool,
 }
 
 impl BridgeState {
-    fn create(spill_dir: &Path, code: &str) -> std::io::Result<(Self, PathBuf)> {
+    fn create(spill_dir: &Path, code: &str, flush_store: bool) -> std::io::Result<(Self, PathBuf)> {
         let session_dir = spill_dir
             .parent()
             .map(Path::to_path_buf)
@@ -88,6 +107,9 @@ impl BridgeState {
                         session_dir,
                         exec_id: id,
                         pending_store: Mutex::new(HashMap::new()),
+                        children: Mutex::new(Vec::new()),
+                        images: Mutex::new(Vec::new()),
+                        flush_store,
                     };
                     return Ok((state, path));
                 }
@@ -117,11 +139,19 @@ impl BridgeState {
         self.exec_dir().join(format!("{id}.py"))
     }
 
+    fn children_path(&self) -> PathBuf {
+        self.exec_dir()
+            .join(format!("{}.children.json", self.exec_id))
+    }
     fn load_store_map(&self) -> HashMap<String, Value> {
         fs::read_to_string(self.store_path())
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
+    }
+
+    fn take_images(&self) -> Vec<Image> {
+        std::mem::take(&mut *self.images.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     fn handle_op(&self, op: &str, args: &Value) -> Result<String, String> {
@@ -156,6 +186,10 @@ impl BridgeState {
         }
         let mut pending = self.pending_store.lock().unwrap_or_else(|e| e.into_inner());
         pending.insert(key.to_string(), val);
+        if self.flush_store {
+            drop(pending);
+            self.flush();
+        }
         Ok(format!("stored {key}"))
     }
 
@@ -322,8 +356,96 @@ impl BridgeState {
             let _ = fs::write(self.store_path(), raw);
         }
     }
+    fn record_child(&self, tool: &str, args: &Value, ms: u64, ok: bool) {
+        let child = ExecChild {
+            name: tool.to_string(),
+            target: child_target(tool, args),
+            ms,
+            status: if ok { "completed" } else { "failed" }.to_string(),
+        };
+        let mut list = self.children.lock().unwrap_or_else(|e| e.into_inner());
+        list.push(child);
+    }
+
+    fn write_children(&self) {
+        let list = self.children.lock().unwrap_or_else(|e| e.into_inner());
+        if list.is_empty() {
+            return;
+        }
+        if let Ok(raw) = serde_json::to_string(&*list) {
+            let _ = fs::create_dir_all(self.exec_dir());
+            let _ = fs::write(self.children_path(), raw);
+        }
+    }
 }
 
+fn child_target(tool: &str, args: &Value) -> String {
+    let Some(obj) = args.as_object() else {
+        return String::new();
+    };
+    let pick_str = |keys: &[&str]| -> Option<String> {
+        keys.iter()
+            .find_map(|k| obj.get(*k).and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+    };
+    let raw = match tool {
+        "edit" => pick_str(&["path", "file_path", "filePath"]).or_else(|| {
+            obj.get("input").and_then(Value::as_str).and_then(|patch| {
+                patch
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .and_then(|l| l.strip_prefix('[')?.strip_suffix(']'))
+                    .map(|inner| {
+                        inner
+                            .rsplit_once('#')
+                            .map_or(inner, |(p, _)| p)
+                            .trim()
+                            .to_string()
+                    })
+                    .filter(|s| !s.is_empty())
+            })
+        }),
+        "read" | "write" => pick_str(&["path", "file_path", "filePath", "pattern", "glob"]),
+        "grep" => pick_str(&["pattern", "regex", "query"]),
+        "bash" => pick_str(&["command", "cmd", "script"]),
+        "find" | "websearch" => pick_str(&["query", "pattern"]),
+        "ctx_search" => obj
+            .get("queries")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|s| !s.is_empty())
+            .or_else(|| pick_str(&["query"])),
+        _ => pick_str(&[
+            "path",
+            "file_path",
+            "command",
+            "query",
+            "pattern",
+            "url",
+            "name",
+            "id",
+        ]),
+    };
+    let Some(text) = raw else {
+        return String::new();
+    };
+    let line = text.lines().next().unwrap_or("").trim();
+    if line.chars().count() <= 80 {
+        line.to_string()
+    } else {
+        let mut out: String = line.chars().take(79).collect();
+        out.push('…');
+        out
+    }
+}
 fn valid_store_key(key: &str) -> bool {
     let mut chars = key.chars();
     let Some(first) = chars.next() else {
@@ -345,10 +467,12 @@ fn valid_script_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-pub fn run<'a>(
-    toolbox: Arc<Toolbox>,
-    args: &'a Value,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult<String>> + Send + 'a>> {
+type RunParts<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = ToolResult<(String, Vec<Image>)>> + Send + 'a>,
+>;
+
+/// Runs a script and returns its rendered output plus every image it read in `tools.read`.
+pub fn run_parts<'a>(toolbox: Arc<Toolbox>, args: &'a Value) -> RunParts<'a> {
     Box::pin(async move {
         if crate::IN_SCRIPT.try_with(|_| ()).is_ok() {
             return Err(ToolError::msg(
@@ -359,10 +483,16 @@ pub fn run<'a>(
         if args.code.trim().is_empty() {
             return Err(ToolError::msg("code is required"));
         }
-        let timeout_secs = toolbox.call_secs(args.timeout, DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
-        let tmp_dir = create_bridge_dir()?;
         // An MCP failure or a slow start costs the MCP stubs only: the builtin ones stay.
         let mcp = toolbox.mcp_tools_soon().await;
+        if args.background {
+            // shortcut: a background job outlives this call, so images it reads are dropped.
+            return run_background(&toolbox, &args.code, &mcp)
+                .await
+                .map(|text| (text, Vec::new()));
+        }
+        let timeout_secs = toolbox.call_secs(args.timeout, DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
+        let tmp_dir = create_bridge_dir()?;
         let result = run_in_bridge(
             Arc::clone(&toolbox),
             &tmp_dir,
@@ -386,14 +516,24 @@ fn create_bridge_dir() -> ToolResult<PathBuf> {
     Ok(dir)
 }
 
-async fn run_in_bridge(
-    toolbox: Arc<Toolbox>,
+struct Bridge {
+    state: Arc<BridgeState>,
+    exec_id: u64,
+    dir: PathBuf,
+    task: tokio::task::JoinHandle<()>,
+    cmd: Command,
+}
+
+/// Writes the stub, starts the socket server and builds the python command. The caller owns the
+/// wait, so a background job can keep the bridge alive after the call returns.
+fn prepare_bridge(
+    toolbox: &Toolbox,
     dir: &Path,
     code: &str,
-    timeout_secs: u64,
     mcp: &[McpTool],
-) -> ToolResult<String> {
-    let (state, exec_path) = BridgeState::create(toolbox.spill_dir(), code)?;
+    background: bool,
+) -> ToolResult<Bridge> {
+    let (state, exec_path) = BridgeState::create(toolbox.spill_dir(), code, background)?;
     let exec_id = state.exec_id;
     let sock_path = dir.join("sock");
     let stub = build_tools_py(&sock_path, &mcp_stub(mcp), &exec_path);
@@ -401,9 +541,9 @@ async fn run_in_bridge(
 
     let listener = UnixListener::bind(&sock_path)?;
     let state = Arc::new(state);
-    let tb_for_bridge = Arc::clone(&toolbox);
+    let tb_for_bridge = Arc::new(toolbox.clone());
     let state_for_bridge = Arc::clone(&state);
-    let bridge_task = tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
             let tb = Arc::clone(&tb_for_bridge);
             let st = Arc::clone(&state_for_bridge);
@@ -417,63 +557,135 @@ async fn run_in_bridge(
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "python3".to_string());
+    // A background job's stderr joins its stdout, which is the job log.
+    let redirect = if background { " 2>&1" } else { "" };
     // The runtime env file must reach this process too, not only `bash`: `PATH` additions are
     // useless here if a script's own `subprocess` cannot find the command.
     let mut cmd = Command::new("sh");
     cmd.arg("-c")
-        .arg(format!("{}exec \"$@\"", toolbox.env_prelude()))
+        .arg(format!("{}exec \"$@\"{redirect}", toolbox.env_prelude()))
         .arg("sh")
         .arg(&py)
-        .arg("-I")
-        .arg("-c")
+        .arg("-I");
+    if background {
+        // Unbuffered, so the job log shows what the script printed so far.
+        cmd.arg("-u");
+    }
+    cmd.arg("-c")
         .arg(LAUNCHER)
         .arg(dir)
         .arg(&exec_path)
         .current_dir(toolbox.root())
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::piped());
+    if background {
+        cmd.stderr(Stdio::null());
+    } else {
+        cmd.stderr(Stdio::piped());
+    }
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let child = cmd
+    Ok(Bridge {
+        state,
+        exec_id,
+        dir: dir.to_path_buf(),
+        task,
+        cmd,
+    })
+}
+
+async fn run_in_bridge(
+    toolbox: Arc<Toolbox>,
+    dir: &Path,
+    code: &str,
+    timeout_secs: u64,
+    mcp: &[McpTool],
+) -> ToolResult<(String, Vec<Image>)> {
+    let mut bridge = prepare_bridge(&toolbox, dir, code, mcp, false)?;
+    let child = bridge
+        .cmd
         .spawn()
         .map_err(|e| ToolError::msg(format!("spawn python3: {e}")))?;
     let pid = child.id();
     let wait_res =
         tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await;
-    bridge_task.abort();
+    bridge.task.abort();
 
     match wait_res {
         Ok(Ok(output)) => {
             let exit_code = output.status.code().unwrap_or(-1);
             if exit_code == 0 {
-                state.flush();
+                bridge.state.flush();
             }
+            bridge.state.write_children();
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            format_output(
+            let text = format_output(
                 &toolbox,
                 code,
                 &stdout,
                 &stderr,
                 ExecOutcome::Exit(exit_code),
-                exec_id,
-            )
+                bridge.exec_id,
+            )?;
+            Ok((text, bridge.state.take_images()))
         }
         Ok(Err(e)) => Err(ToolError::Io(e)),
         Err(_) => {
             kill_group(pid);
-            format_output(
+            bridge.state.write_children();
+            let text = format_output(
                 &toolbox,
                 code,
                 "",
                 "",
                 ExecOutcome::TimedOut(timeout_secs),
-                exec_id,
-            )
+                bridge.exec_id,
+            )?;
+            Ok((text, bridge.state.take_images()))
         }
     }
+}
+
+/// Owns the socket server and its temp dir for as long as the job runs.
+struct BridgeKeepalive {
+    task: tokio::task::JoinHandle<()>,
+    dir: PathBuf,
+}
+
+impl Drop for BridgeKeepalive {
+    fn drop(&mut self) {
+        self.task.abort();
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+async fn run_background(toolbox: &Toolbox, code: &str, mcp: &[McpTool]) -> ToolResult<String> {
+    let dir = create_bridge_dir()?;
+    let bridge = match prepare_bridge(toolbox, &dir, code, mcp, true) {
+        Ok(bridge) => bridge,
+        Err(err) => {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(err);
+        }
+    };
+    let exec_id = bridge.exec_id;
+    let keepalive = Box::new(BridgeKeepalive {
+        task: bridge.task,
+        dir: bridge.dir,
+    });
+    // shortcut: the bridge dies with the daemon, so a script adopted after a restart loses its
+    // `tools` calls; give the bridge a detached server the day that matters.
+    let mut cmd = bridge.cmd;
+    let started = toolbox
+        .background()
+        .spawn_with(Some(keepalive), move |log| {
+            cmd.stdout(Stdio::from(log));
+            cmd
+        })
+        .await?;
+    Ok(format!("{started}[saved exec #{exec_id}]\n"))
 }
 
 #[cfg(unix)]
@@ -528,10 +740,31 @@ async fn serve_conn(toolbox: Arc<Toolbox>, state: Arc<BridgeState>, stream: Unix
                 error: Some("execute cannot be called recursively".to_string()),
             }
         } else {
-            match crate::IN_SCRIPT
-                .scope((), toolbox.call_inner(&req.tool, &req.args))
-                .await
-            {
+            let started = std::time::Instant::now();
+            // A script's `read` of an image answers marker text; the picture rides the execute
+            // call's own MCP result, exactly as a direct `read` hands one to the model.
+            let image = (req.tool == "read")
+                .then(|| crate::read::image(&toolbox, &req.args))
+                .flatten();
+            let res = match image {
+                Some(Ok((mime, data))) => {
+                    state
+                        .images
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((mime, data));
+                    Ok(format!("[image {mime}]"))
+                }
+                Some(Err(err)) => Err(err),
+                None => {
+                    crate::IN_SCRIPT
+                        .scope((), toolbox.call_inner(&req.tool, &req.args))
+                        .await
+                }
+            };
+            let ms = started.elapsed().as_millis() as u64;
+            state.record_child(&req.tool, &req.args, ms, res.is_ok());
+            match res {
                 Ok(res) => BridgeResponse {
                     id: req.id,
                     result: Some(res),
@@ -662,15 +895,15 @@ _reader = None
 _run_depth = 0
 
 _SPECS = {{
-    "read": {{"sig": "read(path, limit, offset)", "desc": "Read a file, directory, ctx: handle, or URL."}},
+    "read": {{"sig": "read(path, limit, offset)", "desc": "Read a file, directory, ctx: handle, or URL. A goldfish reads only the Project, the skill roots and its own Session directory."}},
     "grep": {{"sig": "grep(pattern, case_insensitive, context, glob, max_results, output_mode, path)", "desc": "Search files with regex."}},
     "edit": {{"sig": "edit(input)", "desc": "Apply line-anchored hashline edits."}},
-    "write": {{"sig": "write(path, content)", "desc": "Write a whole file inside the project root."}},
+    "write": {{"sig": "write(path, content)", "desc": "Write a whole file, creating parent directories. ~ expands from HOME."}},
     "bash": {{"sig": "bash(command, background, timeout)", "desc": "Run a shell command in the project root."}},
     "background": {{"sig": "background(action, id, offset, timeout)", "desc": "Manage background commands."}},
     "find": {{"sig": "find(query, grep_keywords, limit, mode, path)", "desc": "Semantic/lexical code finder with modes."}},
     "websearch": {{"sig": "websearch(query, count, domains, fresh, freshness, provider)", "desc": "Search the web."}},
-    "spawn": {{"sig": "spawn(role, text, title, tier, ticketPath, startingPoint)", "desc": "Start a Worker or Scout or start/reuse a Spec or Standards reviewer."}},
+    "spawn": {{"sig": "spawn(role, text, title, tier, ticketPath, startingPoint, persona)", "desc": "Start a Worker, Scout or one-shot Goldfish (persona), or start/reuse a Spec or Standards reviewer."}},
     "steer": {{"sig": "steer(id, text, tier, ticketPath, startingPoint)", "desc": "Continue an existing subagent Session."}},
     "stop": {{"sig": "stop(id)", "desc": "Stop a subagent without deleting its conversation."}},
     "result": {{"sig": "result(id)", "desc": "Retrieve all reports from a subagent."}},
@@ -861,6 +1094,10 @@ mod tests {
     use super::*;
     use crate::ToolConfig;
 
+    async fn run(toolbox: Arc<Toolbox>, args: &Value) -> ToolResult<String> {
+        run_parts(toolbox, args).await.map(|(text, _)| text)
+    }
+
     #[tokio::test]
     async fn execute_runs_python_and_calls_tools_over_bridge() {
         let dir = tempfile::tempdir().unwrap();
@@ -933,6 +1170,53 @@ mod tests {
         .await
         .unwrap();
         assert!(out.contains("abc"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn execute_background_keeps_the_bridge_and_the_store_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let spill = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("notes.txt"), "alpha\nbeta\n").unwrap();
+        let tb = Arc::new(
+            Toolbox::new(ToolConfig::new(dir.path(), spill.path().join("spill"))).unwrap(),
+        );
+
+        let started = run(
+            Arc::clone(&tb),
+            &json!({
+                "code": "import time, tools\nprint(tools.read(path='notes.txt').strip())\ntools.store('bg_key', 7)\ntime.sleep(0.3)\nprint('done')",
+                "background": true
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(started.contains("started background"), "{started}");
+        assert!(started.contains("[saved exec #1]"), "{started}");
+        let id = started
+            .split_whitespace()
+            .nth(3)
+            .expect("handle")
+            .to_string();
+
+        let waited = tb
+            .call("background", &json!({"action": "wait", "id": id}))
+            .await
+            .unwrap();
+        assert!(waited.contains("exited (0)"), "{waited}");
+        let log = tb
+            .call("background", &json!({"action": "read", "id": id}))
+            .await
+            .unwrap();
+        assert!(log.contains("alpha"), "{log}");
+        assert!(log.contains("done"), "{log}");
+
+        let loaded = run(
+            Arc::clone(&tb),
+            &json!({"code": "import tools\nprint(tools.load('bg_key'))"}),
+        )
+        .await
+        .unwrap();
+        assert!(loaded.contains("7"), "{loaded}");
     }
 
     #[tokio::test]
@@ -1029,5 +1313,37 @@ mod tests {
         .await
         .unwrap();
         assert!(inspected.contains("print(x + y)"), "got: {inspected}");
+        assert!(inspected.contains("print(x + y)"), "got: {inspected}");
+    }
+
+    #[tokio::test]
+    async fn execute_writes_inner_children_metadata_for_tool_display() {
+        let dir = tempfile::tempdir().unwrap();
+        let spill = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("notes.txt"), "alpha\nbeta\n").unwrap();
+        let tb = Arc::new(
+            Toolbox::new(ToolConfig::new(dir.path(), spill.path().join("spill"))).unwrap(),
+        );
+
+        let out = run(
+            Arc::clone(&tb),
+            &json!({
+                "code": "import tools\ntools.read(path='notes.txt')\ntry:\n    tools.read(path='missing.txt')\nexcept tools.ToolError:\n    pass\nprint('ok')"
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("[saved exec #1]"), "got: {out}");
+
+        let children_path = spill.path().join("exec").join("1.children.json");
+        let raw = fs::read_to_string(&children_path).expect("children.json written");
+        let children: Vec<Value> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0]["name"], "read");
+        assert_eq!(children[0]["target"], "notes.txt");
+        assert_eq!(children[0]["status"], "completed");
+        assert_eq!(children[1]["name"], "read");
+        assert_eq!(children[1]["target"], "missing.txt");
+        assert_eq!(children[1]["status"], "failed");
     }
 }

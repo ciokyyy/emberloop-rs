@@ -773,6 +773,15 @@ export interface components {
              */
             emergency_threshold_percent: number;
             /**
+             * @description A goldfish's per-tier ladders; an empty tier ladder inherits `subagent_tiers`.
+             * @default {
+             *       "mid": [],
+             *       "smol": [],
+             *       "top": []
+             *     }
+             */
+            goldfish_tiers: components["schemas"]["SubagentTiers"];
+            /**
              * @description Reference `compress.injectNudge`.
              * @default true
              */
@@ -910,6 +919,8 @@ export interface components {
         SubagentRequest: {
             /** @enum {string} */
             action: "spawn";
+            /** @description Persona id, required for the `goldfish` role. */
+            persona?: string | null;
             role: string;
             starting_point?: string;
             text?: string;
@@ -2250,6 +2261,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Session is a one-shot goldfish */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Session not found */
             404: {
                 headers: {
@@ -2276,6 +2294,13 @@ export interface operations {
         responses: {
             /** @description Steer queued */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The Session is a one-shot goldfish */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

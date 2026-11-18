@@ -33,7 +33,7 @@ pub fn image(toolbox: &Toolbox, args: &Value) -> Option<ToolResult<(&'static str
         ))));
     }
     Some((|| {
-        let path = toolbox_jail(toolbox).resolve(raw)?;
+        let path = toolbox.resolve_read(raw)?;
         let meta = fs::metadata(&path)?;
         if meta.len() > toolbox.max_read_bytes() as u64 {
             return Err(ToolError::msg(format!(
@@ -126,7 +126,7 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     if let Some(target) = docs::parse_target(&path_arg) {
         return docs::read(toolbox, target);
     }
-    let path = toolbox_jail(toolbox).resolve(&path_arg)?;
+    let path = toolbox.resolve_read(&path_arg)?;
     if path.is_dir() {
         return render_dir(&path, args.offset, args.limit);
     }
@@ -141,10 +141,6 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     skillstore::log_view(toolbox, &path_arg);
     // No spill: read answers with its own lines, and `:raw` is how a model asks for all of them.
     Ok(rendered)
-}
-
-fn toolbox_jail(toolbox: &Toolbox) -> &crate::ProjectJail {
-    &toolbox.jail
 }
 
 fn read_ctx(
@@ -249,19 +245,11 @@ fn read_skill(
 ) -> ToolResult<String> {
     match target {
         SkillTarget::Catalog => {
-            let skills = skills::discover(toolbox.global_skills(), toolbox.root());
-            if skills.is_empty() {
+            let index = skills::index(toolbox.global_skills(), toolbox.root());
+            if index.is_empty() {
                 return Ok("No skills found.\n".to_string());
             }
-            let mut out = String::from("Available skills:\n\n");
-            for skill in skills {
-                let scope = if skill.project { "project" } else { "global" };
-                out.push_str(&format!(
-                    "- {} [{}] [{}]: {}\n",
-                    skill.name, skill.origin, scope, skill.description
-                ));
-            }
-            Ok(out)
+            Ok(index)
         }
         SkillTarget::Item { name, subpath } => {
             let skill = skills::locate(toolbox.global_skills(), toolbox.root(), name)
@@ -276,12 +264,43 @@ fn read_skill(
             if target_path.is_dir() {
                 return render_dir(&target_path, offset, limit);
             }
-            // A skill reads whole: a capped body is a skill the model cannot follow.
-            let rendered = render_file(toolbox, &target_path, offset, 0)?;
+            let text = fs::read_to_string(&target_path)?;
+            let total = text.lines().count();
+            let page = skill_page(&text, offset);
+            let mut rendered = render_file(toolbox, &target_path, offset, page)?;
+            let last = (offset.max(1) - 1 + page).min(total);
+            if last < total {
+                rendered.push_str(&format!(
+                    "\n[skill continues at line {}: read again with offset {}]\n",
+                    last + 1,
+                    last + 1
+                ));
+            }
             skillstore::log_view(toolbox, &target_path.display().to_string());
             Ok(rendered)
         }
     }
+}
+
+/// Input bytes of a skill one tool result may carry. pi cuts a model-facing MCP result over 20 KB
+/// (`crates/pi-mcp/src/output.rs`) and no setting raises it, so a skill pages instead of losing its
+/// middle; the numbered output of this budget stays under that.
+const SKILL_PAGE_BYTES: usize = 16 * 1024;
+
+/// How many lines from `offset` fit one skill page, at least one.
+fn skill_page(text: &str, offset: usize) -> usize {
+    let mut bytes = 0;
+    let mut lines = 0;
+    // shortcut: one line over the budget still pages alone, `upgrade` if a model ever ships such a
+    // skill and the harness cuts it.
+    for line in text.lines().skip(offset.saturating_sub(1)) {
+        bytes += line.len() + 1;
+        if bytes > SKILL_PAGE_BYTES && lines > 0 {
+            break;
+        }
+        lines += 1;
+    }
+    lines.max(1)
 }
 
 fn render_file(toolbox: &Toolbox, path: &Path, offset: usize, limit: usize) -> ToolResult<String> {
@@ -391,6 +410,8 @@ fn render_window(label: &str, lines: &[&str], start: usize, end: usize, numbered
     out
 }
 
+/// Any path `read` opens for this caller: `~` expands from `HOME`, a relative path joins the
+/// project root, and a goldfish is confined to its allowlist.
 pub fn resolve(toolbox: &Toolbox, raw: &str) -> ToolResult<PathBuf> {
-    toolbox_jail(toolbox).resolve(raw)
+    toolbox.resolve_read(raw)
 }

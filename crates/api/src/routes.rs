@@ -542,6 +542,7 @@ pub async fn delete_session(
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
     crate::subagent_recovery::remove_run(&state, &id).await;
+    crate::subagent_submit::forget(&state, &id).await;
 
     Ok(Json(session_dto(deleted)))
 }
@@ -569,10 +570,44 @@ fn session_dto(s: SessionMeta) -> SessionDto {
     request_body = PromptRequest,
     responses(
         (status = 200, description = "Prompt submitted"),
+        (status = 400, description = "Session is a one-shot goldfish"),
         (status = 404, description = "Session not found")
     )
 )]
 pub async fn prompt_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<PromptRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    reject_one_shot(&state, &id).await?;
+    prompt_session_inner(State(state), Path(id), Json(payload)).await
+}
+
+/// The one-shot role: a goldfish takes its single task at spawn and no later turn.
+const ONE_SHOT_ROLE: &str = crate::subagents::GOLDFISH;
+const ONE_SHOT_ERROR: &str = "A goldfish is one-shot: spawn a new goldfish for follow-up work.";
+
+/// `400` when `meta` is a goldfish. The one place that guards every HTTP and subagent entry point.
+pub(crate) fn ensure_not_one_shot(meta: &SessionMeta) -> Result<(), (StatusCode, String)> {
+    if meta
+        .reviewer
+        .as_ref()
+        .is_some_and(|r| r.role == ONE_SHOT_ROLE)
+    {
+        return Err((StatusCode::BAD_REQUEST, ONE_SHOT_ERROR.into()));
+    }
+    Ok(())
+}
+
+async fn reject_one_shot(state: &AppState, id: &str) -> Result<(), (StatusCode, String)> {
+    match state.sessions.get(id).await {
+        Some(meta) => ensure_not_one_shot(&meta),
+        None => Err((StatusCode::NOT_FOUND, "Session not found".into())),
+    }
+}
+
+/// The prompt without the one-shot guard, for daemon-internal callers: spawn, recovery, nudge.
+pub(crate) async fn prompt_session_inner(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(payload): Json<PromptRequest>,
@@ -590,7 +625,7 @@ pub async fn prompt_session(
             text: payload.text,
             images: payload.images,
         });
-        return steer_session(State(state), Path(id), steer).await;
+        return steer_session_inner(State(state), Path(id), steer).await;
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -654,10 +689,21 @@ pub async fn prompt_session(
     request_body = SteerRequest,
     responses(
         (status = 200, description = "Steer queued"),
-        (status = 404, description = "Session not found")
+        (status = 404, description = "Session not found"),
+        (status = 400, description = "The Session is a one-shot goldfish")
     )
 )]
 pub async fn steer_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<SteerRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    reject_one_shot(&state, &id).await?;
+    steer_session_inner(State(state), Path(id), Json(payload)).await
+}
+
+/// The steer without the one-shot guard, for daemon-internal callers.
+pub(crate) async fn steer_session_inner(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(payload): Json<SteerRequest>,
@@ -725,17 +771,27 @@ pub async fn cancel_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if state.sessions.get(&id).await.is_none() {
+    stop_session(&state, &id, true).await
+}
+
+/// Cancels a Session. `notify` also queues a "stopped" report for a subagent's parent; the
+/// goldfish auto-stop passes `false`, because its report already went through `submit`.
+pub(crate) async fn stop_session(
+    state: &AppState,
+    id: &str,
+    notify: bool,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if state.sessions.get(id).await.is_none() {
         return Err((StatusCode::NOT_FOUND, "Session not found".into()));
     }
 
     let log = state
-        .get_event_log(&id)
+        .get_event_log(id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let event = SessionEvent::new(
-        &id,
+        id,
         0,
         EventKind::Status,
         serde_json::json!({"state": "cancelled"}),
@@ -745,19 +801,22 @@ pub async fn cancel_session(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.event_bus.publish(appended);
-    crate::subagents::mark_cancelled(&state, &id).await;
+    crate::subagents::mark_cancelled(state, id).await;
     state
         .driver
-        .cancel(&id)
+        .cancel(id)
         .await
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
-    if let Some(child) = state.sessions.get(&id).await {
+    if !notify {
+        return Ok(StatusCode::OK);
+    }
+    if let Some(child) = state.sessions.get(id).await {
         let message = if child.reviewer.as_ref().is_some_and(|r| r.is_reviewer()) {
             "Review stopped. Continue this reviewer explicitly when ready."
         } else {
             "Subagent stopped. Continue this subagent explicitly when ready."
         };
-        crate::subagents::notify_failure(&state, &child, "stopped", message).await?;
+        crate::subagents::notify_failure(state, &child, "stopped", message).await?;
     }
     Ok(StatusCode::OK)
 }
@@ -1174,6 +1233,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/sessions/{id}/usage",
             get(crate::usage::session_usage_handler),
         )
+        .route("/api/personas", get(crate::personas::list_personas))
         .route("/api/skills", get(crate::skills::list_skills))
         .route("/api/skills/{name}", get(crate::skills::skill_detail))
         .route("/api/skills/{name}/history", get(crate::skills::skill_history))
@@ -1206,6 +1266,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/status/system", get(crate::status::get_system_status))
         .route("/api/status/tokens", get(crate::status::get_token_status))
+        .route(
+            "/api/status/sessions/events",
+            get(crate::sse::status_events_handler),
+        )
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .merge(providers)
         .merge(crate::transcribe::router())

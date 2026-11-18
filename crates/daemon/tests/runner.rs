@@ -352,6 +352,7 @@ async fn reviewer_wiring_carries_its_session_endpoint_and_tool_policy() {
         ticket_path: "ticket.md".into(),
         starting_point: "abc123".into(),
         tier: None,
+        persona: None,
     });
     fixture.sessions.save(&meta).await.unwrap();
     prompt_once(&fixture).await;
@@ -385,6 +386,7 @@ async fn reviewer_wiring_carries_its_session_endpoint_and_tool_policy() {
                     ticket_path: String::new(),
                     starting_point: String::new(),
                     tier: None,
+                    persona: None,
                 }),
                 ..SessionMeta::default()
             })
@@ -601,6 +603,7 @@ async fn a_finished_todo_call_republishes_the_plan_before_the_turn_ends() {
             id: "call-1".into(),
             name: "mcp__el__todo".into(),
             input: serde_json::json!({ "action": "set" }),
+            title: None,
         },
         HarnessEvent::ToolFinished {
             id: "call-1".into(),
@@ -922,6 +925,7 @@ async fn captured_mcp_output_replaces_harness_status_in_tool_finished() {
                 "arguments": { "path": "foo.rs" },
                 "path": "foo.rs"
             }),
+            title: None,
         },
         HarnessEvent::ToolFinished {
             id: "call-1".into(),

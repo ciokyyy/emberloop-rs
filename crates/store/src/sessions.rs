@@ -25,6 +25,9 @@ pub struct ReviewerAssignment {
     pub starting_point: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
+    /// Persona id of a `goldfish`; the proxy resolves it to the system prompt on every request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
 }
 
 impl ReviewerAssignment {

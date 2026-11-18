@@ -88,7 +88,7 @@
             {:else}
               {#each groups as [heading, items] (heading)}
                 <section class="flex flex-col">
-                  <p class="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.05em] text-fg-3">{heading}</p>
+                  <p class="px-3 pt-2 pb-1 text-[11px] font-medium text-fg-3">{heading}</p>
                   {#each items as item (item.id)}
                     <button type="button" aria-pressed={picked === item.id} disabled={disabled || busy}
                       class="row flex w-full items-center gap-2 px-2 py-2 text-left {picked === item.id ? 'sel' : ''}"

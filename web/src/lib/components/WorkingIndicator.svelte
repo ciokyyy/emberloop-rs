@@ -3,12 +3,12 @@
 <script lang="ts">
   import { shortTool } from '$lib/toolfeed';
 
-  // tool is the name of the running tool, '' when none is known.
-  let { status, tool = '', class: cls = '' }: { status: string; tool?: string; class?: string } = $props();
+  // tool is the name of the running tool, '' when none is known. intent is optional human-readable action text.
+  let { status, tool = '', intent = '', class: cls = '' }: { status: string; tool?: string; intent?: string; class?: string } = $props();
 
   const running = $derived(status === 'working');
   const short = $derived(shortTool(tool));
-
+  const label = $derived(intent.trim() || short);
   // The count starts when the run does and stops with it, so a stale number never sits under an
   // idle composer.
   let startedAt = $state(0);
@@ -41,7 +41,7 @@
     data-testid="working-indicator"
     role="status"
     class="flex min-w-0 items-center gap-1.5 px-1 text-[12px] text-status-working {cls}"
-    title={short ? `Working: ${short}` : 'Working'}
+    title={label ? `Working: ${label}` : 'Working'}
   >
     <svg
       class="working-spinner size-3.5 shrink-0 animate-spin motion-reduce:animate-none"
@@ -53,7 +53,9 @@
       <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
     </svg>
     <span class="sr-only">Working</span>
-    {#if short}
+    {#if intent.trim()}
+      <span class="truncate text-fg-2">{intent.trim()}</span>
+    {:else if short}
       <span class="truncate font-mono text-fg-2">{short}</span>
     {:else}
       <span class="truncate text-fg-3">Working</span>

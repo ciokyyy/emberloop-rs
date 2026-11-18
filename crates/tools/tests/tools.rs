@@ -172,10 +172,11 @@ fn read_skill_uri_catalog_and_item() {
         "Subpath note content.\n",
     );
 
-    // List catalog
+    // List catalog: the module index and the names no module holds, never a description.
     let catalog = call(&fixture, "read", json!({"path": "el://skills"})).expect("catalog");
     assert!(catalog.contains("my-skill"), "{catalog}");
-    assert!(catalog.contains("A helpful skill"), "{catalog}");
+    assert!(catalog.contains("Modules: 0"), "{catalog}");
+    assert!(!catalog.contains("A helpful skill"), "{catalog}");
 
     // Read skill directly via el://skills/<name>
     let skill_out =
@@ -215,6 +216,51 @@ fn read_skill_uri_catalog_and_item() {
     // Reading nonexistent skill returns error
     let err = call(&fixture, "read", json!({"path": "el://skills/nonexistent"})).unwrap_err();
     assert!(err.to_string().contains("not found"), "{err}");
+}
+
+#[test]
+fn read_skill_pages_instead_of_letting_a_harness_cut_it() {
+    let fixture = setup();
+    let body = (1..=2000)
+        .map(|n| format!("skill line {n} padded to fifty characters.............."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    write(
+        &fixture,
+        ".agents/skills/big/SKILL.md",
+        &format!("---\nname: big\ndescription: A long skill.\n---\n{body}\n"),
+    );
+    let mut offset = 1;
+    let mut text = String::new();
+    for _ in 0..20 {
+        let page = call(
+            &fixture,
+            "read",
+            json!({"path": "el://skills/big", "offset": offset}),
+        )
+        .expect("skill page");
+        assert!(
+            page.len() < 20 * 1024,
+            "a page pi would cut: {}",
+            page.len()
+        );
+        text.push_str(&page);
+        match page.lines().next_back().and_then(|line| {
+            line.strip_prefix("[skill continues at line ")?
+                .split(": read again with offset ")
+                .nth(1)?
+                .trim_end_matches(']')
+                .parse::<usize>()
+                .ok()
+        }) {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert!(
+        text.contains("skill line 2000"),
+        "the last line was reached"
+    );
 }
 
 #[test]
@@ -293,25 +339,38 @@ fn read_el_docs_config_shows_paths_but_never_secret_contents() {
         "{config_docs}"
     );
     assert!(config_docs.contains("EMBERLOOP_ENV_FILE"), "{config_docs}");
+    assert!(config_docs.contains("skill-modules.json"), "{config_docs}");
+    assert!(
+        config_docs.contains("skill_search \"<module>\""),
+        "{config_docs}"
+    );
     assert!(!config_docs.contains("super-secret-value"), "{config_docs}");
     assert!(!config_docs.contains("hidden-value"), "{config_docs}");
 }
 
 #[test]
-fn jail_blocks_escapes_and_symlinks() {
+fn grep_stays_inside_the_project_root() {
     let fixture = setup();
     let outside = fixture._dir.path().join("outside.txt");
     fs::write(&outside, "secret").expect("outside");
 
-    let error = call(&fixture, "read", json!({"path": "../outside.txt"}))
-        .expect_err("relative escape refused");
+    let error = call(
+        &fixture,
+        "grep",
+        json!({"pattern": "secret", "path": "../outside.txt"}),
+    )
+    .expect_err("relative escape refused");
     assert!(
         error.to_string().contains("outside the project root"),
         "{error}"
     );
 
-    let error = call(&fixture, "read", json!({"path": outside.to_string_lossy()}))
-        .expect_err("absolute escape refused");
+    let error = call(
+        &fixture,
+        "grep",
+        json!({"pattern": "secret", "path": outside.to_string_lossy()}),
+    )
+    .expect_err("absolute escape refused");
     assert!(
         error.to_string().contains("outside the project root"),
         "{error}"
@@ -320,13 +379,167 @@ fn jail_blocks_escapes_and_symlinks() {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(&outside, fixture.root.join("link.txt")).expect("symlink");
-        let error =
-            call(&fixture, "read", json!({"path": "link.txt"})).expect_err("symlink escape");
+        let error = call(
+            &fixture,
+            "grep",
+            json!({"pattern": "secret", "path": "link.txt"}),
+        )
+        .expect_err("symlink escape");
         assert!(
             error.to_string().contains("outside the project root"),
             "{error}"
         );
     }
+}
+
+#[test]
+fn read_write_and_edit_reach_outside_the_project_root() {
+    let fixture = setup();
+    let base = fs::canonicalize(fixture._dir.path()).expect("base");
+    let outside = base.join("outside/notes.txt");
+    let written = call(
+        &fixture,
+        "write",
+        json!({"path": outside.to_string_lossy(), "content": "one\ntwo\n"}),
+    )
+    .expect("write outside");
+    assert!(written.contains("written (2 lines)"), "{written}");
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "one\ntwo\n");
+
+    let output = read(&fixture, &outside, 1, 0);
+    assert!(
+        output.starts_with(&format!("[{}#", outside.display())),
+        "{output}"
+    );
+    let tag = tag_of(&output);
+    let patch = format!("[{}#{tag}]\nPUT 2.=2:\n+two edited\n", outside.display());
+    let reply = call(&fixture, "edit", json!({"input": patch})).expect("edit outside");
+    assert!(reply.contains("updated successfully"), "{reply}");
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "one\ntwo edited\n");
+
+    // A tag that was never shown still fails the stale check outside the root.
+    let patch = format!("[{}#dead]\nPUT 1.=1:\n+zero\n", outside.display());
+    let error = call(&fixture, "edit", json!({"input": patch})).expect_err("stale outside");
+    assert!(error.to_string().contains("stale tag"), "{error}");
+
+    // A relative path still joins the project root, so `..` reaches its parent.
+    let reply = call(
+        &fixture,
+        "write",
+        json!({"path": "../sibling/rel.txt", "content": "rel\n"}),
+    )
+    .expect("write ../");
+    assert!(reply.contains("written"), "{reply}");
+    assert_eq!(
+        fs::read_to_string(base.join("sibling/rel.txt")).unwrap(),
+        "rel\n"
+    );
+}
+
+#[test]
+fn goldfish_read_is_limited_to_project_skill_roots_and_own_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let files = [
+        "project/a.txt",
+        "sessions/own/spill/s.txt",
+        "sessions/own/notes.txt",
+        "sessions/parent/events.jsonl",
+        "claude-homes/parent/x",
+        "pi-homes/parent/x",
+        "home/.ssh/id",
+        "home/.agents/skills/egm/resources/r.md",
+    ];
+    for file in files {
+        let path = base.join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "secret\n").unwrap();
+    }
+    std::os::unix::fs::symlink(base.join("home/.ssh/id"), base.join("project/link")).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let toolbox = |role: Option<&str>| {
+        let mut cfg = ToolConfig::new(base.join("project"), base.join("sessions/own/spill"));
+        cfg.global_skills = Some(base.join("home/.agents/skills"));
+        cfg.subagent_role = role.map(Into::into);
+        Toolbox::new(cfg).unwrap()
+    };
+    let read = |toolbox: &Toolbox, path: String| {
+        runtime.block_on(toolbox.call("read", &json!({"path": path})))
+    };
+    let goldfish = toolbox(Some("goldfish"));
+    for ok in [
+        "project/a.txt",
+        "sessions/own/spill/s.txt",
+        "sessions/own/notes.txt",
+        "home/.agents/skills/egm/resources/r.md",
+    ] {
+        let path = base.join(ok).display().to_string();
+        assert!(read(&goldfish, path).is_ok(), "{ok}");
+    }
+    assert!(read(&goldfish, "a.txt".into()).is_ok());
+    for bad in [
+        base.join("sessions/parent/events.jsonl")
+            .display()
+            .to_string(),
+        base.join("claude-homes/parent/x").display().to_string(),
+        base.join("pi-homes/parent/x").display().to_string(),
+        base.join("home/.ssh/id").display().to_string(),
+        "../sessions/parent/events.jsonl".into(),
+        "../home/.ssh/id".into(),
+        "link".into(),
+    ] {
+        let error = read(&goldfish, bad.clone()).unwrap_err().to_string();
+        assert!(error.contains("outside"), "{bad}: {error}");
+    }
+    // Other Sessions and scouts keep the open read.
+    for role in [None, Some("worker"), Some("scout")] {
+        let open = toolbox(role);
+        let path = base
+            .join("sessions/parent/events.jsonl")
+            .display()
+            .to_string();
+        assert!(read(&open, path).is_ok(), "{role:?}");
+    }
+}
+
+#[test]
+fn a_goldfish_cannot_call_a_tool_outside_its_allowlist() {
+    let fixture = setup();
+    fs::write(fixture.root.join("a.txt"), "found\n").unwrap();
+    let mut cfg = ToolConfig::new(&fixture.root, fixture.root.parent().unwrap().join("spill"));
+    cfg.subagent_role = Some("goldfish".into());
+    let toolbox = Toolbox::new(cfg).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    for name in [
+        "edit",
+        "write",
+        "bash",
+        "execute",
+        "skill_search",
+        "skill_manage",
+        "prompt_propose",
+        "retry_call",
+        "spawn",
+        "steer",
+        "stop",
+        "result",
+    ] {
+        let error = runtime
+            .block_on(toolbox.call(name, &json!({})))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unavailable to goldfish"), "{name}: {error}");
+    }
+    let read = runtime
+        .block_on(toolbox.call("read", &json!({"path": "a.txt"})))
+        .unwrap();
+    assert!(read.contains("found"), "{read}");
 }
 
 #[test]
@@ -1527,4 +1740,37 @@ fn retry_call_dispatches_allowlisted_execute_and_bridge_records_spawn_failure() 
     assert!(bridge_out.contains("CAUGHT:"), "{bridge_out}");
     assert!(bridge_out.contains("[failed call #2]"), "{bridge_out}");
     assert!(toolbox.spill_dir().join("failed_calls/2.json").exists());
+}
+
+/// A script's `read` of an image must reach the model as an image block, like a direct `read`.
+#[test]
+fn execute_script_image_read_becomes_an_image_content_block() {
+    let fixture = setup();
+    fs::write(fixture.root.join("pic.png"), b"\x89PNG\r\n\x1a\nfake").expect("image");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let server = McpServer::new(Arc::clone(&fixture.toolbox));
+    let result = runtime.block_on(
+        server.call(
+            "execute",
+            Some(
+                serde_json::from_value(
+                    json!({"code": "import tools\nprint(tools.read(path='pic.png'))"}),
+                )
+                .unwrap(),
+            ),
+        ),
+    );
+    let value = serde_json::to_value(result).unwrap();
+    assert_eq!(value["isError"], false, "{value:?}");
+    let image = value["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["type"] == "image")
+        .unwrap_or_else(|| panic!("no image block in {value:?}"));
+    assert_eq!(image["mimeType"], "image/png", "{image:?}");
+    assert!(
+        image["data"].as_str().unwrap().starts_with("iVBORw0KGg"),
+        "{image:?}"
+    );
 }

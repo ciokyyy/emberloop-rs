@@ -266,7 +266,7 @@ fn clean(raw: &str) -> String {
 }
 
 fn record(toolbox: &Toolbox, raw: &str, lines: Vec<u32>) {
-    let Ok(path) = toolbox.jail().resolve(raw) else {
+    let Ok(path) = toolbox.jail().resolve_any(raw) else {
         return;
     };
     let Ok(bytes) = fs::read(&path) else {

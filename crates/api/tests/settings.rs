@@ -91,6 +91,9 @@ async fn reviewer_models_survive_a_daemon_restart() {
             reasoning_effort: Some("medium".into()),
         },
     ]);
+    // Only one goldfish tier is overridden; the other two stay empty and inherit.
+    settings.goldfish_tiers.top =
+        api::state::FallbackLadder::single("claude-opus-5-5", Some("high".into()));
     let response = app
         .oneshot(
             Request::builder()
@@ -135,6 +138,13 @@ async fn reviewer_models_survive_a_daemon_restart() {
             .as_deref(),
         Some("high")
     );
+    assert_eq!(loaded.goldfish_tiers.top.rungs().len(), 1);
+    assert_eq!(
+        loaded.goldfish_tiers.top.rungs()[0].model,
+        "claude-opus-5-5"
+    );
+    assert!(loaded.goldfish_tiers.smol.is_empty());
+    assert!(loaded.goldfish_tiers.mid.is_empty());
 
     // Empty ladder rejected.
     let empty_ladder = Settings {
@@ -194,6 +204,37 @@ async fn reviewer_models_survive_a_daemon_restart() {
         .await
         .unwrap();
     assert_eq!(effort_res.status(), StatusCode::BAD_REQUEST);
+
+    // A non-empty goldfish ladder is validated like the others, and an empty one is accepted.
+    let mut bad_goldfish_model = Settings::default();
+    bad_goldfish_model.goldfish_tiers.mid =
+        api::state::FallbackLadder::single("nonexistent-model", None);
+    let bad_goldfish_res = build_router(state(&root).await)
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&bad_goldfish_model).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_goldfish_res.status(), StatusCode::BAD_REQUEST);
+
+    let empty_goldfish = Settings::default();
+    let empty_goldfish_res = build_router(state(&root).await)
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&empty_goldfish).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty_goldfish_res.status(), StatusCode::OK);
 }
 
 #[tokio::test]

@@ -25,7 +25,10 @@ behind it.
    one that is not. `grep` the crates for the protocol and for the config file
    the harness reads; `AGENTS.md` under the owning crate states the shape.
 3. Search primary sources: the project README, docs, CHANGELOG, source. Search
-   the blog posts only for measurements, and label them as second-hand.
+   the blog posts only for measurements, and label them as second-hand. When the
+   user hands you a link instead of a name, resolve it to the artifact it is
+   about (paper id, repository) and rank from that: a video, thread or post is a
+   pointer, never the evidence.
 4. Query GitHub search directly for the fast-moving category; blog lists miss
    this year's projects. In `execute`, fetch with `urllib.request` from a
    Python script, or run a standalone `curl`. Piping Python through `bash` is
@@ -78,6 +81,17 @@ behind it.
   plus 1872 audio files behind an unused subpath export. Measure the import
   graph instead, filtering out the asset folders: download the tarball, list
   the non-asset files by size, and report runtime bytes, not install bytes.
+
+- A capability that needs a layer the agent does not sit at cannot be
+  integrated, however good the numbers. Name what the candidate must control
+  (model weights, input embeddings, a GPU it owns, a training run) and which
+  layer this repo occupies before ranking it. "Does not fit" is not "useless":
+  split the mechanism from the idea and say what survives at this repo's layer,
+  so the user gets a verdict on the mechanism and a smaller option they can use.
+- A video link is not a source. Reading a YouTube watch URL yields page chrome
+  only, so search the video id to get the title, then read the paper, repository
+  or docs it covers and cite those. Never describe a video from its title alone,
+  and never claim to have watched it.
 
 See `references/integration-paths.md` for the paths a tool can be reached by
 in this repo.

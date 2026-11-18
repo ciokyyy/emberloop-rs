@@ -435,6 +435,7 @@ fn notification_event(update: SessionUpdate) -> Option<HarnessEvent> {
             _ => None,
         },
         SessionUpdate::ToolCall(call) => {
+            let title = acp_tool_title(call.name.as_deref(), Some(&call.title));
             let name = call.name.unwrap_or_else(|| call.title.clone());
             let done = matches!(
                 call.status,
@@ -451,6 +452,7 @@ fn notification_event(update: SessionUpdate) -> Option<HarnessEvent> {
                     id: call.tool_call_id.to_string(),
                     name,
                     input: call.raw_input.unwrap_or_else(|| serde_json::json!({})),
+                    title,
                 })
             }
         }
@@ -461,6 +463,10 @@ fn notification_event(update: SessionUpdate) -> Option<HarnessEvent> {
             );
             if !done {
                 let raw_input = update.fields.raw_input?;
+                let title = acp_tool_title(
+                    update.fields.name.as_deref(),
+                    update.fields.title.as_deref(),
+                );
                 let name = update
                     .fields
                     .name
@@ -470,6 +476,7 @@ fn notification_event(update: SessionUpdate) -> Option<HarnessEvent> {
                     id: update.tool_call_id.to_string(),
                     name,
                     input: raw_input,
+                    title,
                 });
             }
             Some(HarnessEvent::ToolFinished {
@@ -483,6 +490,13 @@ fn notification_event(update: SessionUpdate) -> Option<HarnessEvent> {
         }
         _ => None,
     }
+}
+fn acp_tool_title(name: Option<&str>, title: Option<&str>) -> Option<String> {
+    let title = title?.trim();
+    if title.is_empty() || name.is_some_and(|n| n.trim() == title) {
+        return None;
+    }
+    Some(title.to_string())
 }
 
 fn status_name(status: ToolCallStatus) -> String {
@@ -682,8 +696,8 @@ mod tests {
         ));
         assert!(matches!(
             started,
-            Some(HarnessEvent::ToolStarted { ref id, ref name, .. })
-                if id == "call-1" && name == "read"
+            Some(HarnessEvent::ToolStarted { ref id, ref name, ref title, .. })
+                if id == "call-1" && name == "read" && title.as_deref() == Some("read file")
         ));
 
         let finished = notification_event(SessionUpdate::ToolCallUpdate(

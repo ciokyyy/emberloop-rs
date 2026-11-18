@@ -255,7 +255,7 @@ async fn invalid_submits_do_not_deliver_and_unicode_limits_count_characters() {
     for body in [
         json!({"action":"submit","status":"pass"}),
         json!({"action":"submit","status":"done","report":"é".repeat(12001)}),
-        json!({"action":"submit","status":"done","summary":"🦀".repeat(301)}),
+        json!({"action":"submit","status":"done","summary":"🦀".repeat(1001)}),
     ] {
         assert_eq!(call(&state, &id, body).await.0, StatusCode::BAD_REQUEST);
     }
@@ -266,7 +266,7 @@ async fn invalid_submits_do_not_deliver_and_unicode_limits_count_characters() {
             .0,
         StatusCode::BAD_REQUEST
     );
-    assert_eq!(call(&state, &id, json!({"action":"submit","status":"done","report":"é".repeat(12000),"summary":"🦀".repeat(300)})).await.0, StatusCode::OK);
+    assert_eq!(call(&state, &id, json!({"action":"submit","status":"done","report":"é".repeat(12000),"summary":"🦀".repeat(1000)})).await.0, StatusCode::OK);
     let entry = state.steers.queue("parent").entries().await.pop().unwrap();
     assert_eq!(entry.state, emberloop_core::steer::SteerState::Delivered);
 }
@@ -1334,4 +1334,517 @@ async fn watch_errors_async_recovery_resets_transient_budget_and_terminal_ignore
     .await;
     assert!(deleted.is_ok());
     watcher.abort();
+}
+
+fn emit(state: &AppState, id: &str, seq: u64, kind: EventKind, data: Value) {
+    state
+        .event_bus
+        .publish(emberloop_core::events::SessionEvent::new(
+            id, seq, kind, data,
+        ));
+}
+
+async fn until(mut ready: impl FnMut() -> bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !ready() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_text_only_turn_is_nudged_and_an_accepted_submit_ends_the_nudges() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup(dir.path()).await;
+    let watcher = api::subagents::watch_submits(state.clone());
+    state.steers.queue("parent").set_turn_active(true);
+    let (status, body) = call(
+        &state,
+        "parent",
+        json!({"action":"spawn","role":"worker","text":"fix the bug"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(driver.prompts.lock().unwrap().as_slice(), ["fix the bug"]);
+
+    // A rejected submit is not an accepted report, so this turn still gets nudged.
+    let rejected = call(&state, &id, json!({"action":"submit","status":"pass"})).await;
+    assert_eq!(rejected.0, StatusCode::BAD_REQUEST);
+    emit(
+        &state,
+        &id,
+        1,
+        EventKind::AssistantChunk,
+        json!({"text":"I fixed it."}),
+    );
+    emit(&state, &id, 2, EventKind::Status, json!({"state":"idle"}));
+    until(|| driver.prompts.lock().unwrap().len() == 2).await;
+    assert!(driver.prompts.lock().unwrap()[1].contains("Call submit"));
+
+    let (status, _) = call(
+        &state,
+        &id,
+        json!({"action":"submit","status":"done","report":"Fixed it","summary":"fixed"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    emit(&state, &id, 3, EventKind::Status, json!({"state":"idle"}));
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        driver.prompts.lock().unwrap().len(),
+        2,
+        "no nudge after a report"
+    );
+    let entries = state.steers.queue("parent").entries().await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].report.as_ref().unwrap().status, "done");
+    watcher.abort();
+}
+
+#[tokio::test]
+async fn a_subagent_that_never_submits_gets_three_nudges_then_a_blocked_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup(dir.path()).await;
+    let watcher = api::subagents::watch_submits(state.clone());
+    state.steers.queue("parent").set_turn_active(true);
+    let (status, body) = call(
+        &state,
+        "parent",
+        json!({"action":"spawn","role":"worker","text":"keep trying"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    for attempt in 1..=3 {
+        emit(
+            &state,
+            &id,
+            attempt,
+            EventKind::AssistantChunk,
+            json!({"text":format!("attempt {attempt}")}),
+        );
+        emit(
+            &state,
+            &id,
+            attempt,
+            EventKind::Status,
+            json!({"state":"idle"}),
+        );
+        until(|| driver.prompts.lock().unwrap().len() == attempt as usize + 1).await;
+    }
+    assert_eq!(driver.prompts.lock().unwrap().len(), 4);
+    emit(
+        &state,
+        &id,
+        4,
+        EventKind::AssistantChunk,
+        json!({"text":"last words"}),
+    );
+    emit(&state, &id, 4, EventKind::Status, json!({"state":"idle"}));
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while state.steers.queue("parent").entries().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let entries = state.steers.queue("parent").entries().await;
+    assert_eq!(entries.len(), 1);
+    let report = entries[0].report.as_ref().unwrap();
+    assert_eq!(report.status, "blocked");
+    assert!(report.report.contains("last words"), "{}", report.report);
+    assert_eq!(driver.prompts.lock().unwrap().len(), 4, "bound holds");
+    watcher.abort();
+}
+
+#[tokio::test]
+async fn a_first_time_submit_and_plain_sessions_are_not_nudged() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup(dir.path()).await;
+    let watcher = api::subagents::watch_submits(state.clone());
+    state.steers.queue("parent").set_turn_active(true);
+    let (status, body) = call(
+        &state,
+        "parent",
+        json!({"action":"spawn","role":"worker","text":"fix the bug"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let (status, _) = call(
+        &state,
+        &id,
+        json!({"action":"submit","status":"done","report":"Done","summary":"done"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    emit(&state, &id, 1, EventKind::Status, json!({"state":"idle"}));
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        driver.prompts.lock().unwrap().len(),
+        1,
+        "no nudge after a report"
+    );
+    assert_eq!(state.steers.queue("parent").entries().await.len(), 1);
+
+    // A Session that is not a subagent is never nudged or reported on.
+    emit(
+        &state,
+        "parent",
+        1,
+        EventKind::AssistantChunk,
+        json!({"text":"done"}),
+    );
+    emit(
+        &state,
+        "parent",
+        2,
+        EventKind::Status,
+        json!({"state":"idle"}),
+    );
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(driver.prompts.lock().unwrap().len(), 1);
+    assert_eq!(state.steers.queue("parent").entries().await.len(), 1);
+    watcher.abort();
+}
+
+fn write_persona(dir: &std::path::Path, name: &str) {
+    let agents = dir.join(".agents/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join(format!("{name}.md")),
+        format!("---\nname: {name}\ndescription: {name} persona\n---\nYou are {name}.\n"),
+    )
+    .unwrap();
+}
+
+async fn post(state: &AppState, uri: &str, body: Value) -> StatusCode {
+    build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+async fn goldfish(state: &AppState, persona: &str, extra: Value) -> (StatusCode, Value) {
+    let mut body = json!({"action":"spawn","role":"goldfish","persona":persona,"text":"review"});
+    body.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    call(state, "parent", body).await
+}
+
+#[tokio::test]
+async fn goldfish_spawn_validates_persona_and_tier() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup(dir.path()).await;
+    write_persona(dir.path(), "elephant");
+    write_persona(dir.path(), "critic");
+
+    let (status, body) = goldfish(&state, "nobody", json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body.to_string();
+    assert!(message.contains("nobody"), "{message}");
+    assert!(
+        message.contains("elephant") && message.contains("critic"),
+        "{message}"
+    );
+    let missing = call(
+        &state,
+        "parent",
+        json!({"action":"spawn","role":"goldfish","text":"review"}),
+    )
+    .await;
+    assert_eq!(missing.0, StatusCode::BAD_REQUEST);
+    let on_worker = call(
+        &state,
+        "parent",
+        json!({"action":"spawn","role":"worker","text":"x","persona":"elephant"}),
+    )
+    .await;
+    assert_eq!(on_worker.0, StatusCode::BAD_REQUEST);
+    let (bad_tier, _) = goldfish(&state, "elephant", json!({"tier":"huge"})).await;
+    assert_eq!(bad_tier, StatusCode::BAD_REQUEST);
+    assert!(driver.prompts.lock().unwrap().is_empty());
+
+    let (status, body) = goldfish(&state, "elephant", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["role"], "goldfish");
+    assert_eq!(body["tier"], "mid");
+    let id = body["id"].as_str().unwrap();
+    let meta = state.sessions.get(id).await.unwrap();
+    assert_eq!(meta.title, "Goldfish (elephant)");
+    let assignment = meta.reviewer.unwrap();
+    assert_eq!(assignment.role, "goldfish");
+    assert_eq!(assignment.persona.as_deref(), Some("elephant"));
+    for tier in ["smol", "mid", "top"] {
+        let (status, body) = goldfish(&state, "critic", json!({"tier":tier,"title":"T"})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["tier"], tier);
+    }
+}
+
+#[tokio::test]
+async fn a_goldfish_walks_its_own_tier_ladder_and_inherits_an_empty_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _driver) = setup(dir.path()).await;
+    write_persona(dir.path(), "elephant");
+    {
+        let mut settings = state.settings.write().await;
+        settings.subagent_tiers.smol =
+            api::state::FallbackLadder::single("gemini-3.8-flash", Some("low".into()));
+        settings.goldfish_tiers.top =
+            api::state::FallbackLadder::single("claude-opus-5-5", Some("high".into()));
+    }
+
+    let (status, body) = goldfish(&state, "elephant", json!({"tier":"top"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let meta = state
+        .sessions
+        .get(body["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(meta.model, "claude-opus-5-5");
+    assert_eq!(meta.thought_level.as_deref(), Some("high"));
+
+    // The goldfish smol ladder is empty, so the worker/scout smol ladder is walked.
+    let (status, body) = goldfish(&state, "elephant", json!({"tier":"smol"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let meta = state
+        .sessions
+        .get(body["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(meta.model, "gemini-3.8-flash");
+    assert_eq!(meta.thought_level.as_deref(), Some("low"));
+}
+
+#[tokio::test]
+async fn goldfish_gets_a_fresh_session_per_call_and_cannot_nest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _driver) = setup(dir.path()).await;
+    write_persona(dir.path(), "elephant");
+    let (_, a) = goldfish(&state, "elephant", json!({})).await;
+    let (_, b) = goldfish(&state, "elephant", json!({})).await;
+    assert_ne!(a["id"], b["id"]);
+    let id = a["id"].as_str().unwrap();
+    let nested = call(
+        &state,
+        id,
+        json!({"action":"spawn","role":"goldfish","persona":"elephant","text":"x"}),
+    )
+    .await;
+    assert_eq!(nested.0, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn goldfish_rejects_follow_up_through_all_three_entry_points() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup(dir.path()).await;
+    write_persona(dir.path(), "elephant");
+    let (_, body) = goldfish(&state, "elephant", json!({})).await;
+    let id = body["id"].as_str().unwrap().to_string();
+    let before = driver.prompts.lock().unwrap().len();
+
+    let steer = call(
+        &state,
+        "parent",
+        json!({"action":"steer","id":id,"text":"more"}),
+    )
+    .await;
+    assert_eq!(steer.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        post(
+            &state,
+            &format!("/api/sessions/{id}/prompt"),
+            json!({"text":"more"})
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        post(
+            &state,
+            &format!("/api/sessions/{id}/steer"),
+            json!({"text":"more"})
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(driver.prompts.lock().unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn goldfish_recovery_keeps_the_persona_across_the_ladder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup_with_sources(dir.path(), [std::time::Duration::ZERO; 2]).await;
+    write_persona(dir.path(), "elephant");
+    {
+        let mut settings = state.settings.write().await;
+        settings.goldfish_tiers.mid = api::state::FallbackLadder(vec![
+            api::state::ModelRung {
+                model: "gemini-3.8-flash".into(),
+                reasoning_effort: None,
+            },
+            api::state::ModelRung {
+                model: "claude-opus-5-5".into(),
+                reasoning_effort: None,
+            },
+        ]);
+    }
+    driver
+        .outcomes
+        .lock()
+        .unwrap()
+        .extend([Err("401 Unauthorized".into()), Ok(())]);
+    let (status, body) = goldfish(&state, "elephant", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let meta = state
+        .sessions
+        .get(body["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(meta.model, "claude-opus-5-5");
+    assert_eq!(meta.reviewer.unwrap().persona.as_deref(), Some("elephant"));
+    assert_eq!(driver.prompts.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn goldfish_recovery_falls_back_to_the_subagent_ladder_when_its_own_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup_with_sources(dir.path(), [std::time::Duration::ZERO; 2]).await;
+    write_persona(dir.path(), "elephant");
+    {
+        let mut settings = state.settings.write().await;
+        settings.subagent_tiers.mid = api::state::FallbackLadder(vec![
+            api::state::ModelRung {
+                model: "gemini-3.8-flash".into(),
+                reasoning_effort: None,
+            },
+            api::state::ModelRung {
+                model: "claude-opus-5-5".into(),
+                reasoning_effort: None,
+            },
+        ]);
+        assert!(settings.goldfish_tiers.mid.is_empty());
+    }
+    driver
+        .outcomes
+        .lock()
+        .unwrap()
+        .extend([Err("401 Unauthorized".into()), Ok(())]);
+    let (status, body) = goldfish(&state, "elephant", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let meta = state
+        .sessions
+        .get(body["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(meta.model, "claude-opus-5-5");
+    assert_eq!(meta.reviewer.unwrap().persona.as_deref(), Some("elephant"));
+    assert_eq!(driver.prompts.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn goldfish_is_stopped_after_its_report_and_never_resurrected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup(dir.path()).await;
+    write_persona(dir.path(), "elephant");
+    let submits = api::subagents::watch_submits(state.clone());
+    let errors = api::subagents::watch_errors(state.clone());
+    state.steers.queue("parent").set_turn_active(true);
+    let (_, body) = goldfish(&state, "elephant", json!({})).await;
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let (status, _) = call(
+        &state,
+        &id,
+        json!({"action":"submit","status":"done","summary":"s","report":"r"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        driver.cancelled.lock().unwrap().is_empty(),
+        "stop waits for idle"
+    );
+    emit(&state, &id, 1, EventKind::Status, json!({"state":"idle"}));
+    until(|| driver.cancelled.lock().unwrap().contains(&id)).await;
+
+    emit(
+        &state,
+        &id,
+        2,
+        EventKind::Error,
+        json!({"message":"429 rate limit"}),
+    );
+    emit(&state, &id, 3, EventKind::Status, json!({"state":"idle"}));
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        driver.prompts.lock().unwrap().len(),
+        1,
+        "no nudge, no retry"
+    );
+    let entries = state.steers.queue("parent").entries().await;
+    assert_eq!(entries.len(), 1, "only the submit report");
+    assert_eq!(entries[0].report.as_ref().unwrap().status, "done");
+    assert!(state.sessions.get(&id).await.is_some(), "transcript stays");
+    submits.abort();
+    errors.abort();
+}
+
+#[tokio::test]
+async fn a_goldfish_that_never_submits_is_blocked_then_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup(dir.path()).await;
+    write_persona(dir.path(), "elephant");
+    let submits = api::subagents::watch_submits(state.clone());
+    state.steers.queue("parent").set_turn_active(true);
+    let (_, body) = goldfish(&state, "elephant", json!({})).await;
+    let id = body["id"].as_str().unwrap().to_string();
+
+    for seq in 1..5 {
+        emit(&state, &id, seq, EventKind::Status, json!({"state":"idle"}));
+    }
+    until(|| driver.cancelled.lock().unwrap().contains(&id)).await;
+    let entries = state.steers.queue("parent").entries().await;
+    assert_eq!(entries.len(), 1, "only the blocked report");
+    assert_eq!(entries[0].report.as_ref().unwrap().status, "blocked");
+    assert_eq!(
+        driver.prompts.lock().unwrap().len(),
+        4,
+        "spawn and three nudges"
+    );
+    submits.abort();
+}
+
+#[tokio::test]
+async fn goldfish_spawn_reports_a_missing_parent_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup(dir.path()).await;
+    write_persona(dir.path(), "elephant");
+    state.projects.delete("p").await.unwrap();
+
+    let (status, body) = goldfish(&state, "elephant", json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.to_string().contains("project was not found"), "{body}");
+    assert!(driver.prompts.lock().unwrap().is_empty());
 }

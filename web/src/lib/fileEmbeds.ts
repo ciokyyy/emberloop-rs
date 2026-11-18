@@ -10,7 +10,7 @@ const TEXT =
   /\.(json|jsonl|csv|tsv|txt|log|md|markdown|ya?ml|toml|xml|ini|env|m?js|tsx?|jsx|css|rs|py|go|sh|sql|svelte|diff|patch)$/i;
 const MAX_TEXT = 200_000;
 
-const name = (path: string) => decodeURIComponent(path.split('#')[0].split('/').pop() ?? path);
+export const fileName = (path: string) => decodeURIComponent(path.split('#')[0].split('/').pop() ?? path);
 
 // The tokenizer already colors tool output; a text file picks its per-line rules by extension.
 const highlighter = (path: string) => {
@@ -38,11 +38,11 @@ function paint(body: HTMLPreElement, text: string, path: string) {
 function unavailable(path: string) {
   const note = document.createElement('p');
   note.className = 'text-fg-3 text-[12.5px]';
-  note.textContent = `File unavailable: ${name(path)}`;
+  note.textContent = `File unavailable: ${fileName(path)}`;
   return note;
 }
 function fileIcon(path: string) {
-  const { name: iconName, svg } = getIcon(name(path));
+  const { name: iconName, svg } = getIcon(fileName(path));
   const icon = document.createElement('span');
   icon.className = 'md-file-icon';
   icon.setAttribute('aria-hidden', 'true');
@@ -79,7 +79,7 @@ function textFile(link: HTMLAnchorElement, path: string, label: string) {
 function pageFrame(link: HTMLAnchorElement, path: string) {
   const frame = document.createElement('iframe');
   frame.src = link.href;
-  frame.title = link.textContent || name(path);
+  frame.title = link.textContent || fileName(path);
   frame.loading = 'lazy';
   frame.setAttribute('sandbox', ''); // no scripts, no daemon-origin access
   frame.className = 'md-frame';
@@ -89,7 +89,7 @@ function pageFrame(link: HTMLAnchorElement, path: string) {
 function image(link: HTMLAnchorElement, path: string) {
   const picture = document.createElement('img');
   picture.src = link.href;
-  picture.alt = link.textContent || name(path);
+  picture.alt = link.textContent || fileName(path);
   picture.setAttribute('loading', 'lazy');
   picture.addEventListener('error', () => picture.replaceWith(unavailable(path)), { once: true });
   const wrap = document.createElement('a');
@@ -122,7 +122,7 @@ export function embedFiles(root: HTMLElement) {
     }
     const kind = PAGE.test(filePath) ? 'page' : TEXT.test(filePath) ? 'text' : null;
     if (!kind) continue;
-    const label = (link.textContent ?? '').trim() || name(filePath);
+    const label = (link.textContent ?? '').trim() || fileName(filePath);
     const existing = grouped.get(filePath);
     if (existing) {
       existing.labels.add(label);
@@ -132,7 +132,7 @@ export function embedFiles(root: HTMLElement) {
   }
   const embeds: HTMLElement[] = [];
   for (const entry of grouped.values()) {
-    const label = entry.labels.size > 1 ? name(entry.path) : ([...entry.labels][0] || name(entry.path));
+    const label = entry.labels.size > 1 ? fileName(entry.path) : [...entry.labels][0] || fileName(entry.path);
     const embed =
       entry.kind === 'page' ? pageFrame(entry.link, entry.path) : textFile(entry.link, entry.path, label);
     embeds.push(embed);
@@ -141,7 +141,7 @@ export function embedFiles(root: HTMLElement) {
     const group = document.createElement('details');
     group.className = 'md-files-group';
     const summary = document.createElement('summary');
-    const names = [...grouped.values()].map((entry) => name(entry.path));
+    const names = [...grouped.values()].map((entry) => fileName(entry.path));
     const preview = names.slice(0, 3).join(', ') + (names.length > 3 ? ', …' : '');
     summary.textContent = `${embeds.length} files · ${preview}`;
     const list = document.createElement('div');

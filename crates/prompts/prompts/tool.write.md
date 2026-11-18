@@ -1,1 +1,1 @@
-Write `content` as a whole file at `path` inside the Project root, creating parent directories. Records the written snapshot in the seen-line store.
+Write `content` as a whole file at `path`, creating parent directories. `path` is any path your account can write: a leading ~ expands from HOME, and a relative path joins the Project root. Records the written snapshot in the seen-line store.

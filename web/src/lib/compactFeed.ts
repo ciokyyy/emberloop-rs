@@ -53,6 +53,13 @@ export function formatDuration(ms: any = 0) {
   return `${Math.max(1, s)}s`;
 }
 
+function formatVisibleDuration(ms: any = 0, isRunning = false) {
+  const n = Number(ms) || 0;
+  if (n <= 0) return isRunning ? '0s' : null;
+  if (n < 1000) return isRunning ? '0s' : '<1s';
+  if (n >= 60000) return formatTotalTime(n);
+  return formatDuration(n);
+}
 // formatTotalTime formats total elapsed milliseconds into "4m 02s" or "12s".
 export function formatTotalTime(ms: any = 0) {
   const totalSec = Math.max(0, Math.round((Number(ms) || 0) / 1000));
@@ -224,14 +231,162 @@ function appendToGroup(group: any, run: any, isRunning: any, isFailed: any) {
   }
 }
 
+function runTitle(run: any) {
+  return typeof run?.display?.title === 'string' ? run.display.title.trim() : '';
+}
+
+function parseJsonObject(raw: any) {
+  if (!raw || typeof raw !== 'string') return null;
+  try {
+    const v = JSON.parse(raw);
+    if (!v || typeof v !== 'object') return null;
+    if (v.arguments && typeof v.arguments === 'object' && !Array.isArray(v.arguments)) {
+      return { ...v.arguments, ...v };
+    }
+    return v;
+  } catch {
+    return null;
+  }
+}
+
+function executeHeaderComment(code: string) {
+  if (!code) return '';
+  for (const rawLine of code.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith('#')) {
+      if (/^#!|^# -\*-|^#\s*(?:type|noqa|pylint|mypy):/i.test(line)) continue;
+      const cleaned = line.replace(/^#+\s*/, '').replace(/^(?:description|intent|title)\s*:\s*/i, '').trim();
+      if (cleaned) return cleaned.length > 84 ? `${cleaned.slice(0, 83)}…` : cleaned;
+      continue;
+    }
+    if (/^(?:import |from .+ import )/.test(line)) continue;
+    break;
+  }
+  return '';
+}
+
+function summarizeCodeCalls(code: string) {
+  if (!code) return '';
+  const hits: string[] = [];
+  const seen = new Set<string>();
+  const re = /\btools\.(?:call\(\s*['"]([a-z0-9_.-]+)['"]|([a-z0-9_]+)\s*\()/gi;
+  for (const m of code.matchAll(re)) {
+    const name = (m[1] || m[2] || '').split('.').pop() || '';
+    if (!name || name === 'parallel' || name === 'store' || name === 'load' || name === 'search' || name === 'help') continue;
+    if (!seen.has(name)) {
+      seen.add(name);
+      hits.push(name);
+    }
+  }
+  if (hits.length > 0) {
+    const label = hits.slice(0, 3).map((h) => h.replace(/_/g, ' ')).join(', ');
+    return hits.length > 3 ? `Script: ${label} +${hits.length - 3}` : `Script: ${label}`;
+  }
+  for (const rawLine of code.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#') || /^(?:import |from .+ import )/.test(line)) continue;
+    return line.length > 72 ? `${line.slice(0, 71)}…` : line;
+  }
+  return '';
+}
+
+function shortTarget(target: string) {
+  const t = String(target ?? '').trim();
+  if (!t) return '';
+  const parts = t.split('/');
+  if (parts.length <= 2) return t;
+  return parts.slice(-2).join('/');
+}
+
+function summarizeChildrenTitle(children: any[] = []) {
+  if (!Array.isArray(children) || children.length === 0) return '';
+  const groups = new Map<string, { count: number; targets: string[] }>();
+  for (const c of children) {
+    const fam = family(c.name, c.input);
+    const target = shortTarget(c.target || primaryArg(c.name, c.input));
+    const entry = groups.get(fam) ?? { count: 0, targets: [] };
+    entry.count += 1;
+    if (target && !entry.targets.includes(target) && entry.targets.length < 2) {
+      entry.targets.push(target);
+    }
+    groups.set(fam, entry);
+  }
+  const verb: Record<string, string> = {
+    read: 'Read',
+    grep: 'Searched',
+    find: 'Found',
+    edit: 'Edited',
+    write: 'Wrote',
+    bash: 'Ran',
+    websearch: 'Searched web',
+    fetch: 'Fetched',
+  };
+  const bits: string[] = [];
+  for (const [fam, info] of groups.entries()) {
+    const v = verb[fam] || bareName(fam);
+    if (info.count <= 2 && info.targets.length > 0) {
+      bits.push(`${v} ${info.targets.join(', ')}`);
+    } else if (info.targets.length > 0) {
+      bits.push(`${v} ${info.count} (${info.targets[0]}…)`);
+    } else {
+      bits.push(`${v} ${info.count}`);
+    }
+    if (bits.length >= 3) break;
+  }
+  return bits.join(' · ');
+}
+
+function formatGroupTitle(children: any[] = [], counts: any = {}) {
+  if (!Array.isArray(children) || children.length === 0) return formatGroupLabel(counts);
+  const reads: string[] = [];
+  const searches: string[] = [];
+  const lists: string[] = [];
+  for (const c of children) {
+    if (c.verb === 'Thinking') continue;
+    const t = shortTarget(c.target);
+    if (c.kind === 'search') {
+      if (t && !searches.includes(t)) searches.push(t);
+    } else if (c.kind === 'list') {
+      if (t && !lists.includes(t)) lists.push(t);
+    } else if (t && !reads.includes(t)) {
+      reads.push(t);
+    }
+  }
+  const bits: string[] = [];
+  if (counts.read > 0) {
+    bits.push(
+      counts.read <= 2 && reads.length > 0
+        ? `Read ${reads.slice(0, 2).join(', ')}`
+        : `Read ${counts.read} files${reads[0] ? ` (${reads[0]}…)` : ''}`,
+    );
+  }
+  if (counts.search > 0) {
+    bits.push(
+      counts.search === 1 && searches[0]
+        ? `Searched "${searches[0]}"`
+        : `Searched ${counts.search} queries`,
+    );
+  }
+  if (counts.list > 0) {
+    bits.push(
+      counts.list === 1 && lists[0] ? `Listed ${lists[0]}` : `Listed ${counts.list} dirs`,
+    );
+  }
+  return bits.join(' · ') || formatGroupLabel(counts);
+}
+
 function createEditItem(run: any, meta: any) {
   // skill_manage has no display.diff; its ops hold the old and new text, so show those as the diff.
   const skill = bareName(run.name) === 'skill_manage' ? skillManageView(run.input) : null;
   const shown = skill ? { ...run, display: { ...run.display, diff: skill.diff } } : run;
   const stats = parseDiffStats(shown.display?.diff, skill ? skill.path : primaryArg(run.name, run.input));
+  const intent = runTitle(run);
   return {
     type: 'edit',
     path: stats.path,
+    title: intent || stats.path || 'Edited file',
+    target: intent && stats.path && intent !== stats.path ? stats.path : '',
     additions: stats.additions,
     deletions: stats.deletions,
     ...meta,
@@ -247,9 +402,16 @@ function createExecuteItem(run: any, meta: any, exitCode: any, isFailed: any) {
   const children = markChildOverlap(rawChildren);
   const summary = summarizeChildren(children);
   const mutationStats = childMutationStats(children);
+  const intent = runTitle(run);
+  const comment = executeHeaderComment(code);
+  const childTitle = summarizeChildrenTitle(children);
+  const title = intent || comment || childTitle || summarizeCodeCalls(code) || command;
+  const target = (intent || comment) && summary ? summary : '';
   return {
     type: 'execute',
     command,
+    title,
+    target,
     code,
     summary,
     mutationStats,
@@ -262,37 +424,103 @@ function createExecuteItem(run: any, meta: any, exitCode: any, isFailed: any) {
 }
 
 function createWebItem(run: any, meta: any) {
-  return { type: 'web', title: primaryArg(run.name, run.input) || run.name, ...meta, run };
+  const arg = primaryArg(run.name, run.input) || run.name;
+  const intent = runTitle(run);
+  return { type: 'web', title: intent || arg, target: intent && intent !== arg ? arg : '', ...meta, run };
 }
 
-function createAgentItem(run: any, meta: any) {
-  return { type: 'agent', title: primaryArg(run.name, run.input) || run.name, ...meta, run };
+function createAgentItem(run: any, meta: any, fam: string) {
+  const arg = primaryArg(run.name, run.input) || run.name;
+  const intent = runTitle(run);
+  const verb: Record<string, string> = {
+    spawn: 'Spawned',
+    steer: 'Steered',
+    stop: 'Stopped',
+    cancel: 'Cancelled',
+    check: 'Checked',
+    propose: 'Proposed prompt',
+    retry: 'Retried call',
+  };
+  const fallback = arg && arg !== run.name ? `${verb[fam] || 'Agent'} ${arg}` : verb[fam] || arg;
+  return {
+    type: 'agent',
+    title: intent || fallback,
+    target: intent && arg && intent !== arg ? arg : '',
+    ...meta,
+    run,
+  };
+}
+
+function createSubmitItem(run: any, meta: any) {
+  const json = parseJsonObject(run.input);
+  const status = typeof json?.status === 'string' ? json.status.trim() : '';
+  const summary = typeof json?.summary === 'string' ? json.summary.trim() : '';
+  const intent = runTitle(run);
+  const title =
+    intent || (status === 'blocked' ? 'Submitted blocked report' : 'Submitted report');
+  const target = summary && summary !== title ? summary : '';
+  return { type: 'submit', title, target, ...meta, run };
 }
 
 function createBgItem(run: any, meta: any) {
-  return { type: 'background', title: primaryArg(run.name, run.input) || run.name, ...meta, run };
+  const arg = primaryArg(run.name, run.input) || run.name;
+  const intent = runTitle(run);
+  return { type: 'background', title: intent || arg, target: intent && intent !== arg ? arg : '', ...meta, run };
 }
 
 function createRanItem(run: any, meta: any, exitCode: any, isFailed: any) {
   const command = primaryArg(run.name, run.input) || run.name;
   const errorTail = isFailed ? parseErrorTail(run.output) : '';
-  return { type: 'ran', command, exitCode, errorTail, ...meta, run };
+  const intent = runTitle(run);
+  return {
+    type: 'ran',
+    command,
+    title: intent || command,
+    target: intent && command && intent !== command ? command : '',
+    exitCode,
+    errorTail,
+    ...meta,
+    run,
+  };
 }
 
 function createMcpItem(run: any, meta: any, mcp: any) {
-  return { type: 'mcp', server: mcp.server, tool: mcp.tool, target: primaryArg(run.name, run.input) || mcp.tool, ...meta, run };
+  const target = primaryArg(run.name, run.input) || mcp.tool;
+  const intent = runTitle(run);
+  return {
+    type: 'mcp',
+    server: mcp.server,
+    tool: mcp.tool,
+    title: intent || `${mcp.server} / ${mcp.tool}`,
+    target: target && target !== intent ? target : '',
+    ...meta,
+    run,
+  };
 }
 
 const ITEM_CREATORS: Record<string, any> = {
-  compress: (r: any, m: any) => ({ type: 'compress', verb: 'Fold', target: primaryArg(r.name, r.input) || 'context', ...m, run: r }),
-  decompress: (r: any, m: any) => ({ type: 'decompress', verb: 'Restore', target: primaryArg(r.name, r.input) || 'block', ...m, run: r }),
+  compress: (r: any, m: any) => {
+    const target = primaryArg(r.name, r.input) || 'context';
+    const intent = runTitle(r);
+    return { type: 'compress', verb: 'Fold', title: intent || `Folded ${target}`, target: intent ? target : '', ...m, run: r };
+  },
+  decompress: (r: any, m: any) => {
+    const target = primaryArg(r.name, r.input) || 'block';
+    const intent = runTitle(r);
+    return { type: 'decompress', verb: 'Restore', title: intent || `Restored ${target}`, target: intent ? target : '', ...m, run: r };
+  },
   edit: (r: any, m: any) => createEditItem(r, m),
   write: (r: any, m: any) => createEditItem(r, m),
   websearch: createWebItem,
   fetch: createWebItem,
-  spawn: createAgentItem,
-  steer: createAgentItem,
-  cancel: createAgentItem,
+  spawn: (r: any, m: any) => createAgentItem(r, m, 'spawn'),
+  steer: (r: any, m: any) => createAgentItem(r, m, 'steer'),
+  stop: (r: any, m: any) => createAgentItem(r, m, 'stop'),
+  cancel: (r: any, m: any) => createAgentItem(r, m, 'cancel'),
+  check: (r: any, m: any) => createAgentItem(r, m, 'check'),
+  propose: (r: any, m: any) => createAgentItem(r, m, 'propose'),
+  retry: (r: any, m: any) => createAgentItem(r, m, 'retry'),
+  submit: (r: any, m: any) => createSubmitItem(r, m),
   background: createBgItem,
   execute: createExecuteItem,
 };
@@ -312,17 +540,73 @@ function thinkingText(run: any) {
   return run.output || run.text || run.title || '';
 }
 
+export function firstThinkingSentence(raw: string) {
+  const lines = raw
+    .split('\n')
+    .map((l) => l.trim().replace(/^[#>*\-\s]+/, '').trim())
+    .filter(Boolean);
+  const first = lines[0] || 'Thinking';
+  const sent = first.match(/^(.+?[.!?])(?:\s|$)/);
+  const head = sent ? sent[1] : first;
+  return head.length > 96 ? `${head.slice(0, 95)}…` : head;
+}
+
 function shouldJoinGroup(currentGroup: any, nextRun: any) {
   return Boolean(currentGroup && nextRun && isReadOnly(nextRun));
 }
 
 function checkThinkingRun(run: any, nextRun: any, currentGroup: any, items: any) {
   if (!isThinking(run)) return false;
-  const text = thinkingText(run);
+  const raw = String(thinkingText(run) ?? '');
+  const text = raw.trim();
+  const isLive = Boolean(run.live || run.status === 'running');
+  if (!text) {
+    if (!isLive) return true;
+    if (!shouldJoinGroup(currentGroup, nextRun)) {
+      items.push({
+        type: 'thinking',
+        text: '',
+        firstSentence: 'Thinking…',
+        lineCount: 0,
+        live: true,
+        empty: true,
+        duration: formatVisibleDuration(run.elapsedMs, true),
+        run,
+      });
+    }
+    return true;
+  }
   if (shouldJoinGroup(currentGroup, nextRun)) {
-    currentGroup.children.push({ verb: 'Thinking', text, run });
+    currentGroup.children.push({
+      verb: 'Thinking',
+      text: raw,
+      firstSentence: firstThinkingSentence(text),
+      lineCount: text.split('\n').length,
+      live: isLive,
+      duration: formatVisibleDuration(run.elapsedMs, isLive),
+      run,
+    });
   } else {
-    items.push({ type: 'thinking', text, run });
+    const prev = items.at(-1);
+    if (prev?.type === 'thinking' && !prev.empty) {
+      const merged = `${prev.text.trimEnd()}\n\n${text}`;
+      prev.text = merged;
+      prev.lineCount = merged.split('\n').length;
+      prev.live = prev.live || isLive;
+      const totalMs = (Number(prev.run?.elapsedMs) || 0) + (Number(run.elapsedMs) || 0);
+      prev.duration = formatVisibleDuration(totalMs, prev.live);
+      return true;
+    }
+    items.push({
+      type: 'thinking',
+      text: raw,
+      firstSentence: firstThinkingSentence(text),
+      lineCount: text.split('\n').length,
+      live: isLive,
+      empty: false,
+      duration: formatVisibleDuration(run.elapsedMs, isLive),
+      run,
+    });
   }
   return true;
 }
@@ -336,7 +620,7 @@ function ensureGroup(currentGroup: any, items: any) {
 
 function makeRunMeta(run: any, isRunning: any, isFailed: any) {
   const elapsedMs = Number(run.elapsedMs) || 0;
-  const duration = isRunning || elapsedMs >= 5000 ? formatDuration(elapsedMs) : null;
+  const duration = formatVisibleDuration(elapsedMs, isRunning);
   return { running: isRunning, failed: isFailed, elapsedMs, duration };
 }
 
@@ -353,6 +637,9 @@ export function compactFeed(block: any, options: any = {}) {
   const closeGroup = () => {
     if (currentGroup) {
       currentGroup.label = formatGroupLabel(currentGroup.counts);
+      currentGroup.title = formatGroupTitle(currentGroup.children, currentGroup.counts);
+      currentGroup.elapsedMs = currentGroup.runs.reduce((sum: number, r: any) => sum + (Number(r.elapsedMs) || 0), 0);
+      currentGroup.duration = formatVisibleDuration(currentGroup.elapsedMs, currentGroup.running);
       currentGroup = null;
     }
   };

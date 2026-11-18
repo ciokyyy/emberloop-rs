@@ -17,6 +17,9 @@ use utoipa::ToSchema;
 
 type Error = (StatusCode, String);
 
+/// Role of the stateless one-shot persona reviewer.
+pub(crate) const GOLDFISH: &str = "goldfish";
+
 #[derive(Deserialize, ToSchema)]
 #[serde(
     tag = "action",
@@ -36,6 +39,9 @@ pub enum SubagentRequest {
         text: String,
         #[serde(default)]
         title: Option<String>,
+        /// Persona id, required for the `goldfish` role.
+        #[serde(default)]
+        persona: Option<String>,
     },
     Steer {
         id: String,
@@ -88,6 +94,7 @@ pub async fn action(
             starting_point,
             text,
             title,
+            persona,
         } => {
             ensure_not_subagent(&caller)?;
             let _guard = state.subagent_gate.lock().await;
@@ -101,6 +108,7 @@ pub async fn action(
                     starting_point,
                     text,
                     title,
+                    persona,
                 },
             )
             .await?
@@ -162,7 +170,7 @@ pub(crate) async fn prompt_child_raw(
     child_id: &str,
     text: String,
 ) -> Result<(), Error> {
-    routes::prompt_session(
+    routes::prompt_session_inner(
         State(state.clone()),
         Path(child_id.to_string()),
         Json(routes::PromptRequest {
@@ -174,8 +182,20 @@ pub(crate) async fn prompt_child_raw(
     Ok(())
 }
 
-use crate::subagent_recovery::execute_subagent_prompt;
+/// Every subagent turn starts a fresh submit obligation, whether it came from spawn, steer or review.
+async fn execute_subagent_prompt(
+    state: &AppState,
+    child_id: &str,
+    ladder: Vec<crate::state::ModelRung>,
+    rung_index: usize,
+    prompt: String,
+) -> Result<(), Error> {
+    crate::subagent_submit::begin_turn(state, child_id).await;
+    crate::subagent_recovery::execute_subagent_prompt(state, child_id, ladder, rung_index, prompt)
+        .await
+}
 pub use crate::subagent_recovery::{mark_cancelled, watch_errors};
+pub use crate::subagent_submit::watch_submits;
 
 fn ladder_or_default(
     ladder: &crate::state::FallbackLadder,
@@ -217,10 +237,12 @@ fn ladder_for_assignment(
     settings: &crate::state::Settings,
     assignment: &ReviewerAssignment,
 ) -> Vec<crate::state::ModelRung> {
+    let tier = SubagentTier::from_stored(assignment.tier.as_deref());
     let ladder = match assignment.role.as_str() {
         "spec" => &settings.spec_reviewer,
         "standards" => &settings.standards_reviewer,
-        _ => SubagentTier::from_stored(assignment.tier.as_deref()).ladder(&settings.subagent_tiers),
+        _ if assignment.role == GOLDFISH => tier_ladder(tier, true, settings),
+        _ => tier_ladder(tier, false, settings),
     };
     ladder_or_default(ladder, &settings.default_model)
 }
@@ -275,6 +297,7 @@ struct SpawnInput {
     starting_point: String,
     text: String,
     title: Option<String>,
+    persona: Option<String>,
 }
 
 struct SteerInput {
@@ -328,6 +351,21 @@ impl SubagentTier {
     }
 }
 
+/// A goldfish walks its own tier ladder when it is set; every other spawn, and an empty goldfish
+/// ladder, walks the matching worker/scout tier ladder.
+fn tier_ladder(
+    tier: SubagentTier,
+    goldfish: bool,
+    settings: &crate::state::Settings,
+) -> &crate::state::FallbackLadder {
+    let own = tier.ladder(&settings.goldfish_tiers);
+    if goldfish && !own.is_empty() {
+        own
+    } else {
+        tier.ladder(&settings.subagent_tiers)
+    }
+}
+
 fn delegate_label(role: &str) -> &'static str {
     if role == "scout" {
         "Scout"
@@ -363,12 +401,14 @@ async fn handle_spawn(
         .await?;
         return Ok(json!({ "id": child.id, "role": input.role }));
     }
-    if matches!(input.role.as_str(), "worker" | "scout") {
+    if matches!(input.role.as_str(), "worker" | "scout" | GOLDFISH) {
         let role = input.role.clone();
         let (child, tier) = spawn_delegate(state, caller, input).await?;
         return Ok(json!({ "id": child.id, "role": role, "tier": tier }));
     }
-    Err(bad("role must be spec, standards, worker, or scout"))
+    Err(bad(
+        "role must be spec, standards, worker, scout, or goldfish",
+    ))
 }
 
 async fn handle_steer(
@@ -377,6 +417,7 @@ async fn handle_steer(
     input: SteerInput,
 ) -> Result<Value, Error> {
     let child = child_of(state, &caller.id, &input.id).await?;
+    routes::ensure_not_one_shot(&child)?;
     let is_reviewer = child.reviewer.as_ref().is_some_and(|a| a.is_reviewer());
     if is_reviewer {
         if input.tier.is_some() {
@@ -488,6 +529,7 @@ async fn spawn_reviewer(
             ticket_path: ticket.into(),
             starting_point: starting_point.into(),
             tier: None,
+            persona: None,
         },
         defaults.model,
         Some(defaults.reasoning_effort.unwrap_or_default()),
@@ -507,6 +549,7 @@ async fn spawn_delegate(
             input.role
         )));
     }
+    let persona = checked_persona(state, parent, &input).await?;
     let tier = input
         .tier
         .as_deref()
@@ -515,12 +558,15 @@ async fn spawn_delegate(
         .unwrap_or(SubagentTier::Mid);
     let (ladder, preset) = {
         let settings = state.settings.read().await;
-        let raw = tier.ladder(&settings.subagent_tiers);
+        let raw = tier_ladder(tier, persona.is_some(), &settings);
         let ladder = ladder_or_default(raw, &settings.default_model);
         let preset = primary_rung(raw, &settings.default_model);
         (ladder, preset)
     };
-    let default_title = format!("{} ({})", delegate_label(&input.role), tier.as_str());
+    let default_title = match &persona {
+        Some(persona) => format!("Goldfish ({persona})"),
+        None => format!("{} ({})", delegate_label(&input.role), tier.as_str()),
+    };
     let title = input
         .title
         .as_deref()
@@ -538,6 +584,7 @@ async fn spawn_delegate(
             ticket_path: String::new(),
             starting_point: String::new(),
             tier: Some(tier.as_str().into()),
+            persona,
         },
         preset.model,
         Some(preset.reasoning_effort.unwrap_or_default()),
@@ -545,6 +592,45 @@ async fn spawn_delegate(
     .await?;
     execute_subagent_prompt(state, &child.id, ladder, 0, input.text).await?;
     Ok((child, tier.as_str()))
+}
+
+/// The persona id of a goldfish spawn after proving it resolves now; `None` for other roles,
+/// which take no persona.
+async fn checked_persona(
+    state: &AppState,
+    parent: &SessionMeta,
+    input: &SpawnInput,
+) -> Result<Option<String>, Error> {
+    let named = input
+        .persona
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    if input.role != GOLDFISH {
+        return match named {
+            Some(_) => Err(bad("persona is only valid for the goldfish role")),
+            None => Ok(None),
+        };
+    }
+    let Some(name) = named else {
+        return Err(bad("persona is required for the goldfish role"));
+    };
+    let Some(project) = state.projects.get(&parent.project_id).await else {
+        return Err(bad("the parent Session's project was not found"));
+    };
+    let found = crate::personas::available(state.global_skills.as_deref(), &project.root);
+    if found.iter().any(|persona| persona.name == name) {
+        return Ok(Some(name.to_string()));
+    }
+    let ids: Vec<&str> = found.iter().map(|persona| persona.name.as_str()).collect();
+    Err(bad(format!(
+        "unknown persona {name}; available personas: {}",
+        if ids.is_empty() {
+            "none".into()
+        } else {
+            ids.join(", ")
+        }
+    )))
 }
 
 async fn steer_delegate(
@@ -561,7 +647,11 @@ async fn steer_delegate(
             let next_tier = SubagentTier::parse(raw_tier)?;
             let (ladder, preset) = {
                 let settings = state.settings.read().await;
-                let raw = next_tier.ladder(&settings.subagent_tiers);
+                let raw = tier_ladder(
+                    next_tier,
+                    child.reviewer.as_ref().is_some_and(|a| a.role == GOLDFISH),
+                    &settings,
+                );
                 let ladder = ladder_or_default(raw, &settings.default_model);
                 let preset = primary_rung(raw, &settings.default_model);
                 (ladder, preset)
@@ -688,7 +778,7 @@ async fn submit(
     if !matches!(status, "done" | "blocked") {
         return Err(bad("status must be done or blocked"));
     }
-    for (name, text, limit) in [("report", &report, 12000), ("summary", &summary, 300)] {
+    for (name, text, limit) in [("report", &report, 12000), ("summary", &summary, 1000)] {
         let count = text.chars().count();
         if count > limit {
             return Err(bad(format!(
@@ -709,6 +799,7 @@ async fn submit(
         },
     )
     .await?;
+    crate::subagent_submit::record_submit(state, &child.id).await;
     Ok(json!({ "id": entry.id, "status": status }))
 }
 
@@ -754,7 +845,7 @@ pub async fn notify_failure(
     Ok(())
 }
 
-async fn deliver(
+pub(crate) async fn deliver(
     state: &AppState,
     parent: &str,
     report: ReviewerReport,
@@ -849,14 +940,48 @@ pub async fn validate_defaults(
 ) -> Result<(), Error> {
     let entries = state.models.entries().await;
     let current = state.settings.read().await.clone();
-    for (ladder, previous) in [
-        (&settings.spec_reviewer, &current.spec_reviewer),
-        (&settings.standards_reviewer, &current.standards_reviewer),
-        (&settings.subagent_tiers.smol, &current.subagent_tiers.smol),
-        (&settings.subagent_tiers.mid, &current.subagent_tiers.mid),
-        (&settings.subagent_tiers.top, &current.subagent_tiers.top),
+    for (ladder, previous, optional) in [
+        (&settings.spec_reviewer, &current.spec_reviewer, false),
+        (
+            &settings.standards_reviewer,
+            &current.standards_reviewer,
+            false,
+        ),
+        (
+            &settings.subagent_tiers.smol,
+            &current.subagent_tiers.smol,
+            false,
+        ),
+        (
+            &settings.subagent_tiers.mid,
+            &current.subagent_tiers.mid,
+            false,
+        ),
+        (
+            &settings.subagent_tiers.top,
+            &current.subagent_tiers.top,
+            false,
+        ),
+        (
+            &settings.goldfish_tiers.smol,
+            &current.goldfish_tiers.smol,
+            true,
+        ),
+        (
+            &settings.goldfish_tiers.mid,
+            &current.goldfish_tiers.mid,
+            true,
+        ),
+        (
+            &settings.goldfish_tiers.top,
+            &current.goldfish_tiers.top,
+            true,
+        ),
     ] {
         if ladder.is_empty() {
+            if optional {
+                continue;
+            }
             return Err(bad("Fallback ladder must include at least one model"));
         }
         if ladder == previous {

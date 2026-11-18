@@ -113,3 +113,36 @@ async fn snapshot_event(log: &store::EventLog) -> Option<Event> {
         .ok()
         .map(|json| Event::default().event("snapshot").data(json))
 }
+
+/// Every Session's current status, then every status change as it lands. The sidebar marks
+/// Sessions this page never opened, so it cannot read that from one Session's log.
+pub async fn status_events_handler(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>> + Send> {
+    // Subscribe before the seed, so a change landing while the logs are read is not lost.
+    let rx = state.event_bus.subscribe();
+    let mut initial_events = Vec::new();
+    for meta in state.sessions.list(None).await {
+        if let Ok(log) = state.get_event_log(&meta.id).await {
+            if let Ok(Some(event)) = log.latest(&EventKind::Status).await {
+                initial_events.push(status_frame(&meta.id, event.data));
+            }
+        }
+    }
+    let initial_stream = tokio_stream::iter(initial_events.into_iter().map(Ok));
+    let live_stream = BroadcastStream::new(rx).filter_map(|res| match res {
+        Ok(event) if event.kind == EventKind::Status => {
+            Some(Ok(status_frame(&event.session_id, event.data)))
+        }
+        _ => None,
+    });
+    let stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        Box::pin(initial_stream.chain(live_stream));
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// One Session's status: the `status` event's data, which carries `state`.
+fn status_frame(session_id: &str, status: serde_json::Value) -> Event {
+    let body = serde_json::json!({ "sessionId": session_id, "status": status });
+    Event::default().event("status").data(body.to_string())
+}

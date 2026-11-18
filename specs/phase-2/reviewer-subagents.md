@@ -31,7 +31,7 @@ Reuse the Go child-submit shape, not its Run reviewer verdict schema:
 
 - `status`: required, `done` or `blocked`, with surrounding whitespace trimmed.
 - `report`: Markdown, at most 12000 Unicode characters.
-- `summary`: at most 300 Unicode characters, normalized to one line.
+- `summary`: at most 1000 Unicode characters, normalized to one line.
 - `done` means the review work is complete, not that the implementation passes review.
 - Validate at the tool boundary. Oversized content returns an error asking the reviewer to shorten it; a rejected call does not deliver a report.
 - Each accepted invocation creates its own submission identity and enqueues a new parent steer. Independent invocations with identical content are still distinct submissions.

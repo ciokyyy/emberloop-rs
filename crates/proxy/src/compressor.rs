@@ -575,7 +575,7 @@ impl Compressor for NativeCompressor {
                 }
                 let wanted = wanted_turns(block, skip, &skip_ids);
                 let near = shifted_start(block.start, &shifts);
-                if let Some(matched) = find_span(contents, &wanted, near) {
+                if let Some(matched) = find_wanted(contents, &wanted, near) {
                     let before = contents.len();
                     fold_matched(
                         contents,
@@ -616,6 +616,9 @@ impl Compressor for NativeCompressor {
             return None;
         }
         let wanted = wanted_turns(block, skip, &skip_ids);
+        if find_wanted(contents, &wanted, block.start).is_some() {
+            return None;
+        }
         let head = wanted.first()?;
         let Some(start) = contents
             .iter()
@@ -662,6 +665,49 @@ fn wanted_turns(block: &Block, skip: &[Value], skip_ids: &[&str]) -> Vec<Value> 
         .filter(|turn| !is_transient(turn) && !is_skipped(turn, skip, skip_ids))
         .cloned()
         .collect()
+}
+
+/// `find_span` for a fold's stored turns, then again with their consecutive tool-result turns
+/// merged: the chat wires carry the parallel results of one call as one turn each, the Anthropic
+/// wire and a carried history (`carry::sanitize`) as one turn for all, and a block stored on one
+/// shape must still fold a request on the other.
+fn find_wanted(contents: &[Value], wanted: &[Value], near: usize) -> Option<Vec<usize>> {
+    find_span(contents, wanted, near).or_else(|| {
+        let merged = merge_result_turns(wanted);
+        (merged.len() != wanted.len())
+            .then(|| find_span(contents, &merged, near))
+            .flatten()
+    })
+}
+
+fn is_result_turn(turn: &Value) -> bool {
+    turn.get("role").and_then(Value::as_str) == Some("user")
+        && turn
+            .get("parts")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                !parts.is_empty()
+                    && parts
+                        .iter()
+                        .all(|part| part.get("functionResponse").is_some())
+            })
+}
+
+fn merge_result_turns(turns: &[Value]) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::with_capacity(turns.len());
+    for turn in turns {
+        match out.last_mut() {
+            Some(last) if is_result_turn(last) && is_result_turn(turn) => {
+                if let (Some(into), Some(from)) =
+                    (last["parts"].as_array_mut(), turn["parts"].as_array())
+                {
+                    into.extend(from.iter().cloned());
+                }
+            }
+            _ => out.push(turn.clone()),
+        }
+    }
+    out
 }
 
 /// One short line for a stored or requested turn, used only by `fold_report`.
@@ -2333,6 +2379,27 @@ mod tests {
         assert!(report.contains("turn 1 differs"), "{report}");
     }
 
+    #[test]
+    fn a_fold_stored_on_split_parallel_results_applies_to_a_merged_request() {
+        let call = |id: &str| json!({"functionCall": {"id": id, "name": "read", "args": {}}});
+        let result = |id: &str| json!({"functionResponse": {"id": id, "name": "tool", "response": {"result": id}}});
+        let mut stored = eight();
+        stored[1] = json!({"role": "model", "parts": [call("a"), call("b")]});
+        stored[2] = json!({"role": "user", "parts": [result("a")]});
+        stored[3] = json!({"role": "user", "parts": [result("b")]});
+        let dir = tempdir().unwrap();
+        let mut compressor = NativeCompressor::new(dir.path()).unwrap();
+        let mut contents = stored.clone();
+        compressor
+            .compress_batch(&mut contents, vec![range(1, 5)], &CompressPolicy::default())
+            .unwrap();
+
+        let mut merged = stored.clone();
+        merged[2] = json!({"role": "user", "parts": [result("a"), result("b")]});
+        merged.remove(3);
+        assert_eq!(compressor.apply_skipping(&mut merged, &[]), 1);
+        assert!(compressor.fold_report(&merged, &[]).is_none());
+    }
     #[test]
     fn archive_blocks_moves_the_directory_aside_under_the_first_free_generation() {
         let dir = tempdir().unwrap();

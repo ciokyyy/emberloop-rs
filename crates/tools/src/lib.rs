@@ -17,6 +17,7 @@ pub mod jail;
 pub mod mcp;
 pub mod mcpclient;
 pub mod overflow;
+pub mod personas;
 pub mod promptpropose;
 pub mod read;
 pub mod readurl;
@@ -151,12 +152,25 @@ pub struct Toolbox {
     mcp: Arc<mcpclient::McpRegistry>,
     failed_calls: failedcalls::FailedCallStore,
 }
+
+/// The only tools a goldfish may call; the proxy declares exactly these and the tools side denies
+/// everything else. Keep in sync with `crates/proxy/src/wire.rs`.
+pub const GOLDFISH_TOOLS: [&str; 7] = [
+    "read",
+    "grep",
+    "find",
+    "websearch",
+    "ctx_search",
+    "todo",
+    "submit",
+];
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SubagentKind {
     None,
     Reviewer,
     Scout,
     Worker,
+    Goldfish,
 }
 
 impl Toolbox {
@@ -319,18 +333,36 @@ impl Toolbox {
     }
 
     pub async fn call(&self, name: &str, args: &Value) -> ToolResult<String> {
+        self.call_parts(name, args).await.map(|(text, _)| text)
+    }
+
+    /// Like `call`, plus the images the model must see: only `execute` produces them, from a
+    /// script's `read` of an image.
+    pub async fn call_parts(
+        &self,
+        name: &str,
+        args: &Value,
+    ) -> ToolResult<(String, Vec<execute::Image>)> {
+        // Deny before routing: `execute` has its own path into the bridge.
+        if let Some(reason) = self.denied_reason(name) {
+            return Err(ToolError::msg(reason));
+        }
         match name {
             "execute" => {
-                let result = execute::run(Arc::new(self.clone()), args).await;
+                let result = execute::run_parts(Arc::new(self.clone()), args).await;
                 self.wrap_retry_error(name, args, result)
             }
-            other => self.call_inner(other, args).await,
+            other => self
+                .call_inner(other, args)
+                .await
+                .map(|text| (text, Vec::new())),
         }
     }
     fn subagent_kind(&self) -> SubagentKind {
         match self.config.subagent_role.as_deref() {
             Some(role) if emberloop_core::steer::is_reviewer_role(role) => SubagentKind::Reviewer,
             Some("scout") => SubagentKind::Scout,
+            Some("goldfish") => SubagentKind::Goldfish,
             Some(_) => SubagentKind::Worker,
             None if self.config.reviewer => SubagentKind::Reviewer,
             None => SubagentKind::None,
@@ -341,8 +373,26 @@ impl Toolbox {
         self.subagent_kind() == SubagentKind::Scout
     }
 
+    pub(crate) fn is_goldfish(&self) -> bool {
+        self.subagent_kind() == SubagentKind::Goldfish
+    }
+
+    /// Resolve a `read` path. A goldfish reads only the Project, the skill roots and its own
+    /// Session directory; every other caller reads any path the account can open.
+    pub(crate) fn resolve_read(&self, raw: &str) -> ToolResult<PathBuf> {
+        if !self.is_goldfish() {
+            return self.jail.resolve_any(raw);
+        }
+        let spill = &self.config.spill_dir;
+        self.jail
+            .resolve_goldfish(raw, spill.parent().unwrap_or(spill))
+    }
+
     fn denied_reason(&self, name: &str) -> Option<String> {
         match (self.subagent_kind(), name) {
+            (SubagentKind::Goldfish, name) if !GOLDFISH_TOOLS.contains(&name) => {
+                Some(format!("{name} is unavailable to goldfish Sessions"))
+            }
             (SubagentKind::Scout, "edit" | "write") => {
                 Some(format!("{name} is unavailable to scout Sessions"))
             }
@@ -424,12 +474,12 @@ impl Toolbox {
             other => Err(ToolError::msg(format!("unknown tool {other:?}"))),
         }
     }
-    fn wrap_retry_error(
+    fn wrap_retry_error<T>(
         &self,
         name: &str,
         args: &Value,
-        result: ToolResult<String>,
-    ) -> ToolResult<String> {
+        result: ToolResult<T>,
+    ) -> ToolResult<T> {
         let Err(error) = result else {
             return result;
         };

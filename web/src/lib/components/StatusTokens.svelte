@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ArrowDown, ArrowUp } from '@lucide/svelte';
   import {
     createPaginatedRowModel,
     createSortedRowModel,
@@ -441,7 +442,7 @@
       <table class="w-full border-collapse text-left">
         <thead>
           {#each table.getHeaderGroups() as headerGroup (headerGroup.id)}
-            <tr class="border-b border-border bg-[#1F1F1F] text-[11px] font-medium text-fg-3">
+            <tr class="border-b border-border bg-surface-0 text-[11px] font-medium text-fg-3">
               {#each headerGroup.headers as header, idx (header.id)}
                 {@const sorted = header.column.getIsSorted()}
                 {@const alignRight = idx >= 2}
@@ -457,9 +458,9 @@
                         : String(header.column.columnDef.header ?? '')}
                     </span>
                     {#if sorted === 'asc'}
-                      <span aria-hidden="true">↑</span>
+                      <ArrowUp size={12} aria-hidden="true" />
                     {:else if sorted === 'desc'}
-                      <span aria-hidden="true">↓</span>
+                      <ArrowDown size={12} aria-hidden="true" />
                     {/if}
                   </button>
                 </th>
@@ -536,7 +537,7 @@
 
         {#if groupedRows.length > 0}
           <tfoot>
-            <tr class="border-t border-border bg-[#1F1F1F] text-[12px] font-medium text-fg-1 tabular-nums">
+            <tr class="border-t border-border bg-surface-0 text-[12px] font-medium text-fg-1 tabular-nums">
               <td class="py-2 pl-3.5 pr-3" colspan="2">
                 Filtered total ({groupedRows.length} {groupedRows.length === 1 ? 'group' : 'groups'})
               </td>

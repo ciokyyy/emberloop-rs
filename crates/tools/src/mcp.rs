@@ -80,10 +80,16 @@ impl McpServer {
                 };
             }
         }
-        match self.toolbox.call(name, &args).await {
-            Ok(text) => {
+        match self.toolbox.call_parts(name, &args).await {
+            Ok((text, images)) => {
                 self.record_captured_output(name, &args, &text);
-                CallToolResult::success(vec![ContentBlock::text(text)])
+                let mut blocks = vec![ContentBlock::text(text)];
+                blocks.extend(
+                    images
+                        .into_iter()
+                        .map(|(mime, data)| ContentBlock::image(data, mime)),
+                );
+                CallToolResult::success(blocks)
             }
             Err(error) => {
                 let msg = error.to_string();
@@ -172,10 +178,10 @@ fn tool_specs() -> Vec<Value> {
         {
             "name": "spawn",
             "inputSchema": {"type": "object", "properties": {
-                "role": {"type": "string", "enum": ["spec", "standards", "worker", "scout"]},
+                "role": {"type": "string", "enum": ["spec", "standards", "worker", "scout", "goldfish"]},
                 "tier": {"type": "string", "enum": ["smol", "mid", "top"]},
                 "ticketPath": {"type": "string"}, "startingPoint": {"type": "string"},
-                "text": {"type": "string"}, "title": {"type": "string"}
+                "text": {"type": "string"}, "title": {"type": "string"}, "persona": {"type": "string"}
             }, "required": ["role"]}
         },
         {
@@ -206,7 +212,7 @@ fn tool_specs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File, directory, http(s) URL, ctx:<handle> pointer, el://skills/<name> or el://docs/<topic>. Append :raw to a file or URL path to read it whole; without it the first 300 lines."},
+                    "path": {"type": "string", "description": "File, directory, http(s) URL, ctx:<handle> pointer, el://skills/<name> or el://docs/<topic>. Append :raw to a file or URL path to read it whole; without it the first 300 lines. A goldfish Session reads only the Project, the skill roots and its own Session directory."},
                     "offset": {"type": "integer", "description": "First line, 1-based."},
                     "limit": {"type": "integer", "description": "Maximum lines."}
                 },
@@ -383,6 +389,8 @@ fn tool_specs() -> Vec<Value> {
                                 "op": {"type": "string", "enum": ["create", "patch", "write_file", "remove_file"], "description": "The operation."},
                                 "name": {"type": "string", "description": "Skill name."},
                                 "scope": {"type": "string", "enum": ["global", "project"], "description": "create only: where the new skill lands; global by default."},
+                                "module": {"type": "string", "description": "create only: the module the new skill joins; required once any skill-modules.json exists. Empty string leaves the skill ungrouped."},
+                                "module_about": {"type": "string", "description": "create only: one use-when line, at most 80 characters, for a module this call creates."},
                                 "content": {"type": "string", "description": "create: full SKILL.md. patch: whole-file replacement, last resort. write_file: file text."},
                                 "path": {"type": "string", "description": "patch and write_file: a file under references/, templates/, scripts/ or assets/; patch may omit it to target SKILL.md."},
                                 "old_string": {"type": "string", "description": "patch: exact text to replace; must match once unless replace_all."},
@@ -441,7 +449,8 @@ fn tool_specs() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "code": {"type": "string", "description": "The Python script to run."},
-                    "timeout": {"type": "integer", "description": "Seconds, default 120, max 600."}
+                    "timeout": {"type": "integer", "description": "Seconds, default 120, max 600."},
+                    "background": {"type": "boolean"}
                 },
                 "required": ["code"]
             }

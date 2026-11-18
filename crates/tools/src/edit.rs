@@ -63,7 +63,7 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
         return Err(ToolError::msg("input is required"));
     }
     let mut parsed = parse_patch(&args.input)?;
-    let path = toolbox.jail().resolve(&parsed.path)?;
+    let path = toolbox.jail().resolve_any(&parsed.path)?;
     let original = fs::read(&path)?;
     let text = String::from_utf8(original.clone()).map_err(|_| {
         ToolError::msg(format!(

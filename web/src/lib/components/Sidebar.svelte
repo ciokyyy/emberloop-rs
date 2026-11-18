@@ -80,9 +80,18 @@
     harness === 'claude' ? 'Claude' : harness === 'pi' ? 'pi-rs' : 'Antigravity';
   const harnessColor = (harness: string) =>
     harness === 'claude' ? '#d6a87b' : harness === 'pi' ? '#8b7cf6' : '#5b9ac6';
+  type Family = {
+    id: string;
+    parent: Session;
+    children: Session[];
+    /** Any member working: the family claims the Active band together. */
+    working: boolean;
+    updatedAt: number;
+  };
+  type Row = { session: Session; parent: boolean };
   type ProjectGroup = {
     project: Project;
-    sessions: Session[];
+    families: Family[];
   };
   type Band = {
     key: string;
@@ -91,7 +100,7 @@
     groups: ProjectGroup[];
   };
 
-  // One Project's Sessions: working first, newest next, reviewer children after their parent.
+  // One Project's Sessions as families: a parent and its subagents sort, move and collapse as one.
   const ordered = $derived.by(() => {
     const groups: ProjectGroup[] = [];
     for (const project of projects) {
@@ -104,16 +113,26 @@
           return b.updatedAt - a.updatedAt;
         });
       if (projSessions.length === 0) continue;
-      groups.push({
-        project,
-        sessions: projSessions
-          .filter((session) => !session.parentId || !projSessions.some((parent) => parent.id === session.parentId))
-          .flatMap((parent) => [parent, ...projSessions.filter((child) => child.parentId === parent.id)])
+      const isFamilyRoot = (session: Session) =>
+        !session.parentId || !projSessions.some((parent) => parent.id === session.parentId);
+      const families = projSessions.filter(isFamilyRoot).map((parent) => {
+        const children = projSessions.filter((child) => child.parentId === parent.id);
+        return {
+          id: parent.id,
+          parent,
+          children,
+          working: [parent, ...children].some((session) => statusOf(session.id) === 'working'),
+          updatedAt: Math.max(parent.updatedAt, ...children.map((child) => child.updatedAt))
+        };
       });
+      families.sort((a, b) =>
+        a.working !== b.working ? (a.working ? -1 : 1) : b.updatedAt - a.updatedAt
+      );
+      groups.push({ project, families });
     }
     return groups.sort((a, b) => {
-      const aWorking = a.sessions.some((session) => statusOf(session.id) === 'working');
-      const bWorking = b.sessions.some((session) => statusOf(session.id) === 'working');
+      const aWorking = a.families.some((family) => family.working);
+      const bWorking = b.families.some((family) => family.working);
       if (aWorking !== bWorking) return aWorking ? -1 : 1;
       if (projectId && a.project.id === projectId) return -1;
       if (projectId && b.project.id === projectId) return 1;
@@ -122,31 +141,40 @@
   });
 
   const RECENT_MS = 10 * 60 * 1000;
-  // Every Session lands in the first band that claims it: working at the top,
+  // Every family lands in the first band that claims it: working at the top,
   // then touched in the last 10 minutes, then the rest of the current Project.
   const bands = $derived.by(() => {
     const now = Date.now();
     const claimed = new Set<string>();
-    const take = (key: string, label: string | null, claim: (session: Session) => boolean): Band => ({
+    const take = (key: string, label: string | null, claim: (family: Family) => boolean): Band => ({
       key,
       label,
       groups: ordered
         .map((group) => ({
           project: group.project,
-          sessions: group.sessions.filter((session) => {
-            if (claimed.has(session.id) || !claim(session)) return false;
-            claimed.add(session.id);
+          families: group.families.filter((family) => {
+            if (claimed.has(family.id) || !claim(family)) return false;
+            claimed.add(family.id);
             return true;
           })
         }))
-        .filter((group) => group.sessions.length > 0)
+        .filter((group) => group.families.length > 0)
     });
     return [
-      take('active', 'Active', (session) => statusOf(session.id) === 'working'),
-      take('recent', 'Recent', (session) => now - session.updatedAt < RECENT_MS),
-      take('current', null, (session) => !projectId || session.projectId === projectId)
+      take('active', 'Active', (family) => family.working),
+      take('recent', 'Recent', (family) => now - family.updatedAt < RECENT_MS),
+      take('current', null, (family) => !projectId || family.parent.projectId === projectId)
     ].filter((band) => band.groups.length > 0);
   });
+
+  // A collapsed family shows its parent row alone.
+  const rowsOf = (family: Family, open: boolean): Row[] =>
+    open
+      ? [
+          { session: family.parent, parent: true },
+          ...family.children.map((session) => ({ session, parent: false }))
+        ]
+      : [{ session: family.parent, parent: true }];
 
   function pick(value: string) {
     if (value === ADD) onnewproject();
@@ -180,6 +208,31 @@
   let trashEl: HTMLElement | undefined = $state();
   let moreOpen = $state(false);
   let moreBox: HTMLElement | undefined = $state();
+
+  // Families folded by the user, remembered across reloads.
+  const COLLAPSED_KEY = 'emberloop-rs:collapsed-families';
+  const readCollapsed = (): Set<string> => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]');
+      return new Set(
+        Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : []
+      );
+    } catch {
+      return new Set();
+    }
+  };
+  let collapsed = $state(readCollapsed());
+  function toggleFamily(id: string) {
+    const next = new Set(collapsed);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    collapsed = next;
+    try {
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+    } catch {
+      // A page without storage still folds for this load.
+    }
+  }
 
   $effect(() => {
     if (!moreOpen) return;
@@ -304,7 +357,7 @@
     {/if}
     {#each bands as band (band.key)}
       {#if band.label}
-        <div data-testid="section-header" class="px-2 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-2">
+        <div data-testid="section-header" class="px-2 pt-3 pb-1 text-[11px] font-medium text-fg-2">
           {band.label}
         </div>
       {/if}
@@ -313,65 +366,95 @@
           data-testid="project-header"
           class={band.label
             ? 'px-2 pb-1 text-[11px] text-fg-3'
-            : 'px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-fg-3'}
+            : 'px-2 pt-2 pb-1 text-[11px] font-medium text-fg-3'}
         >
           {group.project.name}
         </div>
-      {#each group.sessions as session (session.id)}
-        {@const status = statusOf(session.id)}
-        {@const harness = harnessOf(session.model)}
-        <div
-          class={cn(
-            'row group flex h-8 items-center px-2',
-            session.parentId && 'ml-5 border-l border-border',
-            selectedId === session.id && 'sel',
-            holding === session.id && 'holding',
-            dragging?.id === session.id && 'lifted'
-          )}
-          use:flipReady
-          animate:flip={flipAnimation()}
-          in:slide={rowEnter}
-          out:fade={motionParams()}
-        >
-          {#if editing === session.id}
-            <span class="h-5 w-[3px] shrink-0 rounded-full" style:background={harnessColor(harness)}></span>
-            <input
-              class="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
-              aria-label="Session title"
-              bind:value={draft}
-              use:focusAll
-              onkeydown={(event) => {
-                if (event.key === 'Enter') commitRename(session);
-                else if (event.key === 'Escape') cancelRename();
-              }}
-              onblur={() => commitRename(session)}
-            />
-          {:else}
-            <button
-              class="flex h-full min-w-0 flex-1 items-center gap-2 text-left"
-              aria-current={selectedId === session.id ? 'true' : undefined}
-              onpointerdown={(event) => holdStart(event, session)}
-              onclick={(event) => {
-                onselect(session.id);
-                // A double-tap (or double-click) edits the title in place.
-                if (event.detail === 2) startRename(session);
-              }}
-              onkeydown={(event) => onRowKey(event, session)}
+        {#each group.families as family (family.id)}
+          {@const open = !collapsed.has(family.id)}
+          {#each rowsOf(family, open) as row (row.session.id)}
+            {@const session = row.session}
+            {@const status = statusOf(session.id)}
+            {@const harness = harnessOf(session.model)}
+            <div
+              class={cn(
+                'row group flex h-8 items-center px-2',
+                !row.parent && 'ml-5 border-l border-border',
+                selectedId === session.id && 'sel',
+                holding === session.id && 'holding',
+                dragging?.id === session.id && 'lifted'
+              )}
+              use:flipReady
+              animate:flip={flipAnimation()}
+              in:slide={rowEnter}
+              out:fade={motionParams()}
             >
-              <span
-                class={cn('h-5 w-[3px] shrink-0 rounded-full', status === 'working' && 'pulse')}
-                style:background={harnessColor(harness)}
-                title={`${harnessName(harness)} · ${statusWord[status]}`}
-              ></span>
-              <span class="min-w-0 flex-1 overflow-hidden whitespace-nowrap">
-                <span class="inline-block text-[13px]" use:marquee>{session.title}</span>
-              </span>
-              {#if status === 'working'}
-                <span class="running-dot h-2 w-2 rounded-full bg-[var(--status-working)] shrink-0" aria-label="Working"></span>
+              {#if editing === session.id}
+                <span class="h-5 w-[3px] shrink-0 rounded-full" style:background={harnessColor(harness)}></span>
+                <input
+                  class="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
+                  aria-label="Session title"
+                  bind:value={draft}
+                  use:focusAll
+                  onkeydown={(event) => {
+                    if (event.key === 'Enter') commitRename(session);
+                    else if (event.key === 'Escape') cancelRename();
+                  }}
+                  onblur={() => commitRename(session)}
+                />
+              {:else}
+                <button
+                  class="flex h-full min-w-0 flex-1 items-center gap-2 text-left"
+                  aria-current={selectedId === session.id ? 'true' : undefined}
+                  onpointerdown={(event) => holdStart(event, session)}
+                  onclick={(event) => {
+                    onselect(session.id);
+                    // A double-tap (or double-click) edits the title in place.
+                    if (event.detail === 2) startRename(session);
+                  }}
+                  onkeydown={(event) => onRowKey(event, session)}
+                >
+                  <span
+                    class={cn('h-5 w-[3px] shrink-0 rounded-full', status === 'working' && 'pulse')}
+                    style:background={harnessColor(harness)}
+                    title={`${harnessName(harness)} · ${statusWord[status]}`}
+                  ></span>
+                  <span class="min-w-0 flex-1 overflow-hidden whitespace-nowrap [mask-image:linear-gradient(to_right,#000_calc(100%-14px),transparent)]">
+                    <span class="inline-block text-[13px]" use:marquee>{session.title}</span>
+                  </span>
+                  {#if session.reviewerRole === 'goldfish'}
+                    <span class="shrink-0 rounded-md bg-surface-2 px-1.5 text-[10px] font-medium text-fg-3">Goldfish</span>
+                  {/if}
+                  {#if status === 'working'}
+                    <span class="running-dot h-2 w-2 rounded-full bg-[var(--status-working)] shrink-0" aria-label="Working"></span>
+                  {/if}
+                </button>
               {/if}
-            </button>
-          {/if}
-        </div>
+              {#if row.parent && family.children.length > 0}
+                <button
+                  type="button"
+                  class={cn(
+                    'ml-1 grid h-6 w-6 shrink-0 place-items-center rounded-md text-fg-3 hover:text-fg-1',
+                    !open && family.working && 'text-status-working'
+                  )}
+                  aria-expanded={open}
+                  aria-label={open ? 'Collapse subagents' : 'Expand subagents'}
+                  onclick={() => toggleFamily(family.id)}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    class={cn(
+                      'h-3.5 w-3.5 fill-none stroke-current stroke-2 transition-transform',
+                      !open && '-rotate-90'
+                    )}
+                    aria-hidden="true"
+                  >
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </button>
+              {/if}
+            </div>
+          {/each}
         {/each}
       {/each}
     {/each}

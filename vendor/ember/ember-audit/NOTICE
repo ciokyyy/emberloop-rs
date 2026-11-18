@@ -1,0 +1,16 @@
+EGM (Elephant Goldfish Model) parts, vendored for emberloop-rs in the ember-audit skill.
+
+Upstream: https://github.com/google/elephant-goldfish-model
+Commit:   72d06f52a2482885d9a64bd24b291c6e8628942c (plugin version 0.1.1)
+License:  Apache License 2.0 (see LICENSE)
+
+This is not an officially supported Google product.
+
+Unmodified upstream copies: agents/ (codebase_details, comprehension, design_critic,
+implementation_readiness, inventive_catalyst, structural, style, zoom_out),
+resources/document_standards/ and LICENSE.
+Modified by emberloop-rs: SKILL.md is a condensed rewrite of upstream skills/egm-review,
+skills/egm-review-loop and skills/egm-resolve for Emberloop goldfish subagents.
+Added by emberloop-rs: this NOTICE.
+Omitted: agents/synthesizer.md and agents/bootstrap_orchestrator.md (an Emberloop goldfish
+cannot spawn subagents), the other upstream skills, docs/ and resources/execution_instructions.md.

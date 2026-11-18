@@ -56,4 +56,13 @@ describe('SubagentReport', () => {
     expect(screen.getByText('Scout')).toBeTruthy();
     expect(container.querySelector('.font-mono')).toBeNull();
   });
+
+  it('labels a goldfish report', () => {
+    render(SubagentReport, {
+      projectId: 'p',
+      route: 'idle',
+      report: { sessionId: 'ses_g1', role: 'goldfish', ticketPath: '', status: 'done', summary: 'Found gaps', report: 'x' }
+    });
+    expect(screen.getByText('Goldfish')).toBeTruthy();
+  });
 });

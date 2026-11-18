@@ -88,6 +88,7 @@ fn assistant(value: &Value) -> Vec<Output> {
                 id: block["id"].as_str()?.into(),
                 name: block["name"].as_str()?.into(),
                 input: block["input"].clone(),
+                title: None,
             }))
         })
         .collect()

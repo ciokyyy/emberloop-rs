@@ -970,6 +970,22 @@ impl SteerWaker for SessionWaker {
     }
 }
 
+/// A harness prints its own retry banner inside the message stream. It is a status line, not an
+/// answer, so the feed gets `(state, text)` for it and assistant prose everywhere else.
+fn retry_status(text: &str) -> Option<(&'static str, String)> {
+    let line = text.trim();
+    if line == "Retry finished, resuming." {
+        return Some(("finished", "Retry finished".to_string()));
+    }
+    let inner = line
+        .strip_prefix("Retrying (attempt ")?
+        .strip_suffix(")...")?;
+    if !inner.contains(", waiting ") {
+        return None;
+    }
+    Some(("retrying", format!("Retrying (attempt {inner})")))
+}
+
 fn map_event(
     session_id: &str,
     event: HarnessEvent,
@@ -977,16 +993,27 @@ fn map_event(
     project_root: &std::path::Path,
 ) -> Option<SessionEvent> {
     let (kind, data) = match event {
-        HarnessEvent::AssistantChunk(text) => (
-            EventKind::AssistantChunk,
-            serde_json::json!({ "text": text }),
-        ),
+        HarnessEvent::AssistantChunk(text) => match retry_status(&text) {
+            Some((state, text)) => (
+                EventKind::Notice,
+                serde_json::json!({ "text": text, "route": "retry", "state": state }),
+            ),
+            None => (
+                EventKind::AssistantChunk,
+                serde_json::json!({ "text": text }),
+            ),
+        },
         HarnessEvent::ThoughtChunk(text) => (
             EventKind::ThinkingChunk,
             serde_json::json!({ "text": text }),
         ),
-        HarnessEvent::ToolStarted { id, name, input } => {
-            let display = tracker.on_start(&id, &name, &input, project_root);
+        HarnessEvent::ToolStarted {
+            id,
+            name,
+            input,
+            title,
+        } => {
+            let display = tracker.on_start(&id, &name, &input, title.as_deref(), project_root);
             let mut obj = serde_json::json!({ "id": id, "name": name, "input": input });
             if let Some(display) = display {
                 obj["display"] = display;
@@ -994,7 +1021,8 @@ fn map_event(
             (EventKind::ToolStarted, obj)
         }
         HarnessEvent::ToolFinished { id, output, status } => {
-            let (name, input, display, captured_output) = tracker.on_finish(&id, project_root);
+            let (name, input, display, captured_output) =
+                tracker.on_finish(&id, &output, project_root);
             let output = captured_output
                 .map(serde_json::Value::String)
                 .unwrap_or(output);
@@ -1143,4 +1171,54 @@ fn restart_into(root: &std::path::Path) {
     );
     let error = crate::update::reexec(root);
     tracing::error!(%error, "restart into the new build failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{map_event, retry_status};
+    use crate::tooldisplay::ToolTracker;
+    use emberloop_core::events::EventKind;
+    use harness::HarnessEvent;
+    use std::path::Path;
+
+    #[test]
+    fn a_harness_retry_banner_becomes_a_status_notice_not_prose() {
+        let mut tracker = ToolTracker::default();
+        let root = Path::new("/tmp");
+        let banner = |text: &str, tracker: &mut ToolTracker| {
+            map_event(
+                "ses_1",
+                HarnessEvent::AssistantChunk(text.to_string()),
+                tracker,
+                root,
+            )
+            .expect("a mapped event")
+        };
+
+        let retrying = banner("Retrying (attempt 1/3, waiting 2s)...", &mut tracker);
+        assert_eq!(retrying.kind, EventKind::Notice);
+        assert_eq!(retrying.data["route"], "retry");
+        assert_eq!(retrying.data["state"], "retrying");
+        assert_eq!(retrying.data["text"], "Retrying (attempt 1/3, waiting 2s)");
+
+        let finished = banner("Retry finished, resuming.", &mut tracker);
+        assert_eq!(finished.data["state"], "finished");
+        assert_eq!(finished.data["text"], "Retry finished");
+
+        // Prose that only starts like the banner stays model text.
+        let prose = banner("Retrying the shell command once more.", &mut tracker);
+        assert_eq!(prose.kind, EventKind::AssistantChunk);
+    }
+
+    #[test]
+    fn retry_status_ignores_prose_that_is_not_the_banner() {
+        for text in [
+            "Retrying",
+            "Retrying (attempt 1/3)",
+            "Retry finished later",
+            "Retry finished, resuming. And then I ran the tests.",
+        ] {
+            assert!(retry_status(text).is_none(), "for: {text}");
+        }
+    }
 }

@@ -212,3 +212,74 @@ it('opens the More menu with Status and Settings, and closes on Escape', async (
   await fireEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
   expect(onsettings).toHaveBeenCalledTimes(1);
 });
+
+it('keeps a working subagent with its parent and siblings, foldable and remembered', async () => {
+  localStorage.clear();
+  const now = Date.now();
+  const session = { projectId: 'p', model: 'gemini', createdAt: 1, updatedAt: 1 };
+  const props = {
+    ...base,
+    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projectId: 'p',
+    statuses: { kid: 'working' as const },
+    selectedId: null,
+    sessions: [
+      { ...session, id: 'fam', title: 'Parent', updatedAt: now - 60 * 60 * 1000 },
+      { ...session, id: 'kid', title: 'Worker', parentId: 'fam', reviewerRole: 'worker', updatedAt: now },
+      { ...session, id: 'sib', title: 'Scout', parentId: 'fam', reviewerRole: 'scout', updatedAt: now - 1 }
+    ]
+  };
+  const view = render(Sidebar, props);
+  const text = view.container.textContent ?? '';
+  expect(view.getAllByTestId('section-header').map((el) => el.textContent?.trim())).toEqual(['Active']);
+  expect(text.indexOf('Parent')).toBeLessThan(text.indexOf('Worker'));
+  expect(text.indexOf('Worker')).toBeLessThan(text.indexOf('Scout'));
+
+  await fireEvent.click(view.getByRole('button', { name: 'Collapse subagents' }));
+  expect(view.queryByText('Worker')).toBeNull();
+  expect(view.getByText('Parent')).toBeTruthy();
+  view.unmount();
+
+  // A reload keeps it folded: the page remembers the parent id, not the whole Session list.
+  const again = render(Sidebar, props);
+  expect(again.queryByText('Worker')).toBeNull();
+  await fireEvent.click(again.getByRole('button', { name: 'Expand subagents' }));
+  expect(again.getByText('Worker')).toBeTruthy();
+});
+
+it('bands a family by its freshest member, not its parent, so it never splits', () => {
+  const now = Date.now();
+  const session = { projectId: 'p', model: 'x', createdAt: 1, updatedAt: 1 };
+  const view = render(Sidebar, {
+    ...base,
+    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projectId: 'p',
+    sessions: [
+      { ...session, id: 'stale', title: 'Stale parent' },
+      { ...session, id: 'fresh', title: 'Fresh child', parentId: 'stale', updatedAt: now - 1000 }
+    ],
+    selectedId: null
+  });
+  expect(view.getAllByTestId('section-header').map((el) => el.textContent?.trim())).toEqual([
+    'Recent'
+  ]);
+  expect(view.getByText('Stale parent')).toBeTruthy();
+  expect(view.getByText('Fresh child')).toBeTruthy();
+});
+
+it('marks a goldfish row with a badge and leaves other subagents unmarked', () => {
+  const now = Date.now();
+  const session = { projectId: 'p', model: 'gemini', createdAt: 1, updatedAt: now };
+  const view = render(Sidebar, {
+    ...base,
+    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projectId: 'p',
+    selectedId: null,
+    sessions: [
+      { ...session, id: 'main', title: 'Main' },
+      { ...session, id: 'g1', title: 'Goldfish (elephant)', parentId: 'main', reviewerRole: 'goldfish' },
+      { ...session, id: 's1', title: 'Scout', parentId: 'main', reviewerRole: 'scout' }
+    ]
+  });
+  expect(view.getAllByText('Goldfish')).toHaveLength(1);
+});

@@ -213,3 +213,8 @@ export function eventsUrl(sessionId: string, after = 0, limit = 0): string {
   const window = limit > 0 ? `&limit=${limit}` : '';
   return `${base}/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}${window}`;
 }
+
+/** Every Session's status, live: the sidebar marks Sessions this page never opened. */
+export function statusEventsUrl(): string {
+  return `${base}/api/status/sessions/events`;
+}

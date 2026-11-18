@@ -39,7 +39,7 @@
 <div class="flex flex-col gap-4">
   <div class="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface-0 p-3">
     <div class="min-w-0">
-      <p class="text-[10px] font-semibold uppercase tracking-[0.05em] text-fg-3">Reported input</p>
+      <p class="text-[11px] font-medium text-fg-3">Reported input</p>
       {#if used === null}
         <p class="mt-1 text-[17px] text-fg-2">Not reported yet</p>
       {:else}
@@ -60,7 +60,7 @@
         </span>
         <div class="flex flex-col">
           <span class="text-[17px] font-semibold tabular-nums">{percentLabel(hit)}</span>
-          <span class="text-[10px] font-semibold uppercase tracking-[0.05em] text-fg-3">Cache hit</span>
+          <span class="text-[11px] font-medium text-fg-3">Cache hit</span>
         </div>
       </div>
       {#if oncache}

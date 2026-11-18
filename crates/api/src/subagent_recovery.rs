@@ -61,6 +61,7 @@ const TRANSIENT_ERROR_NEEDLES: &[&str] = &[
     "stream was interrupted",
     "unexpected eof",
     "mid-stream",
+    "decoding response body",
     "disconnect",
     "connection reset",
     "stream closed",
@@ -528,6 +529,8 @@ mod tests {
             "529 Overloaded",
             "request timed out",
             "stream was interrupted mid-stream",
+            "upstream error: error decoding response body",
+            "stream was interrupted: upstream error: error decoding response body",
             "unexpected EOF while reading SSE",
             "connection reset by peer",
         ] {

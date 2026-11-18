@@ -18,6 +18,7 @@ struct TrackedTool {
     name: String,
     input: Value,
     snapshot: Option<(String, String)>,
+    start_display: Option<Value>,
 }
 
 impl ToolTracker {
@@ -33,6 +34,7 @@ impl ToolTracker {
         id: &str,
         name: &str,
         input: &Value,
+        title: Option<&str>,
         workdir: &Path,
     ) -> Option<Value> {
         if self.entries.len() >= MAX_SNAPSHOTS {
@@ -46,19 +48,24 @@ impl ToolTracker {
         } else {
             None
         };
-        let display = if is_bash_tool(name) {
+        let mut display = if is_bash_tool(name) {
             Some(classify_bash_display(input))
         } else {
             None
         };
+        if let Some(intent) = extract_tool_intent(name, input, title) {
+            display = merge_display(display, Some(json!({ "title": intent })));
+        }
         if !name.is_empty()
             || !input.as_object().is_some_and(|o| o.is_empty())
             || snapshot.is_some()
+            || display.is_some()
         {
             let mut entry = self.entries.remove(id).unwrap_or_else(|| TrackedTool {
                 name: String::new(),
                 input: json!({}),
                 snapshot: None,
+                start_display: None,
             });
             if !name.is_empty() {
                 entry.name = name.to_string();
@@ -69,14 +76,18 @@ impl ToolTracker {
             if snapshot.is_some() {
                 entry.snapshot = snapshot;
             }
+            entry.start_display = merge_display(entry.start_display, display);
+            let out_display = entry.start_display.clone();
             self.entries.insert(id.to_string(), entry);
+            return out_display;
         }
-        display
+        None
     }
 
     pub fn on_finish(
         &mut self,
         id: &str,
+        output: &Value,
         workdir: &Path,
     ) -> (Option<String>, Option<Value>, Option<Value>, Option<String>) {
         let Some(entry) = self.entries.remove(id) else {
@@ -86,13 +97,27 @@ impl ToolTracker {
             .spill_dir
             .as_deref()
             .and_then(|dir| consume_captured_output(dir, &entry.name, &entry.input));
-        let mut display = None;
+        let mut display = entry.start_display;
         if let Some((label, before)) = entry.snapshot {
             let abs = resolve_path(&label, workdir);
             if let Some(after) = read_existing_file(&abs) {
                 let diff = unified_diff(&before, &after, &label);
                 if !diff.is_empty() {
-                    display = Some(json!({ "diff": diff }));
+                    display = merge_display(display, Some(json!({ "diff": diff })));
+                }
+            }
+        }
+        if is_execute_tool(&entry.name) {
+            if let Some(spill_dir) = self.spill_dir.as_deref() {
+                let text = captured_output
+                    .as_deref()
+                    .map(str::to_string)
+                    .or_else(|| value_text(output));
+                if let Some(children) = text
+                    .as_deref()
+                    .and_then(|t| load_execute_children(spill_dir, t))
+                {
+                    display = merge_display(display, Some(json!({ "children": children })));
                 }
             }
         }
@@ -100,6 +125,93 @@ impl ToolTracker {
         let input = (!entry.input.as_object().is_some_and(|o| o.is_empty())).then_some(entry.input);
         (name, input, display, captured_output)
     }
+}
+
+fn merge_display(base: Option<Value>, extra: Option<Value>) -> Option<Value> {
+    match (base, extra) {
+        (None, None) => None,
+        (Some(v), None) | (None, Some(v)) => Some(v),
+        (Some(Value::Object(mut a)), Some(Value::Object(b))) => {
+            for (k, v) in b {
+                a.insert(k, v);
+            }
+            Some(Value::Object(a))
+        }
+        (_, Some(v)) => Some(v),
+    }
+}
+
+fn unwrap_input_args(input: &Value) -> &Value {
+    input
+        .get("arguments")
+        .or_else(|| input.get("Arguments"))
+        .unwrap_or(input)
+}
+
+fn extract_tool_intent(name: &str, input: &Value, acp_title: Option<&str>) -> Option<String> {
+    let inner = unwrap_input_args(input);
+    let action = inner
+        .get("toolAction")
+        .or_else(|| input.get("toolAction"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(s) = action {
+        return Some(s.to_string());
+    }
+    let short = short_tool_name(name);
+    if let Some(title) = acp_title.map(str::trim).filter(|s| {
+        !s.is_empty()
+            && *s != name.trim()
+            && *s != short
+            && !s.starts_with("el_")
+            && !s.starts_with("mcp_")
+    }) {
+        return Some(title.to_string());
+    }
+    inner
+        .get("toolSummary")
+        .or_else(|| input.get("toolSummary"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn value_text(value: &Value) -> Option<String> {
+    if let Some(s) = value.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(s) = value.get("text").and_then(Value::as_str) {
+        return Some(s.to_string());
+    }
+    let arr = value
+        .as_array()
+        .or_else(|| value.get("content").and_then(Value::as_array))?;
+    let joined: Vec<&str> = arr
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect();
+    (!joined.is_empty()).then(|| joined.join("\n"))
+}
+
+fn parse_saved_exec_id(output: &str) -> Option<u64> {
+    let marker = "saved exec #";
+    let idx = output.rfind(marker)?;
+    let rest = &output[idx + marker.len()..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u64>().ok().filter(|&id| id >= 1)
+}
+
+fn load_execute_children(spill_dir: &Path, output: &str) -> Option<Vec<Value>> {
+    let exec_id = parse_saved_exec_id(output)?;
+    let session_dir = spill_dir.parent().unwrap_or(spill_dir);
+    let path = session_dir
+        .join("exec")
+        .join(format!("{exec_id}.children.json"));
+    let raw = std::fs::read_to_string(path).ok()?;
+    let list: Vec<Value> = serde_json::from_str(&raw).ok()?;
+    (!list.is_empty()).then_some(list)
 }
 
 #[derive(serde::Deserialize)]
@@ -174,16 +286,24 @@ fn is_bash_tool(name: &str) -> bool {
     short_tool_name(name).eq_ignore_ascii_case("bash")
 }
 
+fn is_execute_tool(name: &str) -> bool {
+    short_tool_name(name).eq_ignore_ascii_case("execute")
+}
+
 fn classify_bash_display(input: &Value) -> Value {
-    let background = input
+    let inner = unwrap_input_args(input);
+    let background = inner
         .get("background")
+        .or_else(|| input.get("background"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if background {
         return json!({ "v": "1", "kind": "run" });
     }
-    let cmd = input
+    let cmd = inner
         .get("command")
+        .or_else(|| inner.get("cmd"))
+        .or_else(|| input.get("command"))
         .or_else(|| input.get("cmd"))
         .and_then(Value::as_str)
         .unwrap_or("")
@@ -227,18 +347,21 @@ fn classify_command(cmd: &str) -> (&'static str, Vec<Value>) {
 }
 
 fn extract_target_path(input: &Value, workdir: &Path) -> Option<(String, PathBuf)> {
-    for key in ["path", "filePath", "file_path", "file"] {
-        if let Some(p) = input.get(key).and_then(Value::as_str) {
-            let trimmed = p.trim();
-            if !trimmed.is_empty() {
-                return Some((trimmed.to_string(), resolve_path(trimmed, workdir)));
+    let inner = unwrap_input_args(input);
+    for src in [inner, input] {
+        for key in ["path", "filePath", "file_path", "file"] {
+            if let Some(p) = src.get(key).and_then(Value::as_str) {
+                let trimmed = p.trim();
+                if !trimmed.is_empty() {
+                    return Some((trimmed.to_string(), resolve_path(trimmed, workdir)));
+                }
             }
         }
-    }
-    for key in ["input", "patch", "text", "content"] {
-        if let Some(text) = input.get(key).and_then(Value::as_str) {
-            if let Some(p) = patch_header_path(text) {
-                return Some((p.clone(), resolve_path(&p, workdir)));
+        for key in ["input", "patch", "text", "content"] {
+            if let Some(text) = src.get(key).and_then(Value::as_str) {
+                if let Some(p) = patch_header_path(text) {
+                    return Some((p.clone(), resolve_path(&p, workdir)));
+                }
             }
         }
     }
@@ -467,36 +590,84 @@ mod tests {
             "c1",
             "el_read",
             &json!({"arguments": {"path": "a.rs"}, "path": "a.rs"}),
+            None,
             dir.path(),
         );
         tracker.on_start(
             "c2",
             "el_read",
             &json!({"arguments": {"path": "b.rs"}}),
+            None,
             dir.path(),
         );
         tracker.on_start(
             "c3",
             "el_read",
             &json!({"arguments": {"path": "a.rs"}}),
+            None,
             dir.path(),
         );
         tracker.on_start(
             "c4",
             "el_read",
             &json!({"arguments": {"path": "missing.rs"}}),
+            None,
             dir.path(),
         );
 
         // Out-of-order finish still resolves each call's own output and FIFO for identical calls.
-        let (_, _, _, out_b) = tracker.on_finish("c2", dir.path());
+        let (_, _, _, out_b) = tracker.on_finish("c2", &Value::Null, dir.path());
         assert_eq!(out_b.as_deref(), Some("first-b"));
-        let (_, _, _, out_a1) = tracker.on_finish("c1", dir.path());
+        let (_, _, _, out_a1) = tracker.on_finish("c1", &Value::Null, dir.path());
         assert_eq!(out_a1.as_deref(), Some("first-a"));
-        let (_, _, _, out_a2) = tracker.on_finish("c3", dir.path());
+        let (_, _, _, out_a2) = tracker.on_finish("c3", &Value::Null, dir.path());
         assert_eq!(out_a2.as_deref(), Some("second-a"));
-        let (_, _, _, out_missing) = tracker.on_finish("c4", dir.path());
+        let (_, _, _, out_missing) = tracker.on_finish("c4", &Value::Null, dir.path());
         assert_eq!(out_missing, None);
         assert_eq!(std::fs::read_dir(&out_dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn preserves_tool_intent_and_loads_execute_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let spill = dir.path().join("spill");
+        let exec_dir = dir.path().join("exec");
+        std::fs::create_dir_all(&spill).unwrap();
+        std::fs::create_dir_all(&exec_dir).unwrap();
+        std::fs::write(
+            exec_dir.join("7.children.json"),
+            r#"[{"name":"read","target":"src/main.rs","ms":12,"status":"completed"}]"#,
+        )
+        .unwrap();
+
+        let mut tracker = ToolTracker::with_spill_dir(&spill);
+        let d1 = tracker
+            .on_start(
+                "e1",
+                "el_execute",
+                &json!({"arguments": {"code": "print(1)", "toolAction": "Checking main entry"}}),
+                Some("ACP fallback"),
+                dir.path(),
+            )
+            .unwrap();
+        assert_eq!(d1["title"], "Checking main entry");
+
+        let (_, _, d_fin, _) = tracker.on_finish("e1", &json!("[saved exec #7]"), dir.path());
+        let d_fin = d_fin.unwrap();
+        assert_eq!(d_fin["title"], "Checking main entry");
+        assert_eq!(d_fin["children"][0]["name"], "read");
+        assert_eq!(d_fin["children"][0]["target"], "src/main.rs");
+
+        let d2 = tracker
+            .on_start(
+                "b1",
+                "el_bash",
+                &json!({"command": "ls"}),
+                Some("Listing files"),
+                dir.path(),
+            )
+            .unwrap();
+        assert_eq!(d2["kind"], "list");
+        assert_eq!(d2["title"], "Listing files");
     }
 }

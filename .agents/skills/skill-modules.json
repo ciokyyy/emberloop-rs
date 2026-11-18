@@ -1,0 +1,8 @@
+{
+  "tooling-and-environment": {
+    "about": "Fix harness, credential, repo setup and deployment failures",
+    "skills": [
+      "emberloop-rs-porting-skill-packs"
+    ]
+  }
+}

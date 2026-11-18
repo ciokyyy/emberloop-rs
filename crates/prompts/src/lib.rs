@@ -23,7 +23,11 @@ use sha2::{Digest, Sha256};
 
 pub const PONYTAIL: &str = "ponytail";
 pub const CAVEMAN: &str = "caveman";
+/// The Superpowers bootstrap: a pointer at the installed skill, not a copy of it.
+pub const SUPERPOWERS: &str = "superpowers";
 pub const POLICY: &str = "policy";
+/// The tool-workflow policy a goldfish gets instead of `POLICY`: seven read-only tools, no folds.
+pub const POLICY_GOLDFISH: &str = "policy.goldfish";
 /// The `execute`-only code graph skill, injected when the graph server is up.
 pub const SKILL_CODEBASE_MEMORY: &str = "skill.codebase-memory";
 /// The frozen skill catalog's heading and instruction; the daemon appends the skill lines.
@@ -71,9 +75,11 @@ pub const NUDGE_TIER3: &str = "nudge.tier3";
 
 pub const PROMPT_IDS: &[&str] = &[
     POLICY,
+    POLICY_GOLDFISH,
     COMPRESS,
     PONYTAIL,
     CAVEMAN,
+    SUPERPOWERS,
     DECOMPRESS,
     SEARCH_CONTEXT,
     ACP_STATUS_DESCRIPTION,
@@ -144,7 +150,9 @@ pub fn default_text(id: &str) -> &'static str {
     match id {
         PONYTAIL => defaults::PONYTAIL,
         CAVEMAN => defaults::CAVEMAN,
+        SUPERPOWERS => defaults::SUPERPOWERS,
         POLICY => defaults::POLICY,
+        POLICY_GOLDFISH => defaults::POLICY_GOLDFISH,
         COMPRESS => defaults::COMPRESS,
         DECOMPRESS => defaults::DECOMPRESS,
         SEARCH_CONTEXT => defaults::SEARCH_CONTEXT,
