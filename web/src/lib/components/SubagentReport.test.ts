@@ -65,4 +65,13 @@ describe('SubagentReport', () => {
     });
     expect(screen.getByText('Goldfish')).toBeTruthy();
   });
+
+  it('labels a standards reviewer report', () => {
+    render(SubagentReport, {
+      projectId: 'p',
+      route: 'idle',
+      report: { sessionId: 'ses_s1', role: 'standards', ticketPath: '', status: 'done', summary: 'Checked standards', report: 'x' }
+    });
+    expect(screen.getByText('Standards reviewer')).toBeTruthy();
+  });
 });

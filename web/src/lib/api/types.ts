@@ -84,7 +84,7 @@ export interface ModelRung {
 
 export type FallbackLadder = ModelRung[];
 
-export interface ReviewerReport {
+export interface SubagentReport {
   sessionId: string;
   role: string;
   ticketPath: string;
@@ -243,3 +243,6 @@ export interface ToolKey {
 export type SystemStatus = components['schemas']['SystemStatusDto'];
 export type TokenStatus = components['schemas']['TokenStatusDto'];
 export type TokenTelemetryRow = components['schemas']['TokenTelemetryRowDto'];
+export type ExternalBinaryState = components['schemas']['ExternalBinaryState'];
+export type ExternalBinary = components['schemas']['ExternalBinaryDto'];
+export type BinariesStatus = components['schemas']['BinariesStatusDto'];

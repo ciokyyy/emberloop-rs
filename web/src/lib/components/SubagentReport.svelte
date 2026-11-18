@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { ReviewerReport, SteerRoute } from '$lib/api/types';
+  import type { SubagentReport, SteerRoute } from '$lib/api/types';
   import { renderMarkdown } from '$lib/markdown';
   import { sessionPath } from '$lib/route';
 
-  let { report, route, projectId }: { report: ReviewerReport; route?: SteerRoute; projectId: string } = $props();
+  let { report, route, projectId }: { report: SubagentReport; route?: SteerRoute; projectId: string } = $props();
   const failed = $derived(report.status === 'error' || report.status === 'stopped');
   const ROLE_LABELS: Record<string, string> = {
     spec: 'Spec reviewer',

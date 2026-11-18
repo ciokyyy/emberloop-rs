@@ -1,25 +1,33 @@
 <script lang="ts">
-  import type { SystemStatus } from '$lib/api/types';
+  import type { BinariesStatus, ExternalBinaryState, SystemStatus } from '$lib/api/types';
   import { formatBytes, formatUptime, meterTextTone, ringStrokeColor } from '$lib/status';
 
   let {
     data,
     loading = false,
     live = true,
+    binaries = null,
+    binariesLoading = false,
+    binariesError = '',
     ontogglelive,
-    onrefresh
+    onrefresh,
+    oncheckbinaries
   }: {
-    data: SystemStatus;
+    data: SystemStatus | null;
     loading?: boolean;
     live?: boolean;
+    binaries?: BinariesStatus | null;
+    binariesLoading?: boolean;
+    binariesError?: string;
     ontogglelive: () => void;
     onrefresh: () => void;
+    oncheckbinaries: () => void;
   } = $props();
 
   const R = 22;
   const C = 2 * Math.PI * R;
 
-  const cards = $derived([
+  const cards = $derived(data ? [
     {
       label: 'CPU',
       percent: Math.min(100, Math.max(0, data.cpu.percent)),
@@ -38,7 +46,7 @@
       primary: `${formatBytes(data.disk.usedBytes)} / ${formatBytes(data.disk.totalBytes)}`,
       detail: `${formatBytes(data.disk.availableBytes)} free`
     }
-  ]);
+  ] : []);
 
   const segmentColor: Record<string, string> = {
     accent: '#88BCFF',
@@ -53,9 +61,23 @@
     if (s === 'running' || s === 'healthy') return 'bg-[#1D2E1D] text-[#90CA90] border-[#2E4A2E]';
     return 'bg-surface-3 text-fg-3 border-border';
   }
+  const binaryLabels: Record<ExternalBinaryState, string> = {
+    upToDate: 'Up to date',
+    outdated: 'Update available',
+    missing: 'Missing',
+    error: 'Error'
+  };
+
+  function binaryBadgeClass(state: ExternalBinaryState): string {
+    if (state === 'upToDate') return 'bg-[#1D2E1D] text-[#90CA90] border-[#2E4A2E]';
+    if (state === 'outdated') return 'bg-[#2B2618] text-[#E2B623] border-[#4A3F1E]';
+    if (state === 'error') return 'bg-[#2E1D1D] text-[#E29A9A] border-[#4A2E2E]';
+    return 'bg-surface-3 text-fg-3 border-border';
+  }
 </script>
 
 <div class="flex flex-col gap-3">
+  {#if data}
   <div class="flex flex-wrap items-center justify-between gap-2">
     <span class="text-[12px] text-fg-3 tabular-nums">
       {data.host.hostname} · {data.host.os} · v{data.host.version} · up {formatUptime(data.host.uptimeSeconds)}
@@ -197,5 +219,74 @@
         </div>
       {/each}
     </div>
+  </div>
+  {/if}
+
+  <div class="overflow-hidden rounded-xl border border-border bg-surface-2">
+    <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3.5 py-2.5">
+      <div class="flex flex-wrap items-baseline gap-2">
+        <h2 class="text-[13px] font-semibold text-fg-1">External binaries</h2>
+        {#if binaries}
+          <span class="text-[11px] text-fg-3 tabular-nums">
+            checked {new Date(binaries.checkedAtMs).toLocaleTimeString()}
+          </span>
+        {/if}
+      </div>
+      <button
+        type="button"
+        class="btn h-8 shrink-0 px-3 text-[12px]"
+        disabled={binariesLoading}
+        onclick={oncheckbinaries}
+      >
+        {binariesLoading ? 'Checking…' : 'Check updates'}
+      </button>
+    </div>
+    {#if binariesError}
+      <p class="px-3.5 py-2 text-[12px] text-failed-fg">{binariesError}</p>
+    {/if}
+    {#if binaries}
+      <div class="overflow-x-auto">
+        <table class="w-full border-collapse text-left">
+          <thead>
+            <tr class="border-b border-border bg-surface-0 text-[11px] font-medium text-fg-3">
+              <th class="px-3.5 py-2">Name</th>
+              <th class="px-3 py-2">Installed</th>
+              <th class="px-3 py-2">Latest</th>
+              <th class="px-3.5 py-2 text-right">State</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-border/70 text-[12px]">
+            {#each binaries.binaries as bin (bin.id)}
+              <tr class="hover:bg-surface-3/40">
+                <td class="px-3.5 py-2">
+                  <div class="font-medium text-fg-1">{bin.name}</div>
+                  <div class="max-w-[260px] truncate text-[11px] text-fg-3" title={bin.path}>
+                    {bin.path}
+                  </div>
+                </td>
+                <td class="px-3 py-2 text-fg-2 tabular-nums">{bin.installedVersion || '—'}</td>
+                <td class="px-3 py-2 text-fg-2 tabular-nums">{bin.latestVersion || '—'}</td>
+                <td class="px-3.5 py-2 text-right">
+                  <span
+                    class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium {binaryBadgeClass(
+                      bin.state
+                    )}"
+                  >
+                    {binaryLabels[bin.state]}
+                  </span>
+                  {#if bin.error}
+                    <div class="mt-1 max-w-[220px] whitespace-normal text-[11px] text-failed-fg">
+                      {bin.error}
+                    </div>
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {:else if binariesLoading}
+      <p class="px-3.5 py-3 text-[12px] text-fg-3">Reading installed versions…</p>
+    {/if}
   </div>
 </div>

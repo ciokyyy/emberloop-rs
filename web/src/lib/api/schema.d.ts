@@ -500,6 +500,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/status/binaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_binaries_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/status/system": {
         parameters: {
             query?: never;
@@ -576,6 +592,11 @@ export interface components {
             signedIn: boolean;
             tier: string;
         };
+        BinariesStatusDto: {
+            binaries: components["schemas"]["ExternalBinaryDto"][];
+            /** Format: int64 */
+            checkedAtMs: number;
+        };
         /** @description Add project, "Clone from GitHub": `repo` into `location/<repo name>`. */
         CloneProjectRequest: {
             location: string;
@@ -619,6 +640,21 @@ export interface components {
             /** Format: int64 */
             usedBytes: number;
         };
+        /** @description One external binary the daemon runs or recommends, with its version state. */
+        ExternalBinaryDto: {
+            error?: string | null;
+            id: string;
+            installedVersion: string;
+            latestVersion: string;
+            name: string;
+            path: string;
+            state: components["schemas"]["ExternalBinaryState"];
+        };
+        /**
+         * @description Where an external binary sits relative to its latest upstream release.
+         * @enum {string}
+         */
+        ExternalBinaryState: "upToDate" | "outdated" | "missing" | "error";
         FallbackLadder: components["schemas"]["ModelRung"][];
         HostInfoDto: {
             hostname: string;
@@ -2425,6 +2461,36 @@ export interface operations {
             };
             /** @description Invalid title model */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_binaries_status: {
+        parameters: {
+            query?: {
+                /** @description Re-probe versions older than the 30s floor */
+                refresh?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description External binary versions and states */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BinariesStatusDto"];
+                };
+            };
+            /** @description The daemon has no external binary checker */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

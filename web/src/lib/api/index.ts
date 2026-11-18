@@ -17,6 +17,7 @@ import type {
   SkillHistory,
   SkillSummary,
   SystemStatus,
+  BinariesStatus,
   TokenStatus,
   ToolKey
 } from './types';
@@ -205,6 +206,8 @@ export const api = {
     ),
   systemStatus: (refresh = false) =>
     request<SystemStatus>(`/api/status/system${refresh ? '?refresh=true' : ''}`),
+  binariesStatus: (refresh = false) =>
+    request<BinariesStatus>(`/api/status/binaries${refresh ? '?refresh=true' : ''}`),
   tokenStatus: (month?: string) =>
     request<TokenStatus>(`/api/status/tokens${month ? `?month=${encodeURIComponent(month)}` : ''}`)
 };

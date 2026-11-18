@@ -1,6 +1,6 @@
 import { readBreakdown } from './contextBreakdown';
 import { skillDiffText } from './skilldiff';
-import type { ContextBreakdown, ReviewerReport, SessionEvent, SessionStatus, SteerRoute } from './api/types';
+import type { ContextBreakdown, SubagentReport, SessionEvent, SessionStatus, SteerRoute } from './api/types';
 
 export type ToolStatus = 'running' | 'completed' | 'failed';
 
@@ -29,7 +29,7 @@ export interface FeedItem {
   finished?: boolean;
   route?: SteerRoute;
   retry?: 'retrying' | 'finished';
-  report?: ReviewerReport;
+  report?: SubagentReport;
   optimistic?: boolean;
 }
 
@@ -125,9 +125,11 @@ function displayOf(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
 }
 
-function reviewerReport(value: unknown): ReviewerReport | undefined {
+const SUBAGENT_REPORT_ROLES = new Set(['spec', 'standards', 'worker', 'scout', 'goldfish']);
+
+function subagentReport(value: unknown): SubagentReport | undefined {
   const data = displayOf(value);
-  if (!data || !text(data.sessionId) || !['spec', 'standards'].includes(text(data.role))) return;
+  if (!data || !text(data.sessionId) || !SUBAGENT_REPORT_ROLES.has(text(data.role))) return;
   return { sessionId: text(data.sessionId), role: text(data.role), ticketPath: text(data.ticketPath),
     status: text(data.status), summary: text(data.summary), report: text(data.report) };
 }
@@ -393,7 +395,7 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
           ...next[optIndex],
           id: toolId(data) || next[optIndex].id,
           imagesCount,
-          report: reviewerReport(data.report),
+          report: subagentReport(data.report),
           route: 'pending',
           optimistic: false
         };
@@ -408,7 +410,7 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
             kind: 'steer',
             text: steerText,
             imagesCount,
-            report: reviewerReport(data.report),
+            report: subagentReport(data.report),
             route: 'pending'
           }
         ]

@@ -274,6 +274,23 @@ it('keeps repeated reviewer reports distinct and preserves metadata on delivery'
   expect(state.items[1]).toMatchObject({ id: 'two', report, route: 'pending' });
 });
 
+it('routes every subagent role into a report and leaves an unknown role as a plain steer', () => {
+  const roles = ['spec', 'standards', 'worker', 'scout', 'goldfish'];
+  const queued = roles.map((role, i) =>
+    ev('steer_queued', { id: `r${i}`, text: role, kind: 'subagent', report: { sessionId: `ses_${role}`, role, ticketPath: '', status: 'done', summary: role, report: 'x' } }, i + 1)
+  );
+  const state = run(...queued);
+  expect(state.items.map((item) => item.report?.role)).toEqual(roles);
+  const delivered = state.items.reduce(
+    (next, item, i) => applyEvent(next, ev('steer_delivered', { id: item.id, route: 'injected' }, 100 + i)),
+    state
+  );
+  expect(delivered.items.map((item) => item.report?.role)).toEqual(roles);
+  expect(delivered.items.every((item) => item.route === 'injected')).toBe(true);
+  const unknown = ev('steer_queued', { id: 'u1', text: 'unknown', kind: 'subagent', report: { sessionId: 'x', role: 'ghost', ticketPath: '', status: 'done', summary: '', report: '' } });
+  expect(run(unknown).items[0].report).toBeUndefined();
+});
+
 it('replaces optimistic user and steer items in place when server events arrive', () => {
   const seeded = {
     ...emptyFeedState(),

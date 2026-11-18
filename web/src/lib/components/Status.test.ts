@@ -1,13 +1,15 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { beforeEach, expect, it, vi } from 'vitest';
-import type { SystemStatus, TokenStatus } from '$lib/api/types';
+import type { BinariesStatus, SystemStatus, TokenStatus } from '$lib/api/types';
 
 const systemMock = vi.hoisted(() => vi.fn<(refresh?: boolean) => Promise<SystemStatus>>());
+const binariesMock = vi.hoisted(() => vi.fn<(refresh?: boolean) => Promise<BinariesStatus>>());
 const tokenMock = vi.hoisted(() => vi.fn<(month?: string) => Promise<TokenStatus>>());
 
 vi.mock('$lib/api', () => ({
   api: {
     systemStatus: systemMock,
+    binariesStatus: binariesMock,
     tokenStatus: tokenMock
   }
 }));
@@ -121,10 +123,51 @@ const TOKENS_NOV: TokenStatus = {
   ]
 };
 
+const BINARIES_SAMPLE: BinariesStatus = {
+  checkedAtMs: 1_760_000_100_000,
+  binaries: [
+    {
+      id: 'figcraft',
+      name: 'FigCraft',
+      path: '/usr/local/bin/figcraft-cli',
+      installedVersion: '0.18.1',
+      latestVersion: '0.18.1',
+      state: 'upToDate'
+    },
+    {
+      id: 'rtk',
+      name: 'rtk',
+      path: '/usr/local/bin/rtk',
+      installedVersion: '1.1.0',
+      latestVersion: '1.2.0',
+      state: 'outdated'
+    },
+    {
+      id: 'pi',
+      name: 'pi',
+      path: '/usr/local/bin/pi',
+      installedVersion: '',
+      latestVersion: '0.12.16',
+      state: 'missing'
+    },
+    {
+      id: 'claude',
+      name: 'Claude Code',
+      path: '/usr/local/bin/claude',
+      installedVersion: '2.1.300',
+      latestVersion: '',
+      state: 'error',
+      error: 'registry.npmjs.org timed out'
+    }
+  ]
+};
+
 beforeEach(() => {
   systemMock.mockReset();
+  binariesMock.mockReset();
   tokenMock.mockReset();
   systemMock.mockResolvedValue(SYSTEM_SAMPLE);
+  binariesMock.mockResolvedValue(BINARIES_SAMPLE);
   tokenMock.mockResolvedValue(TOKENS_NOV);
 });
 
@@ -139,6 +182,47 @@ it('renders System metrics, processes, storage and toggles live polling', async 
   const liveBtn = screen.getByRole('button', { name: /Live · 5s/ });
   await fireEvent.click(liveBtn);
   expect(screen.getByRole('button', { name: /Paused/ })).toBeTruthy();
+});
+
+it('loads external binaries once, keeps them out of live ticks and refreshes on demand', async () => {
+  vi.useFakeTimers();
+  try {
+    render(Status);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(binariesMock).toHaveBeenCalledTimes(1));
+    expect(binariesMock).toHaveBeenCalledWith(false);
+    await vi.waitFor(() => expect(screen.getByText('Up to date')).toBeTruthy());
+    expect(screen.getByText('External binaries')).toBeTruthy();
+    expect(screen.getByText('Missing')).toBeTruthy();
+    expect(screen.getByText('Error')).toBeTruthy();
+    expect(screen.getByText('registry.npmjs.org timed out')).toBeTruthy();
+
+    const polled = systemMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(systemMock.mock.calls.length).toBeGreaterThan(polled);
+    expect(systemMock).toHaveBeenCalledWith(true);
+    expect(binariesMock).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Check updates' }));
+    await vi.waitFor(() => expect(binariesMock).toHaveBeenCalledWith(true));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('renders external binaries even when system telemetry fails', async () => {
+  systemMock.mockRejectedValue(new Error('host telemetry down'));
+  render(Status);
+  expect(await screen.findByText('host telemetry down')).toBeTruthy();
+  expect(await screen.findByText('External binaries')).toBeTruthy();
+  expect(await screen.findByText('Up to date')).toBeTruthy();
+});
+
+it('reports a failed binaries check without hiding the system view', async () => {
+  binariesMock.mockRejectedValue(new Error('binaries offline'));
+  render(Status);
+  expect(await screen.findByText('binaries offline')).toBeTruthy();
+  expect(await screen.findByText(/devbox · linux\/x86_64 · v0\.0\.99/)).toBeTruthy();
 });
 
 it('switches to Tokens tab, filters with chips, groups, steps month, and omits dollar signs', async () => {

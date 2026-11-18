@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
-  import type { SystemStatus, TokenStatus } from '$lib/api/types';
+  import type { BinariesStatus, SystemStatus, TokenStatus } from '$lib/api/types';
   import { rise } from '$lib/motion';
   import StatusSystem from './StatusSystem.svelte';
   import StatusTokens from './StatusTokens.svelte';
@@ -19,6 +19,10 @@
   let selectedMonth = $state<string | undefined>(undefined);
   let tokenLoading = $state(false);
   let tokenError = $state('');
+
+  let binariesData = $state<BinariesStatus | null>(null);
+  let binariesLoading = $state(false);
+  let binariesError = $state('');
 
   async function loadSystem(refresh = false) {
     if (systemLoading && !refresh) return;
@@ -47,6 +51,19 @@
     }
   }
 
+  async function loadBinaries(refresh = false) {
+    if (binariesLoading && !refresh) return;
+    binariesLoading = true;
+    binariesError = '';
+    try {
+      binariesData = await api.binariesStatus(refresh);
+    } catch (e) {
+      binariesError = e instanceof Error ? e.message : 'Failed to load external binaries.';
+    } finally {
+      binariesLoading = false;
+    }
+  }
+
   function switchTab(next: StatusTab) {
     tab = next;
     if (next === 'tokens' && !tokenData && !tokenLoading) {
@@ -56,6 +73,7 @@
 
   onMount(() => {
     void loadSystem(false);
+    void loadBinaries(false);
   });
 
   $effect(() => {
@@ -110,19 +128,22 @@
           {systemError}
         </p>
       {/if}
-      {#if systemData}
-        <StatusSystem
-          data={systemData}
-          loading={systemLoading}
-          {live}
-          ontogglelive={() => (live = !live)}
-          onrefresh={() => void loadSystem(true)}
-        />
-      {:else if !systemError}
+      {#if !systemData && !systemError}
         <div class="grid min-h-[240px] place-items-center text-[13px] text-fg-3">
           Loading system status…
         </div>
       {/if}
+      <StatusSystem
+        data={systemData}
+        loading={systemLoading}
+        {live}
+        binaries={binariesData}
+        {binariesLoading}
+        {binariesError}
+        ontogglelive={() => (live = !live)}
+        onrefresh={() => void loadSystem(true)}
+        oncheckbinaries={() => void loadBinaries(true)}
+      />
     {:else}
       {#if tokenError}
         <p class="rounded-lg border border-status-failed/40 bg-status-failed/10 px-3 py-2 text-[13px] text-failed-fg">
