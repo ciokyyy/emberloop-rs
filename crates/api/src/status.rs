@@ -29,6 +29,48 @@ pub struct SystemStatusQuery {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub struct BinariesStatusQuery {
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// Where an external binary sits relative to its latest upstream release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ExternalBinaryState {
+    UpToDate,
+    Outdated,
+    Missing,
+    Error,
+}
+
+/// One external binary the daemon runs or recommends, with its version state.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalBinaryDto {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub installed_version: String,
+    pub latest_version: String,
+    pub state: ExternalBinaryState,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BinariesStatusDto {
+    pub checked_at_ms: u64,
+    pub binaries: Vec<ExternalBinaryDto>,
+}
+
+/// The daemon's external binary checker, so the API can report versions without owning them.
+#[async_trait::async_trait]
+pub trait BinaryChecker: Send + Sync {
+    async fn binaries(&self, refresh: bool) -> BinariesStatusDto;
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub struct TokenStatusQuery {
     pub month: Option<String>,
 }
@@ -247,6 +289,27 @@ pub async fn get_system_status(
             .unwrap_or_else(|_| empty_system_status(state.data_root.root()));
 
     Json(status)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/status/binaries",
+    params(
+        ("refresh" = Option<bool>, Query, description = "Re-probe versions older than the 30s floor")
+    ),
+    responses(
+        (status = 200, description = "External binary versions and states", body = BinariesStatusDto),
+        (status = 503, description = "The daemon has no external binary checker")
+    )
+)]
+pub async fn get_binaries_status(
+    State(state): State<AppState>,
+    Query(query): Query<BinariesStatusQuery>,
+) -> Result<Json<BinariesStatusDto>, StatusCode> {
+    let Some(checker) = state.binaries.as_ref() else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    Ok(Json(checker.binaries(query.refresh).await))
 }
 
 #[utoipa::path(

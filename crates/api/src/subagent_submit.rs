@@ -1,7 +1,7 @@
 //! Submit enforcement: every subagent turn must end with an accepted `submit`.
 use crate::state::AppState;
 use emberloop_core::events::{EventKind, SessionEvent};
-use emberloop_core::steer::ReviewerReport;
+use emberloop_core::steer::SubagentReport;
 
 pub(crate) const NUDGE_PROMPT: &str =
     "You ended without calling submit. Call submit(status, report, summary) now; do not do other work.";
@@ -139,7 +139,7 @@ async fn file_blocked(
             .unwrap_or_default()
     };
     let body = text.trim();
-    let report = ReviewerReport {
+    let report = SubagentReport {
         session_id: child.id.clone(),
         role: assignment.role.clone(),
         ticket_path: assignment.ticket_path.clone(),

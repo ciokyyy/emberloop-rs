@@ -413,6 +413,50 @@ async fn execute_sees_mcp_tools_and_can_call_them() {
 }
 
 #[tokio::test]
+async fn execute_gets_fast_server_tools_while_slow_server_starts_in_background() {
+    let fixture = setup();
+    let toolbox = toolbox_with(
+        &fixture,
+        json!({
+            "slow": {
+                "command": env!("CARGO_BIN_EXE_fake-mcp"),
+                "env": {"FAKE_MCP_DELAY_MS": "2500"},
+            },
+            "fast": {
+                "command": env!("CARGO_BIN_EXE_fake-mcp"),
+                "env": {"FAKE_MCP_TOOLS": fake_tools(&[("ping", "Answer fast.")])},
+            },
+        }),
+    );
+
+    let started = std::time::Instant::now();
+    let out = toolbox
+        .call(
+            "execute",
+            &json!({"code": "import tools\nprint(tools.help('fast.ping'))\nprint(tools.call('fast.ping', x=1))"}),
+        )
+        .await
+        .expect("execute");
+    assert!(
+        out.contains("Answer fast."),
+        "execute listed the fast server's tool while the slow one started: {out}"
+    );
+    assert!(
+        out.contains("ping:"),
+        "the fast server's tool answered: {out}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(2400),
+        "execute waited {:?} for the slow server",
+        started.elapsed()
+    );
+    toolbox
+        .call("slow.echo", &json!({}))
+        .await
+        .expect("the slow server finished starting in the background");
+}
+
+#[tokio::test]
 async fn execute_does_not_wait_for_a_slow_server_to_start() {
     let fixture = setup();
     let toolbox = toolbox_with(

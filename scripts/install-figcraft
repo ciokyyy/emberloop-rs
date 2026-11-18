@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install matching upstream editor, MCP CLI and collaboration server (native; no container).
 set -euo pipefail
-version=0.16.0
+version=0.18.1
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64) platform=linux-x86_64 ;;
   Linux/aarch64) platform=linux-aarch64 ;;

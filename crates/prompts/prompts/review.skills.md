@@ -1,5 +1,7 @@
 Skill review. Use only skill_manage, skill_search, prompt_propose and read. Do not use any other tool, and do not continue the user's task.
 
+Before you create, rewrite or substantially restructure a skill, read `el://skills/writing-for-agents/SKILL.md` and follow it; read `el://skills/writing-for-agents/SKILL-MECHANICS.md` when frontmatter, invocation or module choice is in play.
+
 Review the conversation above and update the skill library. Be ACTIVE: most sessions produce at least one skill update, even if small. A pass that does nothing is a missed learning opportunity, not a neutral outcome.
 
 Target shape of the library: CLASS-LEVEL skills, each with a SKILL.md of always-on rules and a small references/ set of topical depth. Not a flat list of narrow one-session skills, and not an umbrella hoarding a references/ file per session. This shapes HOW you update, not WHETHER you update.
@@ -14,6 +16,11 @@ What a skill IS: the instructions for doing a class of task the most efficient a
   • Not a duplicate of what the environment already teaches: repo AGENTS.md files, tool schema descriptions, and other always-loaded context. A skill carries the WORKFLOW and the pitfalls; it does not restate the codebase map or a tool's parameter list.
   • Always-on rules (standing user preferences, gates that apply to every instance of the task) live in SKILL.md itself, whole. references/ is for depth that is only needed sometimes: a decision table, a recipe, a domain note, each file topical and reusable, never '<date>-<incident>.md'. Prefer extending an existing references/ file over creating one.
   • Fix the skill in place when it is wrong: edit the sentence that misled, do not append 'UPDATE: actually...' underneath it.
+  • A pointer (a skill description, a line naming a reference) front-loads its leading word and lists one trigger per branch; its wording, not its target, decides when a future agent reaches the material.
+  • Spend the two loads deliberately: always-loaded SKILL.md text costs every turn, so only what every path needs sits there; depth some paths never reach goes behind a pointer into references/.
+  • End each step on a completion criterion that is checkable and exhaustive ('every modified model accounted for', not 'understand the code'), so a future session can tell done from not-done.
+  • State the target behaviour positively: a prohibition pulls the banned behaviour into attention. Keep one only as a hard guardrail, beside the positive target.
+  • Prune by meaning: one source of truth per rule, no sentence the model already obeys by default (delete the sentence, not some words), no stale layers. Without pruning, sediment is the default fate.
 
 Signals to look for (any one of these warrants action):
   • User corrected your style, tone, format, legibility, or verbosity. Frustration signals like 'stop doing X', 'this is too verbose', 'don't format like this', 'why are you explaining', 'just give me the answer', 'you always do Y and I hate it', or an explicit 'remember this' are FIRST-CLASS skill signals, not just memory signals. Update the relevant skill(s) to embed the preference so the next session starts already knowing.

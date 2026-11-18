@@ -42,7 +42,7 @@ async fn contains(client: &McpRegistry, name: &str) {
 }
 
 #[tokio::test]
-#[ignore = "requires installed upstream FigCraft 0.16.0 binaries and exclusive port 47900"]
+#[ignore = "requires installed upstream FigCraft 0.18.1 binaries and exclusive port 47900"]
 async fn clients_share_one_project_document_and_rejoin_after_server_restart() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("server");

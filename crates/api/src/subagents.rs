@@ -8,7 +8,7 @@ use axum::{
 use emberloop_core::{
     events::{EventKind, SessionEvent},
     id::generate_id,
-    steer::{ReviewerReport, SteerEntry},
+    steer::{SteerEntry, SubagentReport},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -789,7 +789,7 @@ async fn submit(
     let entry = deliver(
         state,
         &assignment.parent_id,
-        ReviewerReport {
+        SubagentReport {
             session_id: child.id.clone(),
             role: assignment.role.clone(),
             ticket_path: assignment.ticket_path.clone(),
@@ -832,7 +832,7 @@ pub async fn notify_failure(
     deliver(
         state,
         &assignment.parent_id,
-        ReviewerReport {
+        SubagentReport {
             session_id: child.id.clone(),
             role: assignment.role.clone(),
             ticket_path: assignment.ticket_path.clone(),
@@ -848,7 +848,7 @@ pub async fn notify_failure(
 pub(crate) async fn deliver(
     state: &AppState,
     parent: &str,
-    report: ReviewerReport,
+    report: SubagentReport,
 ) -> Result<SteerEntry, Error> {
     if state.sessions.get(parent).await.is_none() {
         return Err((StatusCode::NOT_FOUND, "Parent Session not found".into()));

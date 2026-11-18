@@ -362,7 +362,7 @@ async fn recovery_restores_a_report_saved_before_its_event_without_retrying_revi
     state
         .steers
         .queue("parent")
-        .enqueue_report(emberloop_core::steer::ReviewerReport {
+        .enqueue_report(emberloop_core::steer::SubagentReport {
             session_id: id,
             role: "spec".into(),
             ticket_path: "ticket.md".into(),

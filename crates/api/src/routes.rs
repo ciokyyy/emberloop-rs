@@ -65,6 +65,7 @@ use crate::state::{AppState, Settings};
         crate::providers::complete_claude_login,
         crate::subagents::action,
         crate::status::get_system_status,
+        crate::status::get_binaries_status,
         crate::status::get_token_status,
     ),
     components(
@@ -116,6 +117,9 @@ use crate::state::{AppState, Settings};
             crate::status::TokenTelemetryRowDto,
             crate::status::TokenSinkDto,
             crate::status::TokenStatusDto,
+            crate::status::BinariesStatusDto,
+            crate::status::ExternalBinaryDto,
+            crate::status::ExternalBinaryState,
         )
     ),
     tags(
@@ -1265,6 +1269,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::delete(discard_prompt_proposal),
         )
         .route("/api/status/system", get(crate::status::get_system_status))
+        .route(
+            "/api/status/binaries",
+            get(crate::status::get_binaries_status),
+        )
         .route("/api/status/tokens", get(crate::status::get_token_status))
         .route(
             "/api/status/sessions/events",

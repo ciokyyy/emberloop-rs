@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use api::{build_router, AppState};
@@ -267,4 +268,54 @@ async fn token_status_aggregates_active_archived_latency_and_tool_sinks() {
     assert!(!sinks.iter().any(|s| s["name"] == ""));
     let (bad_status, _) = get_json(&state, "/api/status/tokens?month=bad").await;
     assert_eq!(bad_status, StatusCode::BAD_REQUEST);
+}
+
+struct FakeBinaries(Arc<AtomicBool>);
+
+#[async_trait::async_trait]
+impl api::status::BinaryChecker for FakeBinaries {
+    async fn binaries(&self, refresh: bool) -> api::status::BinariesStatusDto {
+        self.0.store(refresh, Ordering::SeqCst);
+        api::status::BinariesStatusDto {
+            checked_at_ms: 1_700_000_000_000,
+            binaries: vec![api::status::ExternalBinaryDto {
+                id: "figcraft".into(),
+                name: "FigCraft".into(),
+                path: "/usr/local/bin/figcraft-cli".into(),
+                installed_version: "0.18.1".into(),
+                latest_version: "0.18.1".into(),
+                state: api::status::ExternalBinaryState::UpToDate,
+                error: None,
+            }],
+        }
+    }
+}
+
+#[tokio::test]
+async fn binaries_status_returns_the_checker_payload_or_503() {
+    let dir = tempdir().unwrap();
+    let state = state(&dir).await;
+    let (status, body) = get_json(&state, "/api/status/binaries").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body.is_null());
+
+    let refreshed = Arc::new(AtomicBool::new(true));
+    let state = state.with_binaries(Arc::new(FakeBinaries(refreshed.clone())));
+    let (status, _body) = get_json(&state, "/api/status/binaries").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !refreshed.load(Ordering::SeqCst),
+        "plain call uses the cache"
+    );
+
+    let (status, body) = get_json(&state, "/api/status/binaries?refresh=true").await;
+    assert!(
+        refreshed.load(Ordering::SeqCst),
+        "refresh bypasses the cache"
+    );
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["checkedAtMs"], 1_700_000_000_000u64);
+    assert_eq!(body["binaries"][0]["id"], "figcraft");
+    assert_eq!(body["binaries"][0]["installedVersion"], "0.18.1");
+    assert_eq!(body["binaries"][0]["state"], "upToDate");
 }

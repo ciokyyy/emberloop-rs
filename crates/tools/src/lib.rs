@@ -306,12 +306,9 @@ impl Toolbox {
     /// Like `mcp_tools`, but gives up waiting after a few seconds so a slow
     /// server start (cold `npx`) never stalls a script; the start goes on in the background.
     pub async fn mcp_tools_soon(&self) -> Vec<McpTool> {
-        let mcp = Arc::clone(&self.mcp);
-        let start = tokio::spawn(async move { mcp.tools().await });
-        match tokio::time::timeout(std::time::Duration::from_millis(1500), start).await {
-            Ok(Ok(Ok(tools))) => tools,
-            _ => Vec::new(),
-        }
+        self.mcp
+            .tools_within(std::time::Duration::from_millis(1500))
+            .await
     }
 
     /// The shell prelude that loads the runtime env file and resolves the browser. Empty only

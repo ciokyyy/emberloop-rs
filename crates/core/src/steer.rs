@@ -43,7 +43,7 @@ pub struct SteerImage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReviewerReport {
+pub struct SubagentReport {
     pub session_id: String,
     pub role: String,
     pub ticket_path: String,
@@ -65,7 +65,7 @@ pub struct SteerEntry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<SteerImage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub report: Option<ReviewerReport>,
+    pub report: Option<SubagentReport>,
     pub state: SteerState,
     pub queued_at: u64,
     pub delivered_at: Option<u64>,
@@ -156,7 +156,7 @@ impl SteerQueue {
     }
 
     /// Accept a report only after its queue entry is durable.
-    pub async fn enqueue_report(&self, report: ReviewerReport) -> std::io::Result<SteerEntry> {
+    pub async fn enqueue_report(&self, report: SubagentReport) -> std::io::Result<SteerEntry> {
         let header = if is_reviewer_role(&report.role) {
             format!(
                 "Sub-agent report from {} reviewer ({}) for {} [{}]",

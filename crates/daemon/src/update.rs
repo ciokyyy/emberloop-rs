@@ -160,8 +160,13 @@ fn gh_download_args(url: &str) -> Option<Vec<String>> {
 }
 
 fn client() -> anyhow::Result<reqwest::Client> {
+    client_with_timeout(DEFAULT_TIMEOUT_SECS)
+}
+
+/// Same user agent, shorter cap for a version check that must not stall a CLI.
+pub(crate) fn client_with_timeout(seconds: u64) -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
-        .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(seconds))
         .user_agent(format!("emberloop/{VERSION}"))
         .build()?)
 }

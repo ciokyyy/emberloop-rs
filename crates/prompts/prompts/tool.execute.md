@@ -1,6 +1,6 @@
 Run the Python script in `code` (stdlib only, `python3 -I`) that calls el tools as functions, so one call replaces many and only what the script prints enters context. `timeout` is in seconds, default 120, max 600. With `background` set to true the script starts detached and answers with a handle the `background` tool reads, waits on and stops; `timeout` does not apply, and its tools calls keep working until it exits.
 
-Searching code: use find for concepts and symbols, grep for exact strings and regex, and execute to batch the exploration (loops over grep/read, filtering output).
+Searching code: route symbol and call-graph questions to `tools.call('graph.search_graph', query=...)` and `tools.call('graph.trace_path', function_name=...)`, falling back to find for concepts and symbols and grep for exact strings when the call errors or the graph server is unconfigured; execute batches the exploration (loops over grep/read, filtering output).
 
 Behind execute: read, grep, edit, write, bash, background, find, websearch. Everything else answers through `tools.call("<name>", **kwargs)`, e.g. `tools.call("ctx_search", queries=["needle"])`.
 

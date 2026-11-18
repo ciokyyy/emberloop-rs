@@ -209,6 +209,8 @@ pub struct AppState {
     pub tool_keys_file: Option<PathBuf>,
     /// The global skills root the skill pages read; `None` lists no global skills.
     pub global_skills: Option<PathBuf>,
+    /// The daemon's external binary checker; `None` answers 503 on `/api/status/binaries`.
+    pub binaries: Option<Arc<dyn crate::status::BinaryChecker>>,
     pub designs: Arc<crate::design::Designs>,
     pub subagent_gate: Arc<tokio::sync::Mutex<()>>,
     pub(crate) subagent_runs:
@@ -260,6 +262,7 @@ impl AppState {
             provider_login: None,
             tool_keys_file: None,
             global_skills: None,
+            binaries: None,
             groq: None,
             designs: Arc::new(crate::design::Designs::default()),
             subagent_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -310,6 +313,11 @@ impl AppState {
 
     pub fn with_models(mut self, models: Arc<ModelCatalogue>) -> Self {
         self.models = models;
+        self
+    }
+
+    pub fn with_binaries(mut self, checker: Arc<dyn crate::status::BinaryChecker>) -> Self {
+        self.binaries = Some(checker);
         self
     }
 

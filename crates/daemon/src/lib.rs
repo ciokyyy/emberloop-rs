@@ -27,6 +27,7 @@ use rust_embed::RustEmbed;
 use store::{DataRoot, ProjectsStore, SessionsStore};
 use tools::{McpServer, ToolConfig, Toolbox};
 
+pub mod binaries;
 pub mod claude_login;
 pub mod codegraph;
 pub mod codex;
@@ -40,6 +41,32 @@ pub mod todo_reminder;
 pub mod tooldisplay;
 pub mod update;
 mod usage;
+
+/// Where the three built-in harness binaries live: the environment override, the data root, or
+/// the bare name the spawn searches on PATH.
+pub(crate) struct BinPaths {
+    pub(crate) agy: PathBuf,
+    pub(crate) pi: PathBuf,
+    pub(crate) claude: PathBuf,
+}
+
+pub(crate) fn resolve_bin_paths(data_root: &std::path::Path) -> BinPaths {
+    BinPaths {
+        agy: resolve_bin(
+            "EMBERLOOP_AGY_BIN",
+            data_root,
+            "agy-acp/1.5.0/agy_acp_server.par",
+            "agy",
+        ),
+        pi: resolve_bin("EMBERLOOP_PI_BIN", data_root, "pi/v0.12.16/pi", "pi"),
+        claude: resolve_bin(
+            "EMBERLOOP_CLAUDE_BIN",
+            data_root,
+            "claude/2.1.327/claude",
+            "claude",
+        ),
+    }
+}
 
 /// Which harness serves a model id.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -124,7 +151,7 @@ impl api::models::Source for ClaudeSource {
     async fn fetch(&self) -> Result<Vec<api::models::ModelEntry>, api::models::CatalogueError> {
         const ALL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
         const LEGACY: &[&str] = &["low", "medium", "high", "max"];
-        // shortcut: snapshot of CLI 2.1.319 initialize.models, use discovery when the CLI catalogue changes.
+        // shortcut: snapshot of CLI 2.1.327 initialize.models, use discovery when the CLI catalogue changes.
         Ok([
             ("opus", "Claude Opus 5.5", ALL),
             ("sonnet", "Claude Sonnet 5.5", ALL),
@@ -431,37 +458,27 @@ impl Daemon {
             tracing::warn!(%error, "prompt reload failed; keeping last good text");
         });
         let events = Arc::new(EventBus::default());
-        let agy_bin = resolve_bin(
-            "EMBERLOOP_AGY_BIN",
-            &config.data_root,
-            "agy-acp/1.4.5/agy_acp_server.par",
-            "agy",
-        );
+        let bins = resolve_bin_paths(&config.data_root);
         let accounts_dir = config.config_root.join("accounts/agy");
         let agy_harness = Arc::new(AgyHarness::new(
-            agy_bin.clone(),
+            bins.agy.clone(),
             accounts_dir.join("default"),
         ));
-        let pi_bin = resolve_bin(
-            "EMBERLOOP_PI_BIN",
-            &config.data_root,
-            "pi/v0.12.11/pi",
-            "pi",
-        );
         let keys_file = config.config_root.join("keys.json");
-        let claude_bin = resolve_bin(
-            "EMBERLOOP_CLAUDE_BIN",
-            &config.data_root,
-            "claude/2.1.319/claude",
-            "claude",
-        );
         let pi_auth = config.config_root.join("pi/agent/auth.json");
         let pi_harness = Arc::new(
-            PiHarness::new(pi_bin, data_root.root().join("pi-homes"), keys_file.clone())
-                .with_auth(pi_auth.clone()),
+            PiHarness::new(
+                bins.pi,
+                data_root.root().join("pi-homes"),
+                keys_file.clone(),
+            )
+            .with_auth(pi_auth.clone()),
         );
         let claude_homes = data_root.root().join("claude-homes");
-        let claude_harness = Arc::new(ClaudeHarness::new(claude_bin.clone(), claude_homes.clone()));
+        let claude_harness = Arc::new(ClaudeHarness::new(
+            bins.claude.clone(),
+            claude_homes.clone(),
+        ));
         let models = Arc::new(api::models::ModelCatalogue::new(
             data_root.model_catalogue_file(),
             vec![
@@ -485,8 +502,8 @@ impl Daemon {
         .with_tool_keys_file(config.config_root.join("tool-keys.json"))
         .with_figcraft(config.config_root.join("mcp.json"))
         .with_global_skills(config.global_skills.clone())
-        .with_groq_keys(keys_file.clone(), api::transcribe::GROQ_URL);
-        app_state.models.spawn_refresher();
+        .with_groq_keys(keys_file.clone(), api::transcribe::GROQ_URL)
+        .with_binaries(Arc::new(binaries::BinariesChecker::new(&config.data_root)));
 
         let updated = announce_update(&app_state, &events, &data_root).await;
         let codebase_memory = codegraph::ensure(&config.config_root);
@@ -527,10 +544,10 @@ impl Daemon {
                 .map_err(|error| anyhow::anyhow!(error))?,
         );
         let login = Arc::new(
-            login::AgyLogin::new(accounts_dir, agy_bin)
+            login::AgyLogin::new(accounts_dir, bins.agy)
                 .with_keys(keys_file.clone())
                 .with_pi_auth(pi_auth.clone())
-                .with_claude(claude_login::ClaudeLogin::new(claude_bin, claude_homes)),
+                .with_claude(claude_login::ClaudeLogin::new(bins.claude, claude_homes)),
         );
         let proxy_base = format!("http://{}:{}", config.host, config.port);
         let runner = Arc::new(
@@ -1085,6 +1102,10 @@ pub async fn run_update(request: UpdateRequest) -> anyhow::Result<()> {
     if let Some(file) = &request.file {
         return install_local_update(&request, &root, &queue_root, file, inside.as_ref());
     }
+    if request.check {
+        check_update(&request).await;
+        return Ok(());
+    }
     let latest = update::fetch(&request.manifest_url).await?;
     if !update::is_newer(&latest.version, update::VERSION) {
         println!("emberloop {} is up to date", update::VERSION);
@@ -1097,15 +1118,6 @@ pub async fn run_update(request: UpdateRequest) -> anyhow::Result<()> {
             update::target()
         )
     })?;
-    if request.check {
-        println!(
-            "{} -> {} available: {}",
-            update::VERSION,
-            latest.version,
-            artifact.url
-        );
-        return Ok(());
-    }
     let session = request
         .session
         .or_else(|| inside.as_ref().map(|found| found.id.clone()));
@@ -1123,6 +1135,42 @@ pub async fn run_update(request: UpdateRequest) -> anyhow::Result<()> {
         update::installed_message(update::VERSION, &latest.version, inside.is_some())
     );
     Ok(())
+}
+
+/// `update --check` reports the daemon and every external binary, even when the manifest fetch
+/// fails or the daemon is current.
+async fn check_update(request: &UpdateRequest) {
+    match update::fetch(&request.manifest_url).await {
+        Ok(latest) if update::is_newer(&latest.version, update::VERSION) => {
+            match latest.artifact() {
+                Some(artifact) => println!(
+                    "{} -> {} available: {}",
+                    update::VERSION,
+                    latest.version,
+                    artifact.url
+                ),
+                None => println!(
+                    "{} -> {} available (no artifact for {})",
+                    update::VERSION,
+                    latest.version,
+                    update::target()
+                ),
+            }
+        }
+        Ok(latest) => println!(
+            "emberloop {} is up to date (latest {})",
+            update::VERSION,
+            latest.version
+        ),
+        Err(error) => println!(
+            "emberloop {}: update check failed: {error}",
+            update::VERSION
+        ),
+    }
+    // The explicit CLI data root, not the install root: `<data_root>/binaries-cache.json`.
+    let checker = binaries::BinariesChecker::new(&request.data_root);
+    let status = checker.status(true).await;
+    print!("{}", binaries::table(&status));
 }
 
 /// install_local_update queues a local build for the running daemon, which installs it and

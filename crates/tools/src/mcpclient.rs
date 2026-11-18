@@ -15,7 +15,7 @@ use rmcp::transport::TokioChildProcess;
 use rmcp::ServiceExt;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::figcraft;
 use crate::graph;
@@ -95,12 +95,16 @@ pub struct McpTool {
 
 pub struct McpRegistry {
     root: PathBuf,
-    servers: Vec<Server>,
+    servers: Vec<Arc<Server>>,
     /// A config that would not load; it costs the MCP tools and nothing else.
     error: Option<String>,
-    connected: RwLock<BTreeMap<String, Arc<Connected>>>,
+    connected: Arc<RwLock<BTreeMap<String, Arc<Connected>>>>,
     /// Resolved `project` per server, so `list_projects` runs once.
     projects: RwLock<BTreeMap<String, String>>,
+    /// One connect lock per server, so concurrent callers spawn one child, not two.
+    locks: BTreeMap<String, Arc<Mutex<()>>>,
+    /// Connect tasks still running; aborted when the registry drops.
+    pending: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
 impl McpRegistry {
@@ -114,20 +118,27 @@ impl McpRegistry {
             root: root.to_path_buf(),
             servers: Vec::new(),
             error: None,
-            connected: RwLock::new(BTreeMap::new()),
+            connected: Arc::new(RwLock::new(BTreeMap::new())),
             projects: RwLock::new(BTreeMap::new()),
+            locks: BTreeMap::new(),
+            pending: std::sync::Mutex::new(Vec::new()),
         };
         if let Some(file) = file {
             if let Err(error) = registry.read(file, bin_dirs) {
                 registry.error = Some(error);
             }
         } else if let Ok(entry) = serde_json::from_value::<Entry>(figcraft::default_entry()) {
-            registry.servers.push(Server {
+            registry.servers.push(Arc::new(Server {
                 name: figcraft::SERVER.to_string(),
                 entry,
                 error: None,
-            });
+            }));
         }
+        registry.locks = registry
+            .servers
+            .iter()
+            .map(|server| (server.name.clone(), Arc::new(Mutex::new(()))))
+            .collect();
         registry
     }
 
@@ -160,11 +171,11 @@ impl McpRegistry {
                     "mcp server {name:?}: only stdio servers are supported, so give a command and not a url"
                 )),
             };
-            self.servers.push(Server {
+            self.servers.push(Arc::new(Server {
                 name: name.clone(),
                 entry,
                 error,
-            });
+            }));
         }
         self.servers
             .sort_by(|left, right| left.name.cmp(&right.name));
@@ -181,17 +192,78 @@ impl McpRegistry {
     /// Every exposed tool of every reachable server, connecting on first use.
     pub async fn tools(&self) -> ToolResult<Vec<McpTool>> {
         self.loaded()?;
-        let mut tools = Vec::new();
-        for server in &self.servers {
+        let mut ready = self.empty();
+        self.drain(self.spawn_connects(), &mut ready).await;
+        Ok(self.collect(ready))
+    }
+
+    /// Like `tools`, but gives up after `deadline`; slow servers keep connecting.
+    pub async fn tools_within(&self, deadline: Duration) -> Vec<McpTool> {
+        if self.loaded().is_err() {
+            return Vec::new();
+        }
+        let mut ready = self.empty();
+        let drain = self.drain(self.spawn_connects(), &mut ready);
+        let _ = tokio::time::timeout(deadline, drain).await;
+        self.collect(ready)
+    }
+
+    fn empty(&self) -> Vec<Option<Arc<Connected>>> {
+        (0..self.servers.len()).map(|_| None).collect()
+    }
+
+    /// One task per server, each answering `(server index, connection)`.
+    fn spawn_connects(&self) -> mpsc::Receiver<(usize, ToolResult<Arc<Connected>>)> {
+        let (tx, rx) = mpsc::channel(self.servers.len().max(1));
+        for (idx, server) in self.servers.iter().enumerate() {
             if server.error.is_some() {
                 continue;
             }
-            match self.ensure(&server.name).await {
-                Ok(connected) => tools.extend(server_tools(server, &connected.tools)),
+            let server = Arc::clone(server);
+            let Some(lock) = self.locks.get(&server.name).cloned() else {
+                continue;
+            };
+            let root = self.root.clone();
+            let connected = Arc::clone(&self.connected);
+            let tx = tx.clone();
+            let task = tokio::spawn(async move {
+                let result = connect_server(root, server, connected, lock).await;
+                let _ = tx.send((idx, result)).await;
+            });
+            self.track(task.abort_handle());
+        }
+        rx
+    }
+
+    /// Keeps the abort handles of unfinished connects; `Drop` cancels them.
+    fn track(&self, handle: tokio::task::AbortHandle) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending.retain(|handle| !handle.is_finished());
+        pending.push(handle);
+    }
+
+    async fn drain(
+        &self,
+        mut rx: mpsc::Receiver<(usize, ToolResult<Arc<Connected>>)>,
+        ready: &mut [Option<Arc<Connected>>],
+    ) {
+        while let Some((idx, result)) = rx.recv().await {
+            match result {
+                Ok(connected) => ready[idx] = Some(connected),
                 Err(error) => eprintln!("{error}"),
             }
         }
-        Ok(tools)
+    }
+
+    /// Tools in `self.servers` order, which is the config's sorted server order.
+    fn collect(&self, ready: Vec<Option<Arc<Connected>>>) -> Vec<McpTool> {
+        let mut tools = Vec::new();
+        for (server, connected) in self.servers.iter().zip(ready) {
+            if let Some(connected) = connected {
+                tools.extend(server_tools(server, &connected.tools));
+            }
+        }
+        tools
     }
 
     /// Calls `server.tool`; a server's own error text becomes our error.
@@ -231,7 +303,7 @@ impl McpRegistry {
         let connected = self.ensure(server_name).await?;
         let args = self.arguments(server, tool, args).await?;
         if server_name == figcraft::SERVER {
-            self.resync(server, &connected).await?;
+            design::resync(&self.root, server, &connected).await?;
         }
         let result = raw_call(server, &connected, tool, args).await;
         if server_name == figcraft::SERVER {
@@ -296,16 +368,6 @@ impl McpRegistry {
     }
 
     async fn ensure(&self, name: &str) -> ToolResult<Arc<Connected>> {
-        let mut connected = self.connected.write().await;
-        if connected
-            .get(name)
-            .is_some_and(|ready| ready.service.is_closed())
-        {
-            connected.remove(name);
-        }
-        if let Some(ready) = connected.get(name) {
-            return Ok(Arc::clone(ready));
-        }
         let server = self
             .servers
             .iter()
@@ -314,12 +376,76 @@ impl McpRegistry {
         if let Some(error) = &server.error {
             return Err(ToolError::msg(error.clone()));
         }
-        let ready = Arc::new(connect(&self.root, server).await?);
-        if name == figcraft::SERVER {
-            self.connect_design(server, &ready).await?;
+        let lock = self
+            .locks
+            .get(name)
+            .cloned()
+            .ok_or_else(|| ToolError::msg(format!("unknown tool {name:?}")))?;
+        connect_server(
+            self.root.clone(),
+            Arc::clone(server),
+            Arc::clone(&self.connected),
+            lock,
+        )
+        .await
+    }
+}
+
+impl Drop for McpRegistry {
+    fn drop(&mut self) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        for handle in pending.drain(..) {
+            handle.abort();
         }
-        connected.insert(name.to_string(), Arc::clone(&ready));
-        Ok(ready)
+    }
+}
+
+/// A ready connection, or a new one held under this server's connect lock. The lock is
+/// per server so a slow server never delays another.
+async fn connect_server(
+    root: PathBuf,
+    server: Arc<Server>,
+    connected: Arc<RwLock<BTreeMap<String, Arc<Connected>>>>,
+    lock: Arc<Mutex<()>>,
+) -> ToolResult<Arc<Connected>> {
+    if let Some(ready) = ready(&connected, &server.name).await {
+        return Ok(ready);
+    }
+    let _guard = lock.lock().await;
+    if let Some(ready) = ready(&connected, &server.name).await {
+        return Ok(ready);
+    }
+    let ready = Arc::new(connect(&root, &server).await?);
+    if server.name == figcraft::SERVER {
+        design::connect_design(&root, &server, &ready).await?;
+    }
+    connected
+        .write()
+        .await
+        .insert(server.name.clone(), Arc::clone(&ready));
+    Ok(ready)
+}
+
+/// The cached connection unless the server died; a dead one is dropped so it restarts.
+async fn ready(
+    connected: &RwLock<BTreeMap<String, Arc<Connected>>>,
+    name: &str,
+) -> Option<Arc<Connected>> {
+    let cached = connected.read().await.get(name).cloned();
+    match cached {
+        Some(cached) if !cached.service.is_closed() => Some(cached),
+        Some(_) => {
+            // Re-check under the write lock: another task may have reconnected already.
+            let mut map = connected.write().await;
+            if map
+                .get(name)
+                .is_some_and(|cached| cached.service.is_closed())
+            {
+                map.remove(name);
+            }
+            None
+        }
+        None => None,
     }
 }
 

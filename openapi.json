@@ -1331,6 +1331,40 @@
         }
       }
     },
+    "/api/status/binaries": {
+      "get": {
+        "tags": [
+          "crate::status"
+        ],
+        "operationId": "get_binaries_status",
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "Re-probe versions older than the 30s floor",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "External binary versions and states",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BinariesStatusDto"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The daemon has no external binary checker"
+          }
+        }
+      }
+    },
     "/api/status/system": {
       "get": {
         "tags": [
@@ -1500,6 +1534,26 @@
           }
         }
       },
+      "BinariesStatusDto": {
+        "type": "object",
+        "required": [
+          "checkedAtMs",
+          "binaries"
+        ],
+        "properties": {
+          "binaries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExternalBinaryDto"
+            }
+          },
+          "checkedAtMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "CloneProjectRequest": {
         "type": "object",
         "description": "Add project, \"Clone from GitHub\": `repo` into `location/<repo name>`.",
@@ -1647,6 +1701,54 @@
             "minimum": 0
           }
         }
+      },
+      "ExternalBinaryDto": {
+        "type": "object",
+        "description": "One external binary the daemon runs or recommends, with its version state.",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "installedVersion",
+          "latestVersion",
+          "state"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "installedVersion": {
+            "type": "string"
+          },
+          "latestVersion": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ExternalBinaryState"
+          }
+        }
+      },
+      "ExternalBinaryState": {
+        "type": "string",
+        "description": "Where an external binary sits relative to its latest upstream release.",
+        "enum": [
+          "upToDate",
+          "outdated",
+          "missing",
+          "error"
+        ]
       },
       "FallbackLadder": {
         "type": "array",
