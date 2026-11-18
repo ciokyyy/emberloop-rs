@@ -318,7 +318,7 @@ impl ProxyState {
                 models,
                 events,
                 steers,
-                client: reqwest::Client::new(),
+                client: upstream_client(),
                 settings,
                 runtimes: RwLock::new(HashMap::new()),
             }),
@@ -910,7 +910,9 @@ fn prepare_request(
         crate::splice::sign_unsigned_calls(&mut contents);
     }
     strip_forged_markers(&mut contents);
-    let preflight = if settings.proxy_compression {
+    // A goldfish reads one request and answers once: folding its history would rewrite the context
+    // its reviewer persona was built for, and an over-window request should fail upstream instead.
+    let preflight = if settings.proxy_compression && runtime.goldfish.is_none() {
         preflight_fold(runtime, &mut contents, window, settings)?
     } else {
         None
@@ -1905,6 +1907,19 @@ fn number_arg(args: &Value, key: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("{key} must be a non-negative integer"))
 }
 
+/// The shared upstream client. A keepalive plus a short idle timeout keeps a pooled connection
+/// through a provider's quiet gap without pinning a dead one.
+fn upstream_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .tcp_keepalive(Some(Duration::from_secs(10)))
+        .pool_idle_timeout(Some(Duration::from_secs(20)))
+        .build()
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "upstream client keepalives rejected; using defaults");
+            reqwest::Client::new()
+        })
+}
+
 /// The wait between two sends of a retried request: product behaviour, zero in tests.
 #[allow(clippy::disallowed_methods)]
 async fn backoff(wait: Duration) {
@@ -2287,6 +2302,10 @@ struct SseState {
     /// Events decided to pass through after being buffered behind a tool call.
     forward: VecDeque<Bytes>,
     rounds: usize,
+    /// Re-sends of the current round after its body dropped before reaching the harness.
+    stream_retries: u32,
+    /// Whether any byte of the current round went downstream; only a round that sent none retries.
+    round_emitted: bool,
     done: bool,
     harness_call_id: Option<String>,
     completed: Vec<CompletedCall>,
@@ -2348,6 +2367,8 @@ impl SseState {
             pending: Vec::new(),
             forward: VecDeque::new(),
             rounds: 1,
+            stream_retries: 0,
+            round_emitted: false,
             done: false,
             harness_call_id: None,
             completed: Vec::new(),
@@ -2406,7 +2427,9 @@ impl SseState {
         .await;
     }
 
-    async fn follow_up(&mut self) -> Result<(), ProxyError> {
+    /// Opens the stream for the round's current request body, after `send_stream` retried a
+    /// connect failure or a gateway status.
+    async fn reopen_stream(&mut self) -> Result<(), ProxyError> {
         let sent = outgoing_body(&self.runtime, self.wire, &self.request);
         self.call_started = std::time::Instant::now();
         let response = send_stream(
@@ -2424,18 +2447,63 @@ impl SseState {
             return Err(ProxyError::UpstreamStatus(format!("{status}: {body}")));
         }
         self.stream = Some(response.bytes_stream().boxed());
+        Ok(())
+    }
+
+    async fn follow_up(&mut self) -> Result<(), ProxyError> {
+        self.reopen_stream().await?;
         self.published = None;
         self.forwarded.clear();
         self.step_signature = None;
         self.proxy_round = false;
         self.anthropic = AnthropicBlocks::default();
         self.stream_calls.clear();
+        self.stream_retries = 0;
+        self.round_emitted = false;
         self.rounds += 1;
         Ok(())
     }
 
+    /// Re-sends the round whose body dropped before any of it reached the harness, clearing the
+    /// lost attempt's parser state so the retry reads as the round's first send.
+    async fn retry_round(&mut self) -> Result<(), ProxyError> {
+        self.reopen_stream().await?;
+        self.pending.clear();
+        self.forward.clear();
+        self.completed.clear();
+        self.stream_calls.clear();
+        self.stream_events.clear();
+        self.stream_finish.clear();
+        self.anthropic = AnthropicBlocks::default();
+        self.forwarded.clear();
+        self.step_signature = None;
+        self.proxy_round = false;
+        self.round_emitted = false;
+        Ok(())
+    }
+
+    /// Hides a dropped connection when nothing of the round reached the harness yet: returns the
+    /// error only when the stream must end instead.
+    async fn retry_after_drop(&mut self, error: ProxyError) -> Option<ProxyError> {
+        if !is_interrupted(&error)
+            || self.round_emitted
+            || !self.completed.is_empty()
+            || self.stream_retries >= SEND_RETRIES
+        {
+            return Some(error);
+        }
+        let wait = self.proxy.inner.config.retry_backoff * 2u32.pow(self.stream_retries);
+        self.stream_retries += 1;
+        backoff(wait).await;
+        self.retry_round().await.err()
+    }
+
     /// A round ended without a proxy call: count it, and start the background skill review when due.
     fn review_check(&mut self) {
+        // A goldfish is a one-shot reader: nothing it says trains a skill, so it never forks a review.
+        if self.runtime.goldfish.is_some() {
+            return;
+        }
         let Some(tools) = self.proxy.inner.config.review_tools.clone() else {
             return;
         };
@@ -3053,6 +3121,7 @@ fn streaming_response(state: SseState) -> Response<Body> {
 async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error>, SseState)> {
     loop {
         if let Some(bytes) = state.forward.pop_front() {
+            state.round_emitted = true;
             return Some((Ok(bytes), state));
         }
         if state.done {
@@ -3060,7 +3129,10 @@ async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error
         }
         if let Some(result) = next_buffered(&mut state).await {
             match result {
-                Ok(Some(bytes)) => return Some((Ok(bytes), state)),
+                Ok(Some(bytes)) => {
+                    state.round_emitted = true;
+                    return Some((Ok(bytes), state));
+                }
                 Ok(None) => continue,
                 Err(error) => {
                     state.done = true;
@@ -3078,8 +3150,12 @@ async fn next_chunk(mut state: SseState) -> Option<(Result<Bytes, std::io::Error
                 state.pending.extend_from_slice(&chunk);
             }
             Ok(Some(Err(error))) => {
-                state.done = true;
                 let error = ProxyError::Upstream(error);
+                // Nothing of the lost attempt reached the harness, so a fresh send is invisible.
+                let Some(error) = state.retry_after_drop(error).await else {
+                    continue;
+                };
+                state.done = true;
                 // The same wording the wire carries: the subagent supervisor classifies this
                 // event, and an unprefixed decode error reads as a hard failure.
                 publish_error(

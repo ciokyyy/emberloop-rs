@@ -63,6 +63,8 @@ struct FakeUpstream {
     /// The next this-many calls answer with this content type and a body that breaks before it
     /// ends, as a connection dropped mid-reply does.
     broken_body: Arc<Mutex<Option<(&'static str, usize)>>>,
+    /// The next this-many calls break before the body sends a single chunk.
+    broken_before_emit: Arc<Mutex<Option<(&'static str, usize)>>>,
     /// The next this-many calls answer 502, as a gateway in front of the provider does.
     bad_gateways: Arc<AtomicUsize>,
     /// Every call from this 1-based number on answers 400 (0 = never), as a request with an orphaned tool result does.
@@ -86,6 +88,7 @@ impl FakeUpstream {
             hang: Arc::new(Mutex::new(None)),
             fail_next: Arc::new(AtomicBool::new(false)),
             broken_body: Arc::new(Mutex::new(None)),
+            broken_before_emit: Arc::new(Mutex::new(None)),
             bad_gateways: Arc::new(AtomicUsize::new(0)),
             reject_from: Arc::new(AtomicUsize::new(0)),
             stall: Arc::new(AtomicBool::new(false)),
@@ -157,6 +160,26 @@ async fn fake_upstream(
     }
     if fake.fail_next.swap(false, Ordering::SeqCst) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "upstream failed").into_response();
+    }
+    let broken_before_emit = {
+        let mut knob = fake.broken_before_emit.lock().unwrap();
+        match knob.as_mut() {
+            Some((content_type, left)) if *left > 0 => {
+                *left -= 1;
+                Some(*content_type)
+            }
+            _ => None,
+        }
+    };
+    if let Some(content_type) = broken_before_emit {
+        let reply = futures::stream::once(async {
+            await_head_flush().await;
+            Err::<Bytes, std::io::Error>(std::io::Error::other("body broke"))
+        });
+        return Response::builder()
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from_stream(reply))
+            .unwrap();
     }
     let broken = {
         let mut knob = fake.broken_body.lock().unwrap();
@@ -4416,6 +4439,9 @@ async fn a_stream_that_breaks_publishes_the_interruption_marker() {
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8_lossy(&response);
     assert!(text.contains("stream was interrupted"), "{text}");
+    // The first send put a chunk downstream, so the retry gate must not fire; text_only_fake
+    // preloads one call, so a single send reads as 2.
+    assert_eq!(fixture.fake.calls(), 2);
     let mut message = None;
     while let Ok(event) = events.try_recv() {
         if event.kind == EventKind::Error {
@@ -4424,6 +4450,61 @@ async fn a_stream_that_breaks_publishes_the_interruption_marker() {
     }
     let message = message.expect("an error event");
     assert!(message.contains("stream was interrupted"), "{message}");
+}
+
+/// A stream that drops before sending a single byte reaches the harness: the round is retried
+/// and the harness never learns of the lost attempt.
+#[tokio::test]
+async fn a_stream_truncated_before_emitting_retries_and_succeeds() {
+    let fake = FakeUpstream::sse(vec![sse_event(json!([{"text": "done"}]))]);
+    *fake.broken_before_emit.lock().unwrap() = Some(("text/event-stream", 1));
+    let fixture = fixture_config(fake, |config| config.with_retry_backoff(Duration::ZERO)).await;
+    let mut events = fixture.events.subscribe();
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8_lossy(&response);
+    assert_eq!(text.matches("done").count(), 1, "{text}");
+    assert_eq!(fixture.fake.calls(), 2);
+    while let Ok(event) = events.try_recv() {
+        assert_ne!(event.kind, EventKind::Error);
+    }
+}
+
+#[tokio::test]
+async fn a_stream_truncated_before_emitting_stops_after_send_retries() {
+    let fake = FakeUpstream::new();
+    *fake.broken_before_emit.lock().unwrap() = Some(("text/event-stream", 10));
+    let fixture = fixture_config(fake, |config| config.with_retry_backoff(Duration::ZERO)).await;
+    let mut events = fixture.events.subscribe();
+    let (status, response) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        body(conversation()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.contains("stream was interrupted"), "{text}");
+    assert_eq!(fixture.fake.calls(), 1 + SEND_RETRIES as usize);
+    let mut message = None;
+    while let Ok(event) = events.try_recv() {
+        if event.kind == EventKind::Error {
+            message = event.data["message"].as_str().map(str::to_string);
+        }
+    }
+    assert!(
+        message
+            .as_deref()
+            .is_some_and(|message| message.contains("stream was interrupted")),
+        "{message:?}"
+    );
 }
 
 #[tokio::test]
@@ -5251,7 +5332,7 @@ async fn a_goldfish_request_carries_the_persona_policy_and_the_exact_tool_allowl
 }
 
 #[tokio::test]
-async fn a_goldfish_request_over_the_window_is_folded_without_a_nudge() {
+async fn a_goldfish_request_over_the_window_skips_preflight_and_nudge() {
     let fixture = goldfish_fixture().await;
     let runtime = fixture.state.runtime("ses_1").await.unwrap();
     let mut history = warm_history(20);
@@ -5270,8 +5351,65 @@ async fn a_goldfish_request_over_the_window_is_folded_without_a_nudge() {
         false,
     )
     .unwrap();
-    assert!(outcome.preflight.is_some(), "the overflow fold still ran");
+    assert!(outcome.preflight.is_none(), "a goldfish is never folded");
     assert!(outcome.nudge.is_none(), "a goldfish gets no nudge");
+}
+
+#[tokio::test]
+async fn goldfish_session_never_starts_background_skill_review() {
+    let fixture = goldfish_fixture().await;
+    let review = Arc::new(FakeReview::default());
+    let mut config = fixture.state.inner.config.clone();
+    config.review_tools = Some(review.clone());
+    let state = ProxyState::new(
+        config,
+        fixture.sessions.clone(),
+        ProjectsStore::load(fixture.data_root.projects_file())
+            .await
+            .unwrap(),
+        fixture.data_root.clone(),
+        fixture.prompts.clone(),
+        fixture.models.clone(),
+        fixture.events.clone(),
+        fixture.steers.clone(),
+        fixture.settings.clone(),
+    );
+    fixture.settings.write().await.skills_review_interval = 1;
+    let fixture = Fixture { state, ..fixture };
+    fixture
+        .fake
+        .sse
+        .lock()
+        .unwrap()
+        .push_back(sse_event(json!([{"text": "final answer"}])));
+    // The allowlist strips the skill tool, so the guard is a second line: the request still offers it.
+    let mut request = body(conversation());
+    request["tools"] = json!([{"functionDeclarations": [
+        {"name": "read"},
+        {"name": "mcp__emberloop__skill_manage"}
+    ]}]);
+
+    let (status, _) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:streamGenerateContent",
+        request,
+    )
+    .await;
+    for _ in 0..200_000 {
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        fixture.fake.calls(),
+        1,
+        "only the harness request reached upstream"
+    );
+    assert!(
+        review.calls.lock().unwrap().is_empty(),
+        "a goldfish never forks a skill review"
+    );
 }
 
 #[tokio::test]
