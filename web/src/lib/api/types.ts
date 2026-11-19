@@ -138,14 +138,6 @@ export interface PromptText {
   text: string;
 }
 
-export interface PromptProposal {
-  id: string;
-  text: string;
-  reason: string;
-  current: string;
-  stale: boolean;
-}
-
 export interface PromptImage {
   mimeType: string;
   dataBase64: string;

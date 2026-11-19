@@ -7,10 +7,6 @@
 //! a running Session's prompt (or the hashes recorded in its metadata).
 
 pub mod defaults;
-mod proposals;
-
-pub use proposals::{Proposal, ProposalStore};
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,7 +49,6 @@ pub const TOOL_TODO: &str = "tool.todo.description";
 pub const TOOL_CTX_SEARCH: &str = "tool.ctx_search.description";
 pub const TOOL_SKILL_SEARCH: &str = "tool.skill_search.description";
 pub const TOOL_SKILL_MANAGE: &str = "tool.skill_manage.description";
-pub const TOOL_PROMPT_PROPOSE: &str = "tool.prompt_propose.description";
 pub const TOOL_SPAWN: &str = "tool.spawn.description";
 pub const TOOL_STEER: &str = "tool.steer.description";
 pub const TOOL_STOP: &str = "tool.stop.description";
@@ -94,7 +89,6 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_CTX_SEARCH,
     TOOL_SKILL_SEARCH,
     TOOL_SKILL_MANAGE,
-    TOOL_PROMPT_PROPOSE,
     TOOL_SPAWN,
     TOOL_STEER,
     TOOL_STOP,
@@ -167,7 +161,6 @@ pub fn default_text(id: &str) -> &'static str {
         SKILL_CATALOG => defaults::SKILL_CATALOG,
         TOOL_SKILL_SEARCH => defaults::TOOL_SKILL_SEARCH,
         TOOL_SKILL_MANAGE => defaults::TOOL_SKILL_MANAGE,
-        TOOL_PROMPT_PROPOSE => defaults::TOOL_PROMPT_PROPOSE,
         TOOL_SPAWN => defaults::TOOL_SPAWN,
         TOOL_STEER => defaults::TOOL_STEER,
         TOOL_STOP => defaults::TOOL_STOP,
@@ -198,10 +191,6 @@ pub enum PromptError {
     Io { id: String, message: String },
     #[error("prompt not found: {id}")]
     NotFound { id: String },
-    #[error("no pending proposal for prompt {id}")]
-    ProposalNotFound { id: String },
-    #[error("invalid proposal for prompt {id}: {message}")]
-    Invalid { id: String, message: String },
 }
 
 impl PromptError {
@@ -210,9 +199,7 @@ impl PromptError {
             Self::UnknownPlaceholder { id, .. }
             | Self::UnterminatedPlaceholder { id }
             | Self::Io { id, .. }
-            | Self::NotFound { id }
-            | Self::ProposalNotFound { id }
-            | Self::Invalid { id, .. } => id,
+            | Self::NotFound { id } => id,
         }
     }
 }

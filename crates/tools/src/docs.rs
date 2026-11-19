@@ -165,7 +165,7 @@ The `tool_keys` file (`tool-keys.json` by default) is a JSON object mapping key 
 
 ### `prompts`
 
-Prompt overrides live in `<prompts dir>/<id>.md`; the sibling `prompt-proposals/` directory holds pending proposals from `prompt_propose`. A Session pins the prompt text it renders when it starts, so editing an override affects Sessions started afterwards, never a running one.
+Prompt overrides live in `<prompts dir>/<id>.md`. A Session pins the prompt text it renders when it starts, so editing an override affects Sessions started afterwards, never a running one.
 
 ### `skills`
 

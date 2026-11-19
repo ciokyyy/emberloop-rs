@@ -36,7 +36,6 @@ pub const TOOL_TODO: &str = include_str!("../prompts/tool.todo.md");
 pub const TOOL_CTX_SEARCH: &str = include_str!("../prompts/tool.ctx_search.md");
 pub const TOOL_SKILL_SEARCH: &str = include_str!("../prompts/tool.skill_search.md");
 pub const TOOL_SKILL_MANAGE: &str = include_str!("../prompts/tool.skill_manage.md");
-pub const TOOL_PROMPT_PROPOSE: &str = include_str!("../prompts/tool.prompt_propose.md");
 pub const TODO_REMINDER: &str = include_str!("../prompts/todo.reminder.md");
 pub const ACP_STATUS_REPORT: &str = include_str!("../prompts/acp_status.report.md");
 pub const TOOL_SPAWN: &str = include_str!("../prompts/tool.spawn.md");

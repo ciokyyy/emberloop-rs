@@ -523,7 +523,6 @@ fn a_goldfish_cannot_call_a_tool_outside_its_allowlist() {
         "execute",
         "skill_search",
         "skill_manage",
-        "prompt_propose",
         "retry_call",
         "spawn",
         "steer",
@@ -932,7 +931,6 @@ fn mcp_serves_tools_and_errors() {
             "websearch",
             "skill_search",
             "skill_manage",
-            "prompt_propose",
             "retry_call",
             "execute"
         ]
@@ -1269,65 +1267,6 @@ fn bash_routes_long_running_commands_to_background() {
         );
     }
     call(&fixture, "bash", json!({"command": "true && true"})).expect("plain chain");
-}
-
-#[test]
-fn prompt_propose_stages_a_proposal_and_never_changes_the_active_prompt() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("project");
-    fs::create_dir(&root).expect("project root");
-    let prompts_dir = dir.path().join("prompts");
-    let config = ToolConfig {
-        prompts_dir: Some(prompts_dir.clone()),
-        ..ToolConfig::new(&root, dir.path().join("spill"))
-    };
-    let fixture = Fixture {
-        toolbox: Arc::new(Toolbox::new(config).expect("toolbox")),
-        root,
-        _dir: dir,
-    };
-
-    let staged = call(
-        &fixture,
-        "prompt_propose",
-        json!({"id": "tool.edit.description", "text": "new edit text", "reason": "bodies ate lines"}),
-    )
-    .expect("propose");
-    assert!(staged.contains("tool.edit.description"), "{staged}");
-    assert!(staged.contains("User approves"), "{staged}");
-    let active = call(
-        &fixture,
-        "prompt_propose",
-        json!({"id": "tool.edit.description"}),
-    )
-    .expect("read active");
-    assert_ne!(active, "new edit text");
-    assert!(active.contains("hashline"), "{active}");
-    let file = prompts_dir
-        .with_file_name("prompt-proposals")
-        .join("tool.edit.description.json");
-    assert!(fs::read_to_string(file).unwrap().contains("new edit text"));
-    assert!(!prompts_dir.join("tool.edit.description.md").exists());
-
-    for bad in [
-        json!({"id": "nope", "text": "t", "reason": "r"}),
-        json!({"id": "tool.edit.description", "text": "t"}),
-        json!({"id": "tool.edit.description", "text": "t {{ bogus }}", "reason": "r"}),
-    ] {
-        assert!(call(&fixture, "prompt_propose", bad).is_err());
-    }
-}
-
-#[test]
-fn prompt_propose_without_a_prompts_dir_says_so() {
-    let fixture = setup();
-    let error = call(
-        &fixture,
-        "prompt_propose",
-        json!({"id": "tool.edit.description", "text": "t", "reason": "r"}),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("prompts directory"), "{error}");
 }
 
 #[test]

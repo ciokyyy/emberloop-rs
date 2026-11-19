@@ -408,18 +408,6 @@ fn tool_specs() -> Vec<Value> {
             }
         },
         {
-            "name": "prompt_propose",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "Prompt id, for example tool.edit.description."},
-                    "text": {"type": "string", "description": "The complete replacement text. Omit text and reason to read the active text."},
-                    "reason": {"type": "string", "description": "What failed and why this text fixes it for every Session."}
-                },
-                "required": ["id"]
-            }
-        },
-        {
             "name": "retry_call",
             "inputSchema": {
                 "type": "object",

@@ -18,7 +18,6 @@ pub mod mcp;
 pub mod mcpclient;
 pub mod overflow;
 pub mod personas;
-pub mod promptpropose;
 pub mod read;
 pub mod readurl;
 pub mod seen;
@@ -90,7 +89,7 @@ pub struct ToolConfig {
     pub mcp_file: Option<PathBuf>,
     /// The global skills root (`~/.agents/skills`), readable beyond the project root.
     pub global_skills: Option<PathBuf>,
-    /// `<config root>/prompts`: where `prompt_propose` stages proposals beside it.
+    /// `<config root>/prompts`: the prompt overrides `el://docs` lists.
     pub prompts_dir: Option<PathBuf>,
     pub session_url: Option<String>,
     pub reviewer: bool,
@@ -482,7 +481,6 @@ impl Toolbox {
             }
             "skill_search" => skillsearch::run(self, args),
             "skill_manage" => skillmanage::run(self, args),
-            "prompt_propose" => promptpropose::run(self, args),
             "find" => find::run(self, args).await,
             "edit" => edit::run(self, args),
             "write" => write::run(self, args),

@@ -32,7 +32,6 @@ const FAMILIES = {
   steer: ['steer', 'tell'],
   stop: ['stop'],
   cancel: ['cancel'],
-  propose: ['prompt_propose'],
   retry: ['retry_call'],
   submit: ['submit', 'finish'],
   execute: ['execute'],

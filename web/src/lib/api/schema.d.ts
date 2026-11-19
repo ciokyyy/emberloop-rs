@@ -100,54 +100,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/prompt-proposals": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_prompt_proposals"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/prompt-proposals/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["discard_prompt_proposal"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/prompt-proposals/{id}/approve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["approve_prompt_proposal"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/prompts": {
         parameters: {
             query?: never;
@@ -747,15 +699,6 @@ export interface components {
         PromptImageDto: {
             dataBase64: string;
             mimeType: string;
-        };
-        /** @description A prompt edit the background review staged, beside the text it would replace. */
-        PromptProposalDto: {
-            current: string;
-            id: string;
-            reason: string;
-            /** @description The active text changed after the proposal was written. */
-            stale: boolean;
-            text: string;
         };
         PromptRequest: {
             images?: components["schemas"]["PromptImageDto"][];
@@ -1403,89 +1346,6 @@ export interface operations {
             };
             /** @description Design load error */
             500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    list_prompt_proposals: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Pending prompt proposals */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PromptProposalDto"][];
-                };
-            };
-        };
-    };
-    discard_prompt_proposal: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Proposal rejected */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No pending proposal for this prompt */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    approve_prompt_proposal: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Proposal written as the prompt override */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PromptDto"];
-                };
-            };
-            /** @description The proposed text is invalid */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No pending proposal for this prompt */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };

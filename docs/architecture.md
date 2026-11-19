@@ -155,7 +155,7 @@ flowchart LR
   T --> G[code graph, browser, figcraft]
   T --> K[skill_search, skill_manage]
   T --> A[spawn, steer, stop, result, submit]
-  T --> O[ctx_search, websearch, todo, prompt_propose]
+  T --> O[ctx_search, websearch, todo]
   X -->|output over the cap| S[(spill: ctx handle)]
   S --> O
 ```

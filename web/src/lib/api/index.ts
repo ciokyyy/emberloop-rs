@@ -8,7 +8,6 @@ import type {
   ProviderView,
   PromptImage,
   PromptInfo,
-  PromptProposal,
   PromptText,
   Session,
   SessionEvent,
@@ -191,13 +190,6 @@ export const api = {
     }),
   deletePrompt: (id: string) =>
     request<PromptInfo>(`/api/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  listPromptProposals: () => request<PromptProposal[]>('/api/prompt-proposals'),
-  approvePromptProposal: (id: string) =>
-    request<PromptInfo>(`/api/prompt-proposals/${encodeURIComponent(id)}/approve`, {
-      method: 'POST'
-    }),
-  discardPromptProposal: (id: string) =>
-    request<void>(`/api/prompt-proposals/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   // history is one page older than `before`, oldest first: the client walks back from the tail
   // window one page at a time, so a refresh never pays for the whole Session.
   history: (id: string, before: number, limit = 8) =>

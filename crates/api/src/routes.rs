@@ -38,9 +38,6 @@ use crate::state::{AppState, Settings};
         list_tool_keys,
         set_tool_key,
         list_prompts,
-        list_prompt_proposals,
-        approve_prompt_proposal,
-        discard_prompt_proposal,
         update_prompt,
         delete_prompt,
         get_prompt,
@@ -91,7 +88,6 @@ use crate::state::{AppState, Settings};
             PromptDto,
             UpdatePromptRequest,
             PromptTextDto,
-            PromptProposalDto,
             ModelEntry,
             crate::providers::ProviderView,
             crate::usage::UsageRecord,
@@ -989,9 +985,7 @@ fn prompt_dto(info: PromptInfo) -> PromptDto {
 
 fn prompt_error(error: prompts::PromptError) -> (StatusCode, String) {
     let status = match error {
-        prompts::PromptError::NotFound { .. } | prompts::PromptError::ProposalNotFound { .. } => {
-            StatusCode::NOT_FOUND
-        }
+        prompts::PromptError::NotFound { .. } => StatusCode::NOT_FOUND,
         _ => StatusCode::BAD_REQUEST,
     };
     (status, error.to_string())
@@ -1075,86 +1069,6 @@ pub async fn delete_prompt(
         .find(|info| info.id == id)
         .ok_or((StatusCode::NOT_FOUND, format!("prompt not found: {id}")))?;
     Ok(Json(prompt_dto(info)))
-}
-
-/// A prompt edit the background review staged, beside the text it would replace.
-#[derive(Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptProposalDto {
-    pub id: String,
-    pub text: String,
-    pub reason: String,
-    pub current: String,
-    /// The active text changed after the proposal was written.
-    pub stale: bool,
-}
-
-fn proposals(state: &AppState) -> prompts::ProposalStore {
-    prompts::ProposalStore::for_prompts_dir(state.prompts.dir())
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/prompt-proposals",
-    responses(
-        (status = 200, description = "Pending prompt proposals", body = Vec<PromptProposalDto>)
-    )
-)]
-pub async fn list_prompt_proposals(State(state): State<AppState>) -> Json<Vec<PromptProposalDto>> {
-    Json(
-        proposals(&state)
-            .list()
-            .into_iter()
-            .map(|proposal| PromptProposalDto {
-                current: state.prompts.text(&proposal.id).unwrap_or_default(),
-                stale: proposal.is_stale(&state.prompts),
-                id: proposal.id,
-                text: proposal.text,
-                reason: proposal.reason,
-            })
-            .collect(),
-    )
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/prompt-proposals/{id}/approve",
-    responses(
-        (status = 200, description = "Proposal written as the prompt override", body = PromptDto),
-        (status = 400, description = "The proposed text is invalid"),
-        (status = 404, description = "No pending proposal for this prompt")
-    )
-)]
-pub async fn approve_prompt_proposal(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<PromptDto>, (StatusCode, String)> {
-    proposals(&state)
-        .approve(&state.prompts, &id)
-        .map_err(prompt_error)?;
-    let info = state
-        .prompts
-        .list()
-        .into_iter()
-        .find(|info| info.id == id)
-        .ok_or((StatusCode::NOT_FOUND, format!("prompt not found: {id}")))?;
-    Ok(Json(prompt_dto(info)))
-}
-
-#[utoipa::path(
-    delete,
-    path = "/api/prompt-proposals/{id}",
-    responses(
-        (status = 204, description = "Proposal rejected"),
-        (status = 404, description = "No pending proposal for this prompt")
-    )
-)]
-pub async fn discard_prompt_proposal(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    proposals(&state).discard(&id).map_err(prompt_error)?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -1248,15 +1162,6 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/prompts/{id}",
             get(get_prompt).put(update_prompt).delete(delete_prompt),
-        )
-        .route("/api/prompt-proposals", get(list_prompt_proposals))
-        .route(
-            "/api/prompt-proposals/{id}/approve",
-            post(approve_prompt_proposal),
-        )
-        .route(
-            "/api/prompt-proposals/{id}",
-            axum::routing::delete(discard_prompt_proposal),
         )
         .route("/api/status/system", get(crate::status::get_system_status))
         .route(
@@ -1563,82 +1468,24 @@ mod prompt_routes_tests {
     }
 
     #[tokio::test]
-    async fn prompt_proposals_are_listed_approved_and_rejected() {
-        let dir = tempdir().unwrap();
-        let data_root = DataRoot::new(dir.path());
-        let projects = ProjectsStore::load(data_root.projects_file())
-            .await
-            .unwrap();
-        let sessions = SessionsStore::load(data_root.clone()).await.unwrap();
-        let state = AppState::new(data_root, projects, sessions, Arc::new(EventBus::default()));
-        let staged = prompts::ProposalStore::for_prompts_dir(state.prompts.dir());
-        staged
-            .propose(&state.prompts, "policy", "Proposed policy", "clearer")
-            .unwrap();
-        staged
-            .propose(&state.prompts, "caveman", "Proposed caveman", "terser")
-            .unwrap();
-        let app = build_router(state);
-        let send = |method: &str, uri: &str| {
+    async fn prompt_proposal_routes_are_gone() {
+        let app = app().await;
+        for (method, uri) in [
+            ("GET", "/api/prompt-proposals"),
+            ("POST", "/api/prompt-proposals/policy/approve"),
+            ("DELETE", "/api/prompt-proposals/policy"),
+        ] {
             let request = Request::builder()
                 .method(method)
                 .uri(uri)
                 .body(Body::empty())
                 .unwrap();
-            app.clone().oneshot(request)
-        };
-
-        let listed = json(send("GET", "/api/prompt-proposals").await.unwrap()).await;
-        let policy = listed
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|proposal| proposal["id"] == "policy")
-            .unwrap();
-        assert_eq!(policy["text"], "Proposed policy");
-        assert_eq!(policy["reason"], "clearer");
-        assert_eq!(policy["stale"], false);
-        assert!(policy["current"].as_str().unwrap().len() > "Proposed policy".len());
-        assert_eq!(listed.as_array().unwrap().len(), 2);
-
-        let approved = send("POST", "/api/prompt-proposals/policy/approve")
-            .await
-            .unwrap();
-        assert_eq!(approved.status(), StatusCode::OK);
-        assert_eq!(json(approved).await["differs"], true);
-        let active = json(send("GET", "/api/prompts/policy").await.unwrap()).await;
-        assert_eq!(active["text"], "Proposed policy");
-
-        let rejected = send("DELETE", "/api/prompt-proposals/caveman")
-            .await
-            .unwrap();
-        assert_eq!(rejected.status(), StatusCode::NO_CONTENT);
-        let active = json(send("GET", "/api/prompts/caveman").await.unwrap()).await;
-        assert_ne!(active["text"], "Proposed caveman");
-
-        let listed = json(send("GET", "/api/prompt-proposals").await.unwrap()).await;
-        assert!(listed.as_array().unwrap().is_empty());
-        for (method, uri) in [
-            ("POST", "/api/prompt-proposals/policy/approve"),
-            ("DELETE", "/api/prompt-proposals/caveman"),
-            ("DELETE", "/api/prompt-proposals/no.such.prompt"),
-        ] {
             assert_eq!(
-                send(method, uri).await.unwrap().status(),
+                app.clone().oneshot(request).await.unwrap().status(),
                 StatusCode::NOT_FOUND,
                 "{method} {uri}"
             );
         }
-        // A hand-edited file with a bad placeholder is refused, not applied.
-        std::fs::write(
-            staged.dir().join("policy.json"),
-            r#"{"id":"policy","text":"{{ bogus }}","reason":"r","base_hash":"x"}"#,
-        )
-        .unwrap();
-        let refused = send("POST", "/api/prompt-proposals/policy/approve")
-            .await
-            .unwrap();
-        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
     }
 
     struct RecordingDriver {

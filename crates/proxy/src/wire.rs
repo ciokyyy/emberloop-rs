@@ -1581,7 +1581,6 @@ mod tests {
             "execute",
             "skill_search",
             "skill_manage",
-            "prompt_propose",
             "retry_call",
             "compress",
             "decompress",

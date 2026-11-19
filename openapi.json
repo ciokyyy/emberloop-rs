@@ -243,85 +243,6 @@
         }
       }
     },
-    "/api/prompt-proposals": {
-      "get": {
-        "tags": [],
-        "operationId": "list_prompt_proposals",
-        "responses": {
-          "200": {
-            "description": "Pending prompt proposals",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/PromptProposalDto"
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/prompt-proposals/{id}": {
-      "delete": {
-        "tags": [],
-        "operationId": "discard_prompt_proposal",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Proposal rejected"
-          },
-          "404": {
-            "description": "No pending proposal for this prompt"
-          }
-        }
-      }
-    },
-    "/api/prompt-proposals/{id}/approve": {
-      "post": {
-        "tags": [],
-        "operationId": "approve_prompt_proposal",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Proposal written as the prompt override",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PromptDto"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The proposed text is invalid"
-          },
-          "404": {
-            "description": "No pending proposal for this prompt"
-          }
-        }
-      }
-    },
     "/api/prompts": {
       "get": {
         "tags": [],
@@ -2077,35 +1998,6 @@
             "type": "string"
           },
           "mimeType": {
-            "type": "string"
-          }
-        }
-      },
-      "PromptProposalDto": {
-        "type": "object",
-        "description": "A prompt edit the background review staged, beside the text it would replace.",
-        "required": [
-          "id",
-          "text",
-          "reason",
-          "current",
-          "stale"
-        ],
-        "properties": {
-          "current": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          },
-          "stale": {
-            "type": "boolean",
-            "description": "The active text changed after the proposal was written."
-          },
-          "text": {
             "type": "string"
           }
         }
