@@ -38,16 +38,13 @@ impl WireKind {
 }
 
 /// The system text of one request: the pinned skill texts, then the Session's frozen catalog.
-pub fn prompt_text(pins: &PinnedPrompts, codebase_memory: bool, catalog: &str) -> String {
-    let mut ids = vec![
+pub fn prompt_text(pins: &PinnedPrompts, catalog: &str) -> String {
+    let ids = [
         prompts::POLICY,
         prompts::PONYTAIL,
         prompts::CAVEMAN,
         prompts::SUPERPOWERS,
     ];
-    if codebase_memory {
-        ids.push(prompts::SKILL_CODEBASE_MEMORY);
-    }
     let mut text = String::new();
     for id in ids {
         let Some(part) = pins.text(id).filter(|t| !t.trim().is_empty()) else {
@@ -71,10 +68,9 @@ pub fn inject_prompts_for_wire(
     wire: WireKind,
     request: &mut Value,
     pins: &PinnedPrompts,
-    codebase_memory: bool,
     catalog: &str,
 ) {
-    let text = prompt_text(pins, codebase_memory, catalog);
+    let text = prompt_text(pins, catalog);
     if text.is_empty() {
         return;
     }
@@ -1326,21 +1322,13 @@ mod tests {
     }
 
     #[test]
-    fn the_graph_skill_joins_the_system_prompt_only_when_the_graph_is_up() {
+    fn the_catalog_follows_the_pinned_prompts_without_a_graph_skill() {
         let dir = tempfile::tempdir().unwrap();
         let pins =
             PinnedPrompts::pin(&PromptStore::new(dir.path()), &PromptVars::default()).unwrap();
-        let without = prompt_text(&pins, false, "");
-        let with = prompt_text(&pins, true, "");
-        assert!(prompt_text(&pins, true, "- a: b").ends_with("\n\n- a: b"));
-        assert!(!without.contains("Codebase memory"));
-        assert!(with.starts_with(&without));
-        assert_eq!(
-            with.strip_prefix(&without)
-                .unwrap()
-                .trim_start_matches("\n\n"),
-            pins.text(prompts::SKILL_CODEBASE_MEMORY).unwrap()
-        );
+        let text = prompt_text(&pins, "");
+        assert!(!text.contains("Codebase memory"));
+        assert!(prompt_text(&pins, "- a: b").ends_with("\n\n- a: b"));
     }
 
     fn breakpoint() -> Value {
@@ -1702,12 +1690,7 @@ mod tests {
                 assert!(!text.contains(absent), "{wire:?} carried {absent}");
             }
             assert!(!request.to_string().contains(marker), "{wire:?}");
-            for id in [
-                prompts::PONYTAIL,
-                prompts::CAVEMAN,
-                prompts::SUPERPOWERS,
-                prompts::SKILL_CODEBASE_MEMORY,
-            ] {
+            for id in [prompts::PONYTAIL, prompts::CAVEMAN, prompts::SUPERPOWERS] {
                 let part = pins.text(id).unwrap_or_default().trim();
                 assert!(part.is_empty() || !text.contains(part), "{wire:?} {id}");
             }

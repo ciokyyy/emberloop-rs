@@ -24,7 +24,7 @@ fn write_override(dir: &Path, id: &str, text: &str) {
 }
 
 #[test]
-fn tool_guidance_keeps_edits_anchored_and_graph_calls_discoverable() {
+fn tool_guidance_keeps_edits_anchored_and_find_graph_aware() {
     assert!(default_text(POLICY).contains("Use hashline `edit` for existing files"));
     assert!(default_text(TOOL_EDIT).contains("PUT 4.=4:"));
     // A short body must not eat the lines a range covers.
@@ -32,8 +32,24 @@ fn tool_guidance_keeps_edits_anchored_and_graph_calls_discoverable() {
     assert!(default_text(COMPRESS_PROMPT).contains("pending step"));
     // Python edits route through the hashline tool, not around it.
     assert!(default_text(TOOL_EXECUTE).contains("tools.edit(input="));
-    assert!(default_text(SKILL_CODEBASE_MEMORY).contains("tools.call('graph.search_graph'"));
-    assert!(default_text(SKILL_CODEBASE_MEMORY).contains("not a complete runtime call graph"));
+    let find = default_text(TOOL_FIND);
+    for named in ["`direction`", "`depth`", "`inbound`", "`outbound`"] {
+        assert!(find.contains(named), "{find}");
+    }
+    assert!(default_text(TOOL_EXECUTE).contains("find"));
+}
+
+#[test]
+fn spawn_guidance_teaches_batch_fan_out() {
+    let spawn = default_text(TOOL_SPAWN);
+    assert!(spawn.contains("batch"), "{spawn}");
+    assert!(spawn.contains("completed"), "{spawn}");
+    assert!(default_text(POLICY).contains("spawn(batch="));
+}
+
+#[test]
+fn the_retired_codebase_memory_skill_is_not_a_prompt() {
+    assert!(!PROMPT_IDS.contains(&"skill.codebase-memory"));
 }
 
 #[test]
@@ -70,14 +86,28 @@ const OFFERED_TOOLS: &[&str] = &[
     "prompt_propose",
     "retry_call",
     "execute",
+    "spawn",
+    "steer",
+    "stop",
+    "result",
+    "submit",
 ];
 /// Tools the proxy injects into every request.
 const PROXY_TOOLS: &[&str] = &["compress", "decompress", "search_context", "acp_status"];
 /// Bare identifiers the model-facing texts may quote that are neither tools nor
 /// tool arguments: the `compress` range fields and the `search_context` arguments.
 const ARGUMENTS: &[&str] = &[
-    "ranges", "start", "end", "summary", "topic", "contents", "query", "limit",
+    "ranges", "start", "end", "summary", "topic", "contents", "query", "limit", "batch",
 ];
+
+#[test]
+fn retry_call_text_names_the_allowlisted_tools() {
+    let text = default_text(TOOL_RETRY_CALL);
+    for name in ["spawn", "steer", "write", "edit"] {
+        assert!(text.contains(name), "{text}");
+    }
+    assert!(text.contains("`execute`"), "{text}");
+}
 
 fn backticked(text: &str) -> Vec<&str> {
     text.split('`').skip(1).step_by(2).collect()

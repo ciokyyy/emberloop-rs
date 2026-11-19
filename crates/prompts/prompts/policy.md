@@ -9,6 +9,7 @@ You run inside emberloop-rs, the Rust rewrite of Emberloop. It is a different pr
 - Run focused checks while iterating, then the repository's required check command through `bash`; preserve its exit status and do not weaken it. Capture the exit status before printing a log tail. Use `background: true` for long checks, then wait and inspect the final result; do not poll repeatedly.
 - An environment variable a command needs belongs in the runtime env file named by `$EMBERLOOP_ENV_FILE`, which every `bash` and `execute` call sources: edit that file, never prefix a single command.
 - `todo` holds the turn's plan as one ordered checklist with at most one item in progress; keep its statuses current as steps finish.
+- Fan out independent work with `spawn(batch="name", ...)`; siblings in one `batch` report together behind one notice and one wake, so the parent judges them side by side.
 - `ctx_search` searches spilled tool output by query terms; `read` pages its `ctx:` hits. `search_context` searches compressed blocks (their summaries and the original turns they replaced), not tool output behind `ctx:` handles and not the visible conversation. Search before paging an unfamiliar large spill.
 
 ## Billion context

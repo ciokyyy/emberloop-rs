@@ -45,6 +45,15 @@ fn main() {
             let _ = std::fs::write(path, child.id().to_string());
         }
     }
+    if let Some(log) = std::env::var_os("FAKE_MCP_START_LOG") {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+        {
+            let _ = writeln!(file, "start");
+        }
+    }
     if std::env::var_os("FAKE_MCP_EXIT").is_some() {
         std::process::exit(1);
     }
@@ -102,6 +111,19 @@ fn main() {
 }
 
 fn call_reply(name: &str, params: &Value, projects: &str) -> Value {
+    if let Some(log) = std::env::var_os("FAKE_MCP_CALL_LOG") {
+        let args = params.get("arguments").cloned().unwrap_or(json!({}));
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+        {
+            let _ = writeln!(file, "{name}\t{args}");
+        }
+    }
+    if name == "get_architecture" || name == "trace_path" {
+        return graph_reply(name);
+    }
     if name == "broken" {
         json!({"content": [{"type": "text", "text": "boom"}], "isError": true})
     } else if name == "list_projects" {
@@ -114,4 +136,24 @@ fn call_reply(name: &str, params: &Value, projects: &str) -> Value {
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
         json!({"content": [{"type": "text", "text": format!("{name}:{args}")}]})
     }
+}
+
+/// `get_architecture` and `trace_path` answer JSON, so `find` can parse and render them.
+fn graph_reply(name: &str) -> Value {
+    if let Some(ms) = std::env::var("FAKE_MCP_GRAPH_DELAY_MS")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+    let text = match std::env::var("FAKE_MCP_GRAPH_MODE").as_deref() {
+        Ok("empty") => "{}",
+        Ok("truncated") => "{\"modules\":[",
+        Ok("error") => {
+            return json!({"content": [{"type": "text", "text": "boom"}], "isError": true})
+        }
+        _ if name == "get_architecture" => "{\"modules\":[{\"path\":\"crates/tools\"}]}",
+        _ => "{\"callers\":[{\"name\":\"run\"}]}",
+    };
+    json!({"content": [{"type": "text", "text": text}]})
 }

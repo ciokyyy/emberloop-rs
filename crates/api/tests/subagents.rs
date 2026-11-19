@@ -161,7 +161,7 @@ async fn reviewers_persist_across_tickets_and_each_submit_delivers_including_ide
     assert!(child.last_used_at.unwrap() >= child.created_at);
     assert_ne!(id, spawn(&state, "standards", "ticket.md").await);
     assert_eq!(id, spawn(&state, "spec", "next.md").await);
-    state.steers.queue("parent").set_turn_active(true);
+    state.steers.queue("parent").set_turn_active(true).await;
     for _ in 0..3 {
         let (status, _) = call(&state, &id, json!({"action":"submit","status":" done ","report":"Missing test","summary":"Needs\n test"})).await;
         assert_eq!(status, StatusCode::OK);
@@ -194,7 +194,7 @@ async fn errors_notify_parent_without_a_submit_and_stop_keeps_the_reviewer() {
     let dir = tempfile::tempdir().unwrap();
     let (state, driver) = setup(dir.path()).await;
     let id = spawn(&state, "spec", "ticket.md").await;
-    state.steers.queue("parent").set_turn_active(true);
+    state.steers.queue("parent").set_turn_active(true).await;
     let watcher = api::subagents::watch_errors(state.clone());
     let mut events = state.event_bus.subscribe();
     state
@@ -312,7 +312,7 @@ async fn active_assignments_cannot_change_and_new_parents_get_their_own_pair() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _) = setup(dir.path()).await;
     let id = spawn(&state, "spec", "ticket.md").await;
-    state.steers.queue(&id).set_turn_active(true);
+    state.steers.queue(&id).set_turn_active(true).await;
     assert_eq!(
         call(
             &state,
@@ -486,7 +486,7 @@ async fn worker_spawn_creates_fresh_sessions_and_steer_reuses_cache() {
     assert_eq!(driver.prompts.lock().unwrap()[2], "follow up");
 
     // Steering an active worker queues a mid-turn steer instead of prompting directly.
-    state.steers.queue(&id1).set_turn_active(true);
+    state.steers.queue(&id1).set_turn_active(true).await;
     let (qt, qb) = call(
         &state,
         "parent",
@@ -496,7 +496,7 @@ async fn worker_spawn_creates_fresh_sessions_and_steer_reuses_cache() {
     assert_eq!(qt, StatusCode::OK, "{qb}");
     assert_eq!(driver.prompts.lock().unwrap().len(), 3);
     assert_eq!(state.steers.queue(&id1).entries().await.len(), 1);
-    state.steers.queue(&id1).set_turn_active(false);
+    state.steers.queue(&id1).set_turn_active(false).await;
     // 1-level hierarchy: worker cannot spawn, steer, stop, or result.
     for blocked in [
         json!({"action":"spawn","role":"worker","text":"nested"}),
@@ -591,7 +591,7 @@ async fn scout_spawn_creates_fresh_sessions_and_steer_reuses_cache() {
     assert_eq!(st, StatusCode::OK, "{sb}");
     assert_eq!(driver.prompts.lock().unwrap()[2], "check callers too");
 
-    state.steers.queue(&id1).set_turn_active(true);
+    state.steers.queue(&id1).set_turn_active(true).await;
     let (qt, qb) = call(
         &state,
         "parent",
@@ -601,7 +601,7 @@ async fn scout_spawn_creates_fresh_sessions_and_steer_reuses_cache() {
     assert_eq!(qt, StatusCode::OK, "{qb}");
     assert_eq!(driver.prompts.lock().unwrap().len(), 3);
     assert_eq!(state.steers.queue(&id1).entries().await.len(), 1);
-    state.steers.queue(&id1).set_turn_active(false);
+    state.steers.queue(&id1).set_turn_active(false).await;
     assert_eq!(
         call(
             &state,
@@ -770,7 +770,7 @@ async fn intelligence_tiers_configure_and_switch_workers_and_scouts_and_reject_r
         Some("smol")
     );
 
-    state.steers.queue(&scout_id).set_turn_active(true);
+    state.steers.queue(&scout_id).set_turn_active(true).await;
     let (scout_conflict, _) = call(
         &state,
         "parent",
@@ -778,9 +778,9 @@ async fn intelligence_tiers_configure_and_switch_workers_and_scouts_and_reject_r
     )
     .await;
     assert_eq!(scout_conflict, StatusCode::CONFLICT);
-    state.steers.queue(&scout_id).set_turn_active(false);
+    state.steers.queue(&scout_id).set_turn_active(false).await;
 
-    state.steers.queue(&worker_id).set_turn_active(true);
+    state.steers.queue(&worker_id).set_turn_active(true).await;
     let (conflict_status, _) = call(
         &state,
         "parent",
@@ -788,8 +788,8 @@ async fn intelligence_tiers_configure_and_switch_workers_and_scouts_and_reject_r
     )
     .await;
     assert_eq!(conflict_status, StatusCode::CONFLICT);
-    state.steers.queue(&worker_id).set_turn_active(false);
-    state.steers.queue(&worker_id).set_turn_active(false);
+    state.steers.queue(&worker_id).set_turn_active(false).await;
+    state.steers.queue(&worker_id).set_turn_active(false).await;
 }
 
 struct PiListed;
@@ -1253,7 +1253,7 @@ async fn watch_errors_async_recovery_resets_transient_budget_and_terminal_ignore
     let id = body["id"].as_str().unwrap().to_string();
     // Keep the parent busy so the exhaustion report stays queued instead of being
     // delivered as an extra driver prompt by `wake_parent` -> `deliver_idle`.
-    state.steers.queue("parent").set_turn_active(true);
+    state.steers.queue("parent").set_turn_active(true).await;
 
     // Incident 1: transient async error recovers after 1 retry.
     state
@@ -1359,7 +1359,7 @@ async fn a_text_only_turn_is_nudged_and_an_accepted_submit_ends_the_nudges() {
     let dir = tempfile::tempdir().unwrap();
     let (state, driver) = setup(dir.path()).await;
     let watcher = api::subagents::watch_submits(state.clone());
-    state.steers.queue("parent").set_turn_active(true);
+    state.steers.queue("parent").set_turn_active(true).await;
     let (status, body) = call(
         &state,
         "parent",
@@ -1411,7 +1411,7 @@ async fn a_subagent_that_never_submits_gets_three_nudges_then_a_blocked_report()
     let dir = tempfile::tempdir().unwrap();
     let (state, driver) = setup(dir.path()).await;
     let watcher = api::subagents::watch_submits(state.clone());
-    state.steers.queue("parent").set_turn_active(true);
+    state.steers.queue("parent").set_turn_active(true).await;
     let (status, body) = call(
         &state,
         "parent",
@@ -1468,7 +1468,7 @@ async fn a_first_time_submit_and_plain_sessions_are_not_nudged() {
     let dir = tempfile::tempdir().unwrap();
     let (state, driver) = setup(dir.path()).await;
     let watcher = api::subagents::watch_submits(state.clone());
-    state.steers.queue("parent").set_turn_active(true);
+    state.steers.queue("parent").set_turn_active(true).await;
     let (status, body) = call(
         &state,
         "parent",
@@ -1769,7 +1769,7 @@ async fn goldfish_is_stopped_after_its_report_and_never_resurrected() {
     write_persona(dir.path(), "elephant");
     let submits = api::subagents::watch_submits(state.clone());
     let errors = api::subagents::watch_errors(state.clone());
-    state.steers.queue("parent").set_turn_active(true);
+    state.steers.queue("parent").set_turn_active(true).await;
     let (_, body) = goldfish(&state, "elephant", json!({})).await;
     let id = body["id"].as_str().unwrap().to_string();
 
@@ -1817,7 +1817,7 @@ async fn a_goldfish_that_never_submits_is_blocked_then_stopped() {
     let (state, driver) = setup(dir.path()).await;
     write_persona(dir.path(), "elephant");
     let submits = api::subagents::watch_submits(state.clone());
-    state.steers.queue("parent").set_turn_active(true);
+    state.steers.queue("parent").set_turn_active(true).await;
     let (_, body) = goldfish(&state, "elephant", json!({})).await;
     let id = body["id"].as_str().unwrap().to_string();
 
@@ -1847,4 +1847,308 @@ async fn goldfish_spawn_reports_a_missing_parent_project() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.to_string().contains("project was not found"), "{body}");
     assert!(driver.prompts.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn batch_names_are_validated_and_batches_seal_with_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _) = setup(dir.path()).await;
+    for batch in [json!("   "), json!("x".repeat(65)), json!("bad\nname")] {
+        let (status, body) = call(
+            &state,
+            "parent",
+            json!({"action":"spawn","role":"worker","text":"work","batch":batch}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    state.steers.queue("parent").set_turn_active(true).await;
+    let first = spawn_batch(&state, "worker", "first", "fleet").await;
+    assert_eq!(first.0, StatusCode::OK);
+    state.steers.queue("parent").set_turn_active(false).await;
+    let (status, body) = call(
+        &state,
+        "parent",
+        json!({"action":"spawn","role":"worker","text":"late","batch":"fleet"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("sealed"), "{body}");
+}
+
+#[tokio::test]
+async fn duplicate_pending_reviewer_reuse_in_a_batch_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _) = setup(dir.path()).await;
+    state.steers.queue("parent").set_turn_active(true).await;
+    let (status, body) = call(
+        &state,
+        "parent",
+        json!({"action":"spawn","role":"spec","ticketPath":"ticket.md","startingPoint":"abc123","batch":"review"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call(
+        &state,
+        "parent",
+        json!({"action":"spawn","role":"spec","ticketPath":"next.md","startingPoint":"abc123","batch":"review"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("already pending"), "{body}");
+}
+
+#[tokio::test]
+async fn batched_reports_stay_held_until_the_sealed_batch_finishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup(dir.path()).await;
+    state.steers.queue("parent").set_turn_active(true).await;
+    let (_, body) = spawn_batch(&state, "worker", "one", "fleet").await;
+    let one = body["id"].as_str().unwrap().to_string();
+    let (_, body) = spawn_batch(&state, "worker", "two", "fleet").await;
+    let two = body["id"].as_str().unwrap().to_string();
+
+    let (status, reply) = call(
+        &state,
+        &one,
+        json!({"action":"submit","status":"done","report":"first report"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["heldInBatch"], "fleet", "{reply}");
+    let queued = state.steers.queue("parent");
+    assert_eq!(queued.pending_len().await, 0);
+    assert_eq!(
+        queued.entries().await[0].state,
+        emberloop_core::steer::SteerState::Held
+    );
+    assert!(state
+        .get_event_log("parent")
+        .await
+        .unwrap()
+        .kind_tail(&EventKind::SteerQueued, 10)
+        .await
+        .unwrap()
+        .is_empty());
+    let (status, results) = call(&state, "parent", json!({"action":"result","id":one})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(results["reports"].as_array().unwrap().len(), 1);
+    let user = queued
+        .enqueue(emberloop_core::steer::SteerKind::Steer, "user prompt")
+        .await;
+    let drained = queued.drain_pending().await;
+    assert_eq!(drained.len(), 1, "held reports never ride a user prompt");
+    assert_eq!(drained[0].id, user.id);
+    queued.mark_delivered(&[user.id], "test").await;
+
+    queued.set_turn_active(false).await;
+    driver.prompts.lock().unwrap().clear();
+    let (status, reply) = call(
+        &state,
+        &two,
+        json!({"action":"submit","status":"done","report":"second report"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert!(reply.get("heldInBatch").is_none(), "{reply}");
+    let events = state
+        .get_event_log("parent")
+        .await
+        .unwrap()
+        .kind_tail(&EventKind::SteerQueued, 10)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 2, "one event per released report");
+    assert!(!queued.has_open_batch().await);
+    let prompts = driver.prompts.lock().unwrap();
+    assert_eq!(
+        prompts.len(),
+        1,
+        "one wake for the whole batch: {prompts:?}"
+    );
+    assert!(
+        prompts[0].contains("Batch \"fleet\" completed (2/2):"),
+        "{}",
+        prompts[0]
+    );
+    assert!(prompts[0].contains("first report"));
+    assert!(prompts[0].contains("second report"));
+}
+
+async fn spawn_batch(state: &AppState, role: &str, text: &str, batch: &str) -> (StatusCode, Value) {
+    call(
+        state,
+        "parent",
+        json!({"action":"spawn","role":role,"text":text,"batch":batch}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_failed_worker_dispatch_delivers_an_error_report_inside_the_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, driver) = setup(dir.path()).await;
+    state.steers.queue("parent").set_turn_active(true).await;
+    let (_, body) = spawn_batch(&state, "worker", "one", "fleet").await;
+    let one = body["id"].as_str().unwrap().to_string();
+    let (_, reply) = call(
+        &state,
+        &one,
+        json!({"action":"submit","status":"done","report":"first"}),
+    )
+    .await;
+    assert_eq!(reply["heldInBatch"], "fleet", "{reply}");
+    for _ in 0..10 {
+        driver
+            .outcomes
+            .lock()
+            .unwrap()
+            .push_back(Err("dispatch failed".into()));
+    }
+    let (status, body) = spawn_batch(&state, "worker", "two", "fleet").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+
+    let queued = state.steers.queue("parent");
+    let entries = queued.entries().await;
+    assert_eq!(entries.len(), 2);
+    assert!(entries
+        .iter()
+        .all(|entry| entry.state == emberloop_core::steer::SteerState::Held));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.report.as_ref().is_some_and(|r| r.status == "error")));
+    let released = queued.set_turn_active(false).await;
+    assert_eq!(released.len(), 3, "notice plus two reports");
+    assert_eq!(released[0].text, "Batch \"fleet\" completed (2/2):");
+    assert_eq!(queued.pending_len().await, 3);
+    assert!(!queued.has_open_batch().await);
+}
+
+#[tokio::test]
+async fn recovery_reconciles_open_batches_and_publishes_released_reports() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _) = setup(dir.path()).await;
+    let queue = state.steers.queue("parent");
+    queue.set_turn_active(true).await;
+    for child in ["child1", "child2"] {
+        queue
+            .register_batch_member(
+                "fleet",
+                child,
+                emberloop_core::steer::DEFAULT_BATCH_DEADLINE_MS,
+            )
+            .await
+            .unwrap();
+    }
+    queue
+        .enqueue_report(emberloop_core::steer::SubagentReport {
+            session_id: "child1".into(),
+            role: "worker".into(),
+            ticket_path: String::new(),
+            status: "done".into(),
+            summary: "first".into(),
+            report: "first report".into(),
+        })
+        .await
+        .unwrap();
+    queue.complete_batch_member("child1").await;
+    let root = state.data_root.clone();
+    drop(state);
+
+    let driver = Arc::new(Driver::default());
+    let restored = AppState::new(
+        root.clone(),
+        ProjectsStore::load(root.projects_file()).await.unwrap(),
+        SessionsStore::load(root).await.unwrap(),
+        Arc::new(EventBus::default()),
+    )
+    .with_driver(driver.clone());
+    api::subagents::recover(&restored).await.unwrap();
+    api::subagents::recover(&restored).await.unwrap();
+
+    let prompts = driver.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].contains("Batch \"fleet\" completed (2/2):"));
+    assert!(prompts[0].contains("first report"));
+    assert!(prompts[0].contains("errored"));
+    assert_eq!(
+        restored
+            .get_event_log("parent")
+            .await
+            .unwrap()
+            .kind_tail(&EventKind::SteerQueued, 10)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    let queue = restored.steers.queue("parent");
+    assert!(!queue.has_open_batch().await);
+    assert_eq!(
+        queue.pending_len().await,
+        0,
+        "the wake delivered everything"
+    );
+    let reports: Vec<_> = queue
+        .entries()
+        .await
+        .into_iter()
+        .filter_map(|entry| entry.report)
+        .collect();
+    assert_eq!(reports.len(), 2);
+    assert!(reports.iter().any(|report| report.status == "done"));
+    assert!(reports.iter().any(|report| report.status == "errored"));
+}
+
+#[tokio::test]
+async fn recovery_keeps_held_reports_out_of_the_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _) = setup(dir.path()).await;
+    let queue = state.steers.queue("parent");
+    queue.set_turn_active(true).await;
+    for child in ["child1", "child2"] {
+        queue
+            .register_batch_member(
+                "fleet",
+                child,
+                emberloop_core::steer::DEFAULT_BATCH_DEADLINE_MS,
+            )
+            .await
+            .unwrap();
+    }
+    queue
+        .enqueue_report(emberloop_core::steer::SubagentReport {
+            session_id: "child1".into(),
+            role: "worker".into(),
+            ticket_path: String::new(),
+            status: "done".into(),
+            summary: "first".into(),
+            report: "first report".into(),
+        })
+        .await
+        .unwrap();
+    queue.complete_batch_member("child1").await;
+
+    api::subagents::recover(&state).await.unwrap();
+
+    assert_eq!(
+        state
+            .get_event_log("parent")
+            .await
+            .unwrap()
+            .kind_tail(&EventKind::SteerQueued, 10)
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
+    assert!(queue.has_open_batch().await);
+    assert!(queue.entries().await.iter().any(|entry| {
+        entry.state == emberloop_core::steer::SteerState::Held
+            && entry
+                .report
+                .as_ref()
+                .is_some_and(|report| report.session_id == "child1")
+    }));
 }

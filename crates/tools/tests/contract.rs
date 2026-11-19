@@ -312,4 +312,8 @@ fn the_spawn_schema_advertises_a_goldfish_with_a_persona() {
         schema["properties"]["persona"].is_object(),
         "spawn has no persona property: {schema}"
     );
+    assert_eq!(
+        schema["properties"]["batch"]["type"], "string",
+        "spawn has no batch property: {schema}"
+    );
 }

@@ -33,7 +33,7 @@ fn the_skill_catalog_is_read_once_so_a_later_skill_never_changes_the_prompt() {
         dir.path().join("splices.json"),
     )
     .unwrap();
-    let before = crate::wire::prompt_text(&runtime.pins, false, &runtime.catalog);
+    let before = crate::wire::prompt_text(&runtime.pins, &runtime.catalog);
     std::fs::write(
         dir.path().join("skill-catalog.md"),
         "- first: one\n- second: two\n",
@@ -41,7 +41,7 @@ fn the_skill_catalog_is_read_once_so_a_later_skill_never_changes_the_prompt() {
     .unwrap();
     assert!(before.contains("- first: one"), "{before}");
     assert_eq!(
-        crate::wire::prompt_text(&runtime.pins, false, &runtime.catalog),
+        crate::wire::prompt_text(&runtime.pins, &runtime.catalog),
         before
     );
 }
@@ -4279,15 +4279,8 @@ async fn a_preflight_fold_clears_the_sticky_emergency_flag() {
         preserve_recent_messages: 0,
         ..api::state::Settings::default()
     };
-    let outcome = prepare_request(
-        &runtime,
-        WireKind::Google,
-        &mut request,
-        50_000,
-        &settings,
-        false,
-    )
-    .unwrap();
+    let outcome =
+        prepare_request(&runtime, WireKind::Google, &mut request, 50_000, &settings).unwrap();
     assert!(outcome.preflight.is_some(), "the preflight fold ran");
     assert!(!runtime.emergency_truncated.load(Ordering::Relaxed));
 }
@@ -5342,15 +5335,8 @@ async fn a_goldfish_request_over_the_window_skips_preflight_and_nudge() {
         preserve_recent_messages: 0,
         ..api::state::Settings::default()
     };
-    let outcome = prepare_request(
-        &runtime,
-        WireKind::Google,
-        &mut request,
-        50_000,
-        &settings,
-        false,
-    )
-    .unwrap();
+    let outcome =
+        prepare_request(&runtime, WireKind::Google, &mut request, 50_000, &settings).unwrap();
     assert!(outcome.preflight.is_none(), "a goldfish is never folded");
     assert!(outcome.nudge.is_none(), "a goldfish gets no nudge");
 }

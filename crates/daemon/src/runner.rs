@@ -9,7 +9,7 @@ use api::routes::PromptImageDto;
 use api::state::Settings;
 use emberloop_core::events::{EventBus, EventKind, SessionEvent};
 use emberloop_core::steer::{
-    deliver_idle, SteerImage, SteerKind, SteerQueue, SteerQueues, SteerWaker,
+    deliver_idle, SteerEntry, SteerImage, SteerKind, SteerQueue, SteerQueues, SteerWaker,
 };
 use futures::StreamExt;
 use harness::{Harness, HarnessEvent, HarnessSession, HarnessWiring, PromptImage};
@@ -200,6 +200,25 @@ impl SessionRunner {
         idle
     }
 
+    /// Release batches past their deadline and wake their idle parents once.
+    pub async fn reap_expired_batches(&self, now_ms: u64) {
+        for meta in self.sessions.list(None).await {
+            let queue = self.steers.queue(&meta.id);
+            if !queue.has_open_batch().await {
+                continue;
+            }
+            let released = queue.expire_batches(now_ms).await;
+            if released.is_empty() {
+                continue;
+            }
+            let events_dir = self.data_root.session_events_dir(&meta.id);
+            publish_released(&self.events, &self.logs, &events_dir, &meta.id, &released).await;
+            if !queue.is_turn_active() {
+                self.deliver_pending(&meta.id).await;
+            }
+        }
+    }
+
     /// Starts the idle watcher. It is the only caller of `reap_idle` outside tests.
     #[allow(clippy::disallowed_methods)]
     pub fn watch_idle(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -207,6 +226,7 @@ impl SessionRunner {
         tokio::spawn(async move {
             loop {
                 runner.reap_idle().await;
+                runner.reap_expired_batches(wall_ms()).await;
                 tokio::time::sleep(IDLE_CHECK_EVERY).await;
             }
         })
@@ -550,6 +570,40 @@ impl SessionRunner {
         }
         message
     }
+
+    /// Sealing at turn end releases any completed batch. Its reports are
+    /// published here; the caller wakes the parent once.
+    async fn seal_turn(&self, session_id: &str, queue: &SteerQueue) -> Vec<SteerEntry> {
+        let released = queue.set_turn_active(false).await;
+        publish_released(
+            &self.events,
+            &self.logs,
+            &self.data_root.session_events_dir(session_id),
+            session_id,
+            &released,
+        )
+        .await;
+        released
+    }
+
+    /// A failed prompt or wake still has to deliver a released batch, or the
+    /// parent waits for the next user message.
+    async fn deliver_pending(&self, session_id: &str) {
+        let Ok(handle) = self.ensure(session_id).await else {
+            return;
+        };
+        let waker = SessionWaker {
+            handle,
+            session_id: session_id.to_string(),
+            events: Arc::clone(&self.events),
+            logs: Arc::clone(&self.logs),
+            events_dir: self.data_root.session_events_dir(session_id),
+        };
+        let queue = self.steers.queue(session_id);
+        if let Err(error) = deliver_idle(&queue, &waker, &self.events, session_id).await {
+            tracing::warn!(%error, "released batch entries remain queued");
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -588,10 +642,13 @@ impl SessionDriver for SessionRunner {
         if let Some(titles) = &self.titles {
             titles.start(session_id, text).await;
         }
-        handle.queue.set_turn_active(true);
+        handle.queue.set_turn_active(true).await;
         if let Err(error) = handle.session.send(text, images).await {
-            handle.queue.set_turn_active(false);
+            let released = self.seal_turn(session_id, &handle.queue).await;
             self.evict(session_id, &handle).await;
+            if !released.is_empty() {
+                self.deliver_pending(session_id).await;
+            }
             return Err(self.fail_turn(session_id, error.to_string()).await);
         }
         // The CLI reports its conversation id only once the first message is out.
@@ -619,7 +676,7 @@ impl SessionDriver for SessionRunner {
         images: Vec<PromptImageDto>,
     ) -> Result<(), String> {
         let handle = self.ensure(session_id).await?;
-        handle.queue.set_turn_active(true);
+        handle.queue.set_turn_active(true).await;
         let images = images
             .into_iter()
             .map(|image| PromptImage {
@@ -629,8 +686,11 @@ impl SessionDriver for SessionRunner {
             .collect();
         let woken = handle.session.wake(text, images).await;
         if woken.is_err() {
-            handle.queue.set_turn_active(false);
+            let released = self.seal_turn(session_id, &handle.queue).await;
             self.evict(session_id, &handle).await;
+            if !released.is_empty() {
+                self.deliver_pending(session_id).await;
+            }
         } else {
             let status_ev = SessionEvent::new(
                 session_id,
@@ -729,46 +789,96 @@ async fn pump(
             () = handle.stop.notified() => None,
         };
         let Some(event) = next else { break };
-        let turn_over = note_turn_state(&handle, &event);
+        let turn_over =
+            note_turn_state(&handle, &session_id, &event, &events, &logs, &events_dir).await;
         if let Some(mapped) = map_event(&session_id, event, &mut tracker, &project_root) {
             publish_mapped(&events, &logs, &events_dir, &session_id, &data_root, mapped).await;
         }
         if turn_over {
-            handle.touch();
-            drain_notices(&data_root, &steers, &session_id).await;
-            apply_pending_update(&data_root, &handles, &events, Some(&session_id)).await;
-            turn_end_todos(
+            finish_turn(
                 &handle,
                 &session_id,
                 &data_root,
                 &events,
                 &logs,
                 &events_dir,
+                &handles,
                 &settings,
                 &reminders,
                 &prompts,
+                &steers,
             )
             .await;
-            let waker = SessionWaker {
-                handle: Arc::clone(&handle),
-                session_id: session_id.clone(),
-                events: Arc::clone(&events),
-                logs: Arc::clone(&logs),
-                events_dir: events_dir.clone(),
-            };
-            let _ = deliver_idle(&handle.queue, &waker, &events, &session_id).await;
         }
     }
+    let released = handle.queue.set_turn_active(false).await;
+    publish_released(&events, &logs, &events_dir, &session_id, &released).await;
+    wake_idle(&handle, &session_id, &events, &logs, &events_dir).await;
     forget_handle(&handles, &session_id, &handle).await;
 }
 
-/// Clears the running-turn flag when the event ends a turn or fails it; true when the turn finished.
-fn note_turn_state(handle: &Handle, event: &HarnessEvent) -> bool {
+/// The settled turn-end path: notices, plan refresh, todo reminder and one idle wake.
+#[allow(clippy::too_many_arguments)]
+async fn finish_turn(
+    handle: &Arc<Handle>,
+    session_id: &str,
+    data_root: &DataRoot,
+    events: &Arc<EventBus>,
+    logs: &Arc<RwLock<HashMap<String, EventLog>>>,
+    events_dir: &std::path::Path,
+    handles: &Arc<Mutex<HashMap<String, Arc<Handle>>>>,
+    settings: &Arc<RwLock<Settings>>,
+    reminders: &Arc<Mutex<HashMap<String, Cycle>>>,
+    prompts: &Arc<PromptStore>,
+    steers: &SteerQueues,
+) {
+    handle.touch();
+    drain_notices(data_root, steers, session_id).await;
+    apply_pending_update(data_root, handles, events, Some(session_id)).await;
+    turn_end_todos(
+        handle, session_id, data_root, events, logs, events_dir, settings, reminders, prompts,
+    )
+    .await;
+    wake_idle(handle, session_id, events, logs, events_dir).await;
+}
+
+/// Clears the running-turn flag when the event ends a turn or fails it; true when the turn
+/// finished. Sealing here releases a completed batch into one wake below.
+async fn note_turn_state(
+    handle: &Arc<Handle>,
+    session_id: &str,
+    event: &HarnessEvent,
+    events: &Arc<EventBus>,
+    logs: &Arc<RwLock<HashMap<String, EventLog>>>,
+    events_dir: &std::path::Path,
+) -> bool {
     let finished = matches!(event, HarnessEvent::TurnFinished { .. });
     if finished || matches!(event, HarnessEvent::Error(_)) {
-        handle.queue.set_turn_active(false);
+        let released = handle.queue.set_turn_active(false).await;
+        publish_released(events, logs, events_dir, session_id, &released).await;
+        if !finished && !released.is_empty() {
+            wake_idle(handle, session_id, events, logs, events_dir).await;
+        }
     }
     finished
+}
+
+/// Deliver whatever is pending now, so a released batch is not stranded.
+async fn wake_idle(
+    handle: &Arc<Handle>,
+    session_id: &str,
+    events: &Arc<EventBus>,
+    logs: &Arc<RwLock<HashMap<String, EventLog>>>,
+    events_dir: &std::path::Path,
+) {
+    let waker = SessionWaker {
+        handle: Arc::clone(handle),
+        session_id: session_id.to_string(),
+        events: Arc::clone(events),
+        logs: Arc::clone(logs),
+        events_dir: events_dir.to_path_buf(),
+    };
+    let _ = deliver_idle(&handle.queue, &waker, events, session_id).await;
 }
 
 /// The harness ended or was closed: forget its handle so the next message spawns one.
@@ -870,7 +980,10 @@ async fn turn_end_todos(
     let path = data_root.session_dir(session_id).join("todos.json");
     let items = tools::todo::load_from(&path);
     let spill = data_root.session_spill_dir(session_id);
-    if handle.queue.pending_len().await > 0 || tools::background::any_running(&spill) {
+    if handle.queue.pending_len().await > 0
+        || handle.queue.has_open_batch().await
+        || tools::background::any_running(&spill)
+    {
         return;
     }
     let mut cycles = reminders.lock().await;
@@ -908,6 +1021,12 @@ async fn send_reminder(
     }
 }
 
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
 /// Store one feed notice and publish it.
 async fn publish_notice(
     events: &EventBus,
@@ -928,6 +1047,23 @@ async fn publish_notice(
     }
 }
 
+/// A released batch can carry several reports at once; each gets its own
+/// `SteerQueued` event and the caller wakes the parent once.
+async fn publish_released(
+    events: &EventBus,
+    logs: &Arc<RwLock<HashMap<String, EventLog>>>,
+    events_dir: &std::path::Path,
+    session_id: &str,
+    released: &[SteerEntry],
+) {
+    for entry in released.iter().filter(|entry| entry.report.is_some()) {
+        let event = SessionEvent::steer_queued(session_id, entry);
+        if let Ok(stored) = append(logs, events_dir, &event).await {
+            events.publish(stored);
+        }
+    }
+}
+
 struct SessionWaker {
     handle: Arc<Handle>,
     session_id: String,
@@ -939,7 +1075,7 @@ struct SessionWaker {
 #[async_trait::async_trait]
 impl SteerWaker for SessionWaker {
     async fn wake(&self, text: &str, images: &[SteerImage]) -> Result<(), String> {
-        self.handle.queue.set_turn_active(true);
+        self.handle.queue.set_turn_active(true).await;
         let images = images
             .iter()
             .map(|image| PromptImage {
@@ -954,7 +1090,15 @@ impl SteerWaker for SessionWaker {
             .await
             .map_err(|error| error.to_string());
         if res.is_err() {
-            self.handle.queue.set_turn_active(false);
+            let released = self.handle.queue.set_turn_active(false).await;
+            publish_released(
+                &self.events,
+                &self.logs,
+                &self.events_dir,
+                &self.session_id,
+                &released,
+            )
+            .await;
         } else {
             let status_ev = SessionEvent::new(
                 &self.session_id,

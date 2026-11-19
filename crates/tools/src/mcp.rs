@@ -181,7 +181,8 @@ fn tool_specs() -> Vec<Value> {
                 "role": {"type": "string", "enum": ["spec", "standards", "worker", "scout", "goldfish"]},
                 "tier": {"type": "string", "enum": ["smol", "mid", "top"]},
                 "ticketPath": {"type": "string"}, "startingPoint": {"type": "string"},
-                "text": {"type": "string"}, "title": {"type": "string"}, "persona": {"type": "string"}
+                "text": {"type": "string"}, "title": {"type": "string"}, "persona": {"type": "string"},
+                "batch": {"type": "string"}
             }, "required": ["role"]}
         },
         {
@@ -288,6 +289,8 @@ fn tool_specs() -> Vec<Value> {
                     "grep_keywords": {"type": "array", "items": {"type": "string"}},
                     "path": {"type": "string"},
                     "mode": {"type": "string", "enum": ["search", "outline", "architecture", "trace"]},
+                    "direction": {"type": "string", "enum": ["inbound", "outbound"]},
+                    "depth": {"type": "integer", "minimum": 1, "maximum": 5},
                     "limit": {"type": "integer"}
                 }
             }

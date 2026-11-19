@@ -955,6 +955,8 @@ export interface components {
         SubagentRequest: {
             /** @enum {string} */
             action: "spawn";
+            /** @description Groups sibling spawns behind one barrier. */
+            batch?: string | null;
             /** @description Persona id, required for the `goldfish` role. */
             persona?: string | null;
             role: string;

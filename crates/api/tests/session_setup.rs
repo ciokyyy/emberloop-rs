@@ -147,7 +147,7 @@ async fn invalid_efforts_busy_sessions_and_driver_failure_do_not_change_metadata
             status
         );
     }
-    state.steers.queue("s1").set_turn_active(true);
+    state.steers.queue("s1").set_turn_active(true).await;
     assert_eq!(
         app.oneshot(req(
             "PATCH",
@@ -181,7 +181,7 @@ async fn images_sent_during_a_turn_are_queued_as_a_steer() {
     let dir = tempfile::tempdir().unwrap();
     let driver = Arc::new(Driver::default());
     let state = state(dir.path(), driver.clone()).await;
-    state.steers.queue("s1").set_turn_active(true);
+    state.steers.queue("s1").set_turn_active(true).await;
     let app = build_router(state.clone());
     let response = app.oneshot(req("POST", "/api/sessions/s1/prompt", serde_json::json!({"text":"see image", "images":[{"mimeType":"image/png", "dataBase64":"AAAA"}]}))).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);

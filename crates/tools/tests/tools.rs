@@ -1371,7 +1371,7 @@ fn max_call_secs_caps_every_blocking_wait_below_the_harness_limit() {
 }
 
 #[test]
-fn retry_allowlist_defaults_to_spawn_and_steer_only() {
+fn retry_allowlist_defaults_record_edit_and_write_failures() {
     let fixture = setup();
     let server = McpServer::new(fixture.toolbox.clone());
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1387,11 +1387,27 @@ fn retry_allowlist_defaults_to_spawn_and_steer_only() {
     assert_eq!(read_err["isError"], true);
     let read_msg = read_err["content"][0]["text"].as_str().unwrap();
     assert!(!read_msg.contains("[failed call #"), "{read_msg}");
+
+    let exec_err = runtime.block_on(server.call(
+        "execute",
+        Some(serde_json::from_value(json!({"code": "  "})).unwrap()),
+    ));
+    let exec_err = serde_json::to_value(exec_err).unwrap();
+    assert_eq!(exec_err["isError"], true);
+    let exec_msg = exec_err["content"][0]["text"].as_str().unwrap();
+    assert!(!exec_msg.contains("[failed call #"), "{exec_msg}");
     assert!(!fixture.toolbox.spill_dir().join("failed_calls").exists());
 
+    let directory = fixture.root.join("dir");
+    fs::create_dir(&directory).expect("directory");
     for (idx, (tool, args)) in [
         ("spawn", json!({"role": "worker", "text": "hello"})),
         ("steer", json!({"id": "ses_1", "text": "more"})),
+        ("edit", json!({"input": "  "})),
+        (
+            "write",
+            json!({"path": directory.to_string_lossy(), "content": "x"}),
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -1420,6 +1436,50 @@ fn retry_allowlist_defaults_to_spawn_and_steer_only() {
         .unwrap();
         assert_eq!(persisted["tool"], tool);
     }
+}
+
+#[test]
+fn stale_tag_error_records_shown_lines_so_retry_call_needs_no_read() {
+    let fixture = setup();
+    let path = write(&fixture, "stale.txt", "one\ntwo\n");
+    let patch = format!("[{}#dead]\nPUT 2.=2:\n+two edited\n", path.display());
+    let error = call(&fixture, "edit", json!({"input": patch})).expect_err("stale tag");
+    let message = error.to_string();
+    assert!(message.contains("[failed call #1]"), "{message}");
+    let current = content_tag(b"one\ntwo\n");
+    assert!(message.contains(&current), "{message}");
+
+    let retried = call(
+        &fixture,
+        "retry_call",
+        json!({"id": 1, "patches": [{"old": "#dead", "new": format!("#{current}")}]}),
+    )
+    .expect("retry without a read");
+    assert!(retried.contains("updated successfully"), "{retried}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "one\ntwo edited\n");
+}
+
+#[test]
+fn oversized_failed_write_is_not_offered_for_retry() {
+    let fixture = setup();
+    let directory = fixture.root.join("big");
+    fs::create_dir(&directory).expect("directory");
+    let content = "x".repeat(128 * 1024 + 1);
+    let error = call(
+        &fixture,
+        "write",
+        json!({"path": directory.to_string_lossy(), "content": content}),
+    )
+    .expect_err("write to a directory");
+    let message = error.to_string();
+    assert!(!message.contains("[failed call #"), "{message}");
+    let retry_err = call(&fixture, "retry_call", json!({"id": 1})).expect_err("no record");
+    assert!(
+        retry_err
+            .to_string()
+            .contains("failed call #1 was not found"),
+        "{retry_err}"
+    );
 }
 
 #[test]

@@ -39,6 +39,16 @@ After the queued restart, compare `current/emberloop-daemon --version`, `GET /ap
 ## Tests
 
 Before it numbers a harness event the runner awaits `EventBus::settled` (250 ms cap), so the feed keeps provider order. `SessionRunner` stores the harness `resume_token` in `meta.json`, passes it back with the stable `<session>/agent-work` directory on the next spawn, resets the proxy history (splices, compressed blocks) when the harness conversation started over, enriches tool events with bash command classification (`display.kind`, `display.parts`) and write-tool unified diffs (`display.diff`) via `tooldisplay.rs`, and emits `EventKind::Status` (`{"state": "working"}`) on prompt and idle steer wakes, and publishes the stored plan as an `EventKind::Todos` event after each `todo` tool call and at every turn end. The runner publishes no `EventKind::Usage`; the proxy publishes one per request for every harness. The `TurnFinished` `usage` object stays in the idle status payload. At turn end `turn_end_todos` reads `<session>/todos.json` (the tool process owns it) and, when the Session is settled, enqueues one `SteerKind::Notice` before the idle wake so it merges with any queued steer; the reminder text is the `todo.reminder` prompt rendered from the Prompt Store (`ProxyState::prompts`), with the open items as the `open_todos` value; `crates/daemon/src/todo_reminder.rs` holds the pure rules (open set = pending or in_progress, at most `todo_reminders_max` per prompt cycle reset by the next user message, never the same open set twice). Settled means no steer queued and no background job running: the harness exposes no "question pending for the user" signal, so that part of the rule is the known gap. Once the cap is reached the runner publishes one `notice` event (`route: "cap"`) for the feed and sends nothing further. `tests/acceptance.rs` covers Ticket 11 checks 1, 2, 7, 8 against a fake upstream: Project/Session persistence, token rejection and acceptance, prompt pinning across a config edit, background PID adoption across a daemon restart, embedded SPA fallback, remote-bind validation, and harness wiring.
+`SessionRunner` seals batches on every `true -> false` turn transition: `prompt`/`wake`
+send failures, `note_turn_state` on `TurnFinished`/`Error`, `SessionWaker` failures and
+the `pump` exit unwind all call `set_turn_active(false)`, then `publish_released`
+appends one `SessionEvent::steer_queued` per released report before the caller wakes
+the parent once. `turn_end_todos` also defers while `queue.has_open_batch().await`, so
+a held batch keeps its todo reminder until the release wake.
+`watch_idle` also calls `reap_expired_batches` every 30 seconds. It scans
+Session queues with an open batch, expires any past `deadline_at` with synthetic
+`timed_out` reports behind a timeout notice, publishes one `SteerQueued` event
+per report, and wakes an idle parent once.
 
 `tests/skill_roots.rs` checks that `mcp_tool_config` exposes the global skills root only when `--global-skills` is given. `tests/runner.rs` covers the frozen catalog (a skill made mid-Session stays out of that Session's file and appears in the next one). `review.rs` unit tests cover the whitelist denial and that `prompt_propose` passes it.
 

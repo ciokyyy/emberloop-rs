@@ -29,6 +29,8 @@ impl SteerKind {
 #[serde(rename_all = "snake_case")]
 pub enum SteerState {
     Pending,
+    /// A batched report waiting for its siblings or for the batch to seal.
+    Held,
     InFlight,
     Delivered,
 }
@@ -70,12 +72,35 @@ pub struct SteerEntry {
     pub queued_at: u64,
     pub delivered_at: Option<u64>,
     pub route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<String>,
+}
+
+/// An open `spawn(batch=...)` barrier. Members register before their prompt is
+/// dispatched; the barrier releases once it is sealed and no member is pending.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchState {
+    pub name: String,
+    pub sealed: bool,
+    pub created_at: u64,
+    pub deadline_at: u64,
+    pub pending_ids: Vec<String>,
+    pub completed_ids: Vec<String>,
+}
+
+pub const DEFAULT_BATCH_DEADLINE_MS: u64 = 30 * 60 * 1000;
+
+#[derive(Default)]
+struct QueueState {
+    entries: Vec<SteerEntry>,
+    batches: std::collections::BTreeMap<String, BatchState>,
 }
 
 /// A per-Session queue. `gate` serialises the turn-end wake with a proxy request
 /// beginning, so a wake never overlaps an in-flight upstream request.
 pub struct SteerQueue {
-    entries: AsyncMutex<Vec<SteerEntry>>,
+    state: AsyncMutex<QueueState>,
     gate: AsyncMutex<()>,
     in_flight: AtomicBool,
     turn_active: AtomicBool,
@@ -85,7 +110,7 @@ pub struct SteerQueue {
 impl Default for SteerQueue {
     fn default() -> Self {
         Self {
-            entries: AsyncMutex::new(Vec::new()),
+            state: AsyncMutex::new(QueueState::default()),
             gate: AsyncMutex::new(()),
             in_flight: AtomicBool::new(false),
             turn_active: AtomicBool::new(false),
@@ -103,9 +128,9 @@ impl SteerQueue {
     /// flight when the daemon stopped is requeued.
     pub async fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let entries = load(&path);
+        let state = load(&path);
         Self {
-            entries: AsyncMutex::new(entries),
+            state: AsyncMutex::new(state),
             gate: AsyncMutex::new(()),
             in_flight: AtomicBool::new(false),
             turn_active: AtomicBool::new(false),
@@ -148,14 +173,16 @@ impl SteerQueue {
             queued_at: now_ms(),
             delivered_at: None,
             route: None,
+            batch: None,
         };
-        let mut entries = self.entries.lock().await;
-        entries.push(entry.clone());
-        self.save(&entries);
+        let mut state = self.state.lock().await;
+        state.entries.push(entry.clone());
+        self.save(&state);
         entry
     }
 
-    /// Accept a report only after its queue entry is durable.
+    /// Accept a report only after its queue entry is durable. A report for a
+    /// batch member is held until the whole batch can be delivered together.
     pub async fn enqueue_report(&self, report: SubagentReport) -> std::io::Result<SteerEntry> {
         let header = if is_reviewer_role(&report.role) {
             format!(
@@ -173,74 +200,268 @@ impl SteerQueue {
                 report.role, report.session_id, report.ticket_path, report.status
             )
         };
+        let mut state = self.state.lock().await;
+        let batch = state
+            .batches
+            .values()
+            .find(|batch| batch.pending_ids.contains(&report.session_id))
+            .map(|batch| batch.name.clone());
         let entry = SteerEntry {
             id: generate_id("submit"),
             kind: SteerKind::Steer,
             text: format!("{header}\n{}\n\n{}", report.summary, report.report),
             images: Vec::new(),
             report: Some(report),
-            state: SteerState::Pending,
+            state: if batch.is_some() {
+                SteerState::Held
+            } else {
+                SteerState::Pending
+            },
             queued_at: now_ms(),
             delivered_at: None,
             route: None,
+            batch,
         };
-        let mut entries = self.entries.lock().await;
-        entries.push(entry.clone());
-        if let Err(error) = self.try_save(&entries) {
-            entries.pop();
+        state.entries.push(entry.clone());
+        if let Err(error) = self.try_save(&state) {
+            state.entries.pop();
             return Err(error);
         }
         Ok(entry)
     }
 
+    /// Record a member before its prompt is dispatched. A batch that starts
+    /// while no turn is active is already sealed and releases when its last
+    /// member finishes.
+    pub async fn register_batch_member(
+        &self,
+        batch: &str,
+        child_id: &str,
+        deadline_ms: u64,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        if let Some(existing) = state.batches.get(batch) {
+            if existing.sealed {
+                return Err(format!("batch `{batch}` is sealed"));
+            }
+        }
+        let sealed = !self.turn_active.load(Ordering::SeqCst);
+        if state
+            .batches
+            .values()
+            .any(|open| open.pending_ids.iter().any(|id| id == child_id))
+        {
+            return Err(format!("{child_id} is already pending in a batch"));
+        }
+        let now = now_ms();
+        let entry = state
+            .batches
+            .entry(batch.to_string())
+            .or_insert(BatchState {
+                name: batch.to_string(),
+                sealed,
+                created_at: now,
+                deadline_at: now.saturating_add(deadline_ms),
+                pending_ids: Vec::new(),
+                completed_ids: Vec::new(),
+            });
+        entry.pending_ids.push(child_id.to_string());
+        if let Err(error) = self.try_save(&state) {
+            if let Some(open) = state.batches.get_mut(batch) {
+                open.pending_ids.retain(|id| id != child_id);
+                if open.pending_ids.is_empty() && open.completed_ids.is_empty() {
+                    state.batches.remove(batch);
+                }
+            }
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    /// Drop a member whose prompt never reached dispatch. Returns entries
+    /// released because this was the last pending member of a sealed batch.
+    pub async fn unregister_batch_member(&self, child_id: &str) -> Vec<SteerEntry> {
+        let mut state = self.state.lock().await;
+        let Some(name) = state
+            .batches
+            .values()
+            .find(|batch| batch.pending_ids.iter().any(|id| id == child_id))
+            .map(|batch| batch.name.clone())
+        else {
+            return Vec::new();
+        };
+        if let Some(batch) = state.batches.get_mut(&name) {
+            batch.pending_ids.retain(|id| id != child_id);
+        }
+        let empty = state
+            .batches
+            .get(&name)
+            .is_some_and(|batch| batch.pending_ids.is_empty() && batch.completed_ids.is_empty());
+        if empty {
+            state.batches.remove(&name);
+        }
+        let released = release_ready(&mut state);
+        self.save(&state);
+        released
+    }
+
+    /// Mark one member finished and release its sealed batch when no sibling is
+    /// still pending. Returns the entries released by that completion.
+    pub async fn complete_batch_member(&self, child_id: &str) -> Vec<SteerEntry> {
+        let mut state = self.state.lock().await;
+        let Some(name) = state
+            .batches
+            .values()
+            .find(|batch| batch.pending_ids.iter().any(|id| id == child_id))
+            .map(|batch| batch.name.clone())
+        else {
+            return Vec::new();
+        };
+        if let Some(batch) = state.batches.get_mut(&name) {
+            batch.pending_ids.retain(|id| id != child_id);
+            batch.completed_ids.push(child_id.to_string());
+        }
+        let released = release_ready(&mut state);
+        self.save(&state);
+        released
+    }
+
+    /// Release every batch past its deadline with a synthetic `timed_out` report
+    /// for each member that never reported.
+    pub async fn expire_batches(&self, now: u64) -> Vec<SteerEntry> {
+        let mut state = self.state.lock().await;
+        let overdue: Vec<(String, Vec<String>)> = state
+            .batches
+            .values()
+            .filter(|batch| now >= batch.deadline_at)
+            .map(|batch| (batch.name.clone(), batch.pending_ids.clone()))
+            .collect();
+        let mut released = Vec::new();
+        for (name, pending) in overdue {
+            let warning = SteerEntry {
+                id: generate_id("batch"),
+                kind: SteerKind::Notice,
+                text: format!(
+                    "Batch \"{name}\" timed out: {} member(s) did not report.",
+                    pending.len()
+                ),
+                images: Vec::new(),
+                report: None,
+                state: SteerState::Pending,
+                queued_at: now_ms(),
+                delivered_at: None,
+                route: None,
+                batch: None,
+            };
+            insert_before_batch(&mut state, &name, warning.clone());
+            released.push(warning);
+            for child in &pending {
+                state.entries.push(synthetic_entry(
+                    &name,
+                    child,
+                    "timed_out",
+                    "Batch member timed out.",
+                    "No report arrived before the batch deadline.",
+                ));
+            }
+            if let Some(batch) = state.batches.get_mut(&name) {
+                batch.sealed = true;
+                batch.completed_ids.append(&mut batch.pending_ids);
+            }
+            released.extend(release_batch(&mut state, &name));
+        }
+        self.save(&state);
+        released
+    }
+
+    /// Seal batches left open by a previous daemon and close members whose
+    /// process-local run was lost. Returns the entries released by that seal.
+    pub async fn reconcile_on_startup(&self) -> Vec<SteerEntry> {
+        let mut state = self.state.lock().await;
+        if state.batches.is_empty() {
+            return Vec::new();
+        }
+        for batch in state.batches.values_mut() {
+            batch.sealed = true;
+        }
+        if !self.turn_active.load(Ordering::SeqCst) {
+            let pending: Vec<(String, Vec<String>)> = state
+                .batches
+                .values()
+                .map(|batch| (batch.name.clone(), batch.pending_ids.clone()))
+                .collect();
+            for (name, children) in pending {
+                for child in &children {
+                    state.entries.push(synthetic_entry(
+                        &name,
+                        child,
+                        "errored",
+                        "Batch member lost on daemon restart.",
+                        "Open the subagent Session to inspect its work. No automatic retry.",
+                    ));
+                }
+                if let Some(batch) = state.batches.get_mut(&name) {
+                    batch.completed_ids.append(&mut batch.pending_ids);
+                }
+            }
+        }
+        let released = release_ready(&mut state);
+        self.save(&state);
+        released
+    }
+
+    pub async fn has_open_batch(&self) -> bool {
+        !self.state.lock().await.batches.is_empty()
+    }
+
     /// Mark every pending entry in flight before one upstream request carries
     /// the whole queue as a single prompt.
     pub async fn drain_pending(&self) -> Vec<SteerEntry> {
-        let mut entries = self.entries.lock().await;
+        let mut state = self.state.lock().await;
         let mut drained = Vec::new();
-        for entry in entries.iter_mut() {
+        for entry in state.entries.iter_mut() {
             if entry.state == SteerState::Pending {
                 entry.state = SteerState::InFlight;
                 drained.push(entry.clone());
             }
         }
-        self.save(&entries);
+        self.save(&state);
         drained
     }
 
     pub async fn mark_in_flight(&self, ids: &[String]) {
-        let mut entries = self.entries.lock().await;
-        for entry in entries.iter_mut() {
+        let mut state = self.state.lock().await;
+        for entry in state.entries.iter_mut() {
             if ids.contains(&entry.id) {
                 entry.state = SteerState::InFlight;
             }
         }
-        self.save(&entries);
+        self.save(&state);
     }
 
     pub async fn mark_delivered(&self, ids: &[String], route: &str) {
         let now = now_ms();
-        let mut entries = self.entries.lock().await;
-        for entry in entries.iter_mut() {
+        let mut state = self.state.lock().await;
+        for entry in state.entries.iter_mut() {
             if ids.contains(&entry.id) {
                 entry.state = SteerState::Delivered;
                 entry.delivered_at = Some(now);
                 entry.route = Some(route.to_string());
             }
         }
-        self.save(&entries);
+        self.save(&state);
     }
 
     pub async fn requeue(&self, ids: &[String]) {
-        let mut entries = self.entries.lock().await;
-        for entry in entries.iter_mut() {
+        let mut state = self.state.lock().await;
+        for entry in state.entries.iter_mut() {
             if ids.contains(&entry.id) {
                 entry.state = SteerState::Pending;
                 entry.delivered_at = None;
                 entry.route = None;
             }
         }
-        self.save(&entries);
+        self.save(&state);
     }
 
     /// A request owns the Session until `end_request`. Delivery is decided at
@@ -251,9 +472,20 @@ impl SteerQueue {
     }
 
     /// A turn is running from its prompt until the harness reports it over; a
-    /// steer queued meanwhile waits for the proxy to inject it.
-    pub fn set_turn_active(&self, active: bool) {
+    /// steer queued meanwhile waits for the proxy to inject it. Ending the turn
+    /// seals every open batch. Returns the entries released as the turn ends.
+    pub async fn set_turn_active(&self, active: bool) -> Vec<SteerEntry> {
+        let mut state = self.state.lock().await;
         self.turn_active.store(active, Ordering::SeqCst);
+        if active {
+            return Vec::new();
+        }
+        for batch in state.batches.values_mut() {
+            batch.sealed = true;
+        }
+        let released = release_ready(&mut state);
+        self.save(&state);
+        released
     }
 
     pub fn is_turn_active(&self) -> bool {
@@ -321,27 +553,35 @@ impl SteerQueue {
     }
 
     pub async fn pending_len(&self) -> usize {
-        self.entries
+        self.state
             .lock()
             .await
+            .entries
             .iter()
             .filter(|entry| entry.state == SteerState::Pending)
             .count()
     }
 
     pub async fn entries(&self) -> Vec<SteerEntry> {
-        self.entries.lock().await.clone()
+        self.state.lock().await.entries.clone()
     }
 
-    fn save(&self, entries: &[SteerEntry]) {
-        let _ = self.try_save(entries);
+    fn save(&self, state: &QueueState) {
+        let _ = self.try_save(state);
     }
 
-    fn try_save(&self, entries: &[SteerEntry]) -> std::io::Result<()> {
+    fn try_save(&self, state: &QueueState) -> std::io::Result<()> {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        let text = serde_json::to_vec_pretty(entries)?;
+        let text = if state.batches.is_empty() {
+            serde_json::to_vec_pretty(&state.entries)?
+        } else {
+            serde_json::to_vec_pretty(&StoredQueue::Full {
+                entries: state.entries.clone(),
+                batches: state.batches.clone(),
+            })?
+        };
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -351,17 +591,134 @@ impl SteerQueue {
     }
 }
 
-fn load(path: &Path) -> Vec<SteerEntry> {
-    let mut entries: Vec<SteerEntry> = std::fs::read_to_string(path)
+/// Sealed batches with no pending member release together, each behind a notice.
+fn release_ready(state: &mut QueueState) -> Vec<SteerEntry> {
+    let ready: Vec<String> = state
+        .batches
+        .values()
+        .filter(|batch| batch.sealed && batch.pending_ids.is_empty())
+        .map(|batch| batch.name.clone())
+        .collect();
+    ready
+        .iter()
+        .flat_map(|name| release_batch(state, name))
+        .collect()
+}
+
+fn release_batch(state: &mut QueueState, name: &str) -> Vec<SteerEntry> {
+    let Some(batch) = state.batches.remove(name) else {
+        return Vec::new();
+    };
+    let ids: Vec<String> = state
+        .entries
+        .iter()
+        .filter(|entry| entry.batch.as_deref() == Some(name) && entry.state == SteerState::Held)
+        .map(|entry| entry.id.clone())
+        .collect();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let total = batch.completed_ids.len() + batch.pending_ids.len();
+    let notice = SteerEntry {
+        id: generate_id("batch"),
+        kind: SteerKind::Notice,
+        text: format!(
+            "Batch \"{name}\" completed ({}/{}):",
+            batch.completed_ids.len(),
+            total
+        ),
+        images: Vec::new(),
+        report: None,
+        state: SteerState::Pending,
+        queued_at: now_ms(),
+        delivered_at: None,
+        route: None,
+        batch: None,
+    };
+    let at = state
+        .entries
+        .iter()
+        .position(|entry| entry.batch.as_deref() == Some(name))
+        .unwrap_or(state.entries.len());
+    state.entries.insert(at, notice.clone());
+    let mut released = vec![notice];
+    for entry in state.entries.iter_mut() {
+        if ids.contains(&entry.id) {
+            entry.state = SteerState::Pending;
+            released.push(entry.clone());
+        }
+    }
+    released
+}
+
+fn insert_before_batch(state: &mut QueueState, name: &str, entry: SteerEntry) {
+    let at = state
+        .entries
+        .iter()
+        .position(|entry| entry.batch.as_deref() == Some(name))
+        .unwrap_or(state.entries.len());
+    state.entries.insert(at, entry);
+}
+
+fn synthetic_entry(
+    batch: &str,
+    child_id: &str,
+    status: &str,
+    summary: &str,
+    body: &str,
+) -> SteerEntry {
+    let report = SubagentReport {
+        session_id: child_id.to_string(),
+        role: "worker".to_string(),
+        ticket_path: String::new(),
+        status: status.to_string(),
+        summary: summary.to_string(),
+        report: body.to_string(),
+    };
+    SteerEntry {
+        id: generate_id("submit"),
+        kind: SteerKind::Steer,
+        text: format!("Sub-agent report from worker ({child_id}) [{status}]\n{summary}\n\n{body}"),
+        images: Vec::new(),
+        report: Some(report),
+        state: SteerState::Held,
+        queued_at: now_ms(),
+        delivered_at: None,
+        route: None,
+        batch: Some(batch.to_string()),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum StoredQueue {
+    Bare(Vec<SteerEntry>),
+    Full {
+        #[serde(default)]
+        entries: Vec<SteerEntry>,
+        #[serde(default)]
+        batches: std::collections::BTreeMap<String, BatchState>,
+    },
+}
+
+fn load(path: &Path) -> QueueState {
+    let mut state = std::fs::read_to_string(path)
         .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
+        .and_then(|text| serde_json::from_str::<StoredQueue>(&text).ok())
+        .map(|stored| match stored {
+            StoredQueue::Bare(entries) => QueueState {
+                entries,
+                batches: Default::default(),
+            },
+            StoredQueue::Full { entries, batches } => QueueState { entries, batches },
+        })
         .unwrap_or_default();
-    for entry in &mut entries {
+    for entry in &mut state.entries {
         if entry.state == SteerState::InFlight {
             entry.state = SteerState::Pending;
         }
     }
-    entries
+    state
 }
 
 #[derive(Clone, Default)]
@@ -392,7 +749,7 @@ impl SteerQueues {
                     .map(|dir| SteerQueue::session_path(&dir.join(session_id)));
                 match path {
                     Some(path) => Arc::new(SteerQueue {
-                        entries: AsyncMutex::new(load(&path)),
+                        state: AsyncMutex::new(load(&path)),
                         gate: AsyncMutex::new(()),
                         in_flight: AtomicBool::new(false),
                         turn_active: AtomicBool::new(false),
@@ -580,7 +937,7 @@ mod tests {
     async fn a_steer_during_a_turn_waits_for_the_proxy() {
         let queue = SteerQueue::new();
         queue.enqueue(SteerKind::Steer, "go left").await;
-        queue.set_turn_active(true);
+        queue.set_turn_active(true).await;
         let events = EventBus::new(8);
         let waker = FakeWaker::new();
 
@@ -679,7 +1036,7 @@ mod tests {
         let events = EventBus::new(8);
         let waker = FakeWaker::new();
 
-        queue.set_turn_active(true);
+        queue.set_turn_active(true).await;
         assert_eq!(
             deliver_idle(&queue, &waker, &events, "ses_1")
                 .await
@@ -689,7 +1046,7 @@ mod tests {
         assert!(waker.calls().is_empty());
         assert_eq!(queue.pending_len().await, 1);
 
-        queue.set_turn_active(false);
+        queue.set_turn_active(false).await;
         assert_eq!(
             deliver_idle(&queue, &waker, &events, "ses_1")
                 .await
@@ -714,5 +1071,270 @@ mod tests {
         );
         assert!(waker.calls().is_empty());
         assert_eq!(queue.pending_len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn set_turn_active_is_async_and_releases_nothing_yet() {
+        let queue = SteerQueue::new();
+        assert!(queue.set_turn_active(false).await.is_empty());
+        assert!(!queue.is_turn_active());
+    }
+
+    #[tokio::test]
+    async fn steer_queued_event_carries_the_same_report_payload() {
+        let queue = SteerQueue::new();
+        let report = SubagentReport {
+            session_id: "ses_child".into(),
+            role: "worker".into(),
+            ticket_path: "issues/01.md".into(),
+            status: "done".into(),
+            summary: "one line".into(),
+            report: "body".into(),
+        };
+        let entry = queue.enqueue_report(report.clone()).await.unwrap();
+        let event = SessionEvent::steer_queued("ses_parent", &entry);
+        assert_eq!(event.session_id, "ses_parent");
+        assert_eq!(event.seq, 0);
+        assert_eq!(event.kind, EventKind::SteerQueued);
+        assert_eq!(event.data["id"], entry.id);
+        assert_eq!(event.data["text"], entry.text);
+        assert_eq!(event.data["kind"], "subagent");
+        assert_eq!(event.data["report"], serde_json::json!(report));
+        assert_eq!(event.data["imagesCount"], 0);
+    }
+
+    #[tokio::test]
+    async fn steer_queued_event_keeps_the_plain_steer_shape() {
+        let queue = SteerQueue::new();
+        let entry = queue.enqueue(SteerKind::Steer, "go left").await;
+        let event = SessionEvent::steer_queued("ses_1", &entry);
+        assert_eq!(event.data["kind"], "steer");
+        assert_eq!(event.data["imagesCount"], 0);
+        assert!(event.data.get("report").is_none());
+    }
+
+    #[tokio::test]
+    async fn steer_queued_event_names_a_notice() {
+        let queue = SteerQueue::new();
+        let entry = queue.enqueue(SteerKind::Notice, "bg_1 exited").await;
+        assert_eq!(
+            SessionEvent::steer_queued("ses_1", &entry).data["kind"],
+            "notice"
+        );
+    }
+
+    fn report(child: &str, summary: &str) -> SubagentReport {
+        SubagentReport {
+            session_id: child.into(),
+            role: "worker".into(),
+            ticket_path: String::new(),
+            status: "done".into(),
+            summary: summary.into(),
+            report: format!("report from {child}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn held_batch_reports_release_together_behind_one_notice() {
+        let queue = SteerQueue::new();
+        queue.set_turn_active(true).await;
+        queue
+            .register_batch_member("b1", "child1", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap();
+        queue
+            .register_batch_member("b1", "child2", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap();
+        queue
+            .enqueue_report(report("child1", "first"))
+            .await
+            .unwrap();
+        queue
+            .enqueue_report(report("child2", "second"))
+            .await
+            .unwrap();
+
+        assert_eq!(queue.pending_len().await, 0);
+        assert!(queue.drain_pending().await.is_empty());
+        assert!(queue.has_open_batch().await);
+
+        assert!(queue.set_turn_active(false).await.is_empty());
+        assert!(queue.complete_batch_member("child1").await.is_empty());
+        let released = queue.complete_batch_member("child2").await;
+
+        assert_eq!(released.len(), 3);
+        assert_eq!(released[0].text, "Batch \"b1\" completed (2/2):");
+        assert_eq!(released[1].report.as_ref().unwrap().session_id, "child1");
+        assert_eq!(released[2].report.as_ref().unwrap().session_id, "child2");
+        assert_eq!(queue.pending_len().await, 3);
+        assert!(!queue.has_open_batch().await);
+    }
+
+    #[tokio::test]
+    async fn batch_registration_rejects_a_sealed_batch_or_a_duplicate_member() {
+        let queue = SteerQueue::new();
+        queue.set_turn_active(true).await;
+        queue
+            .register_batch_member("b1", "child1", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap();
+        assert!(queue
+            .register_batch_member("b1", "child1", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap_err()
+            .contains("already pending"));
+
+        queue.set_turn_active(false).await;
+        assert!(queue
+            .register_batch_member("b1", "child2", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap_err()
+            .contains("sealed"));
+    }
+
+    #[tokio::test]
+    async fn batch_queue_persists_batches_and_keeps_held_on_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("steer_queue.json");
+        let queue = SteerQueue::open(&path).await;
+        queue.set_turn_active(true).await;
+        queue
+            .register_batch_member("b1", "child1", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap();
+        queue
+            .enqueue_report(report("child1", "held"))
+            .await
+            .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"batches\""), "{text}");
+        let restored = SteerQueue::open(&path).await;
+        assert_eq!(restored.entries().await[0].state, SteerState::Held);
+        assert!(restored.has_open_batch().await);
+    }
+
+    #[tokio::test]
+    async fn queue_without_batches_persists_a_bare_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("steer_queue.json");
+        let queue = SteerQueue::open(&path).await;
+        queue.enqueue(SteerKind::Steer, "plain").await;
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .trim_start()
+            .starts_with('['));
+    }
+
+    #[tokio::test]
+    async fn unregister_drops_an_empty_batch_and_releases_a_sealed_one() {
+        let empty = SteerQueue::new();
+        empty.set_turn_active(true).await;
+        empty
+            .register_batch_member("brief", "child1", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap();
+        assert!(empty.unregister_batch_member("child1").await.is_empty());
+        assert!(!empty.has_open_batch().await);
+
+        let queue = SteerQueue::new();
+        queue.set_turn_active(true).await;
+        queue
+            .register_batch_member("b1", "child1", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap();
+        queue
+            .enqueue_report(report("child1", "held"))
+            .await
+            .unwrap();
+        queue.complete_batch_member("child1").await;
+        queue
+            .register_batch_member("b1", "child2", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap();
+        queue.set_turn_active(false).await;
+        let released = queue.unregister_batch_member("child2").await;
+        assert_eq!(released.len(), 2);
+        assert_eq!(released[0].text, "Batch \"b1\" completed (1/1):");
+        assert_eq!(released[1].report.as_ref().unwrap().session_id, "child1");
+        assert_eq!(queue.pending_len().await, 2);
+        assert!(!queue.has_open_batch().await);
+    }
+
+    #[tokio::test]
+    async fn expired_batch_times_out_pending_members_and_releases_everything() {
+        let queue = SteerQueue::new();
+        queue.set_turn_active(true).await;
+        queue
+            .register_batch_member("b1", "child1", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap();
+        queue
+            .register_batch_member("b1", "child2", DEFAULT_BATCH_DEADLINE_MS)
+            .await
+            .unwrap();
+        queue
+            .enqueue_report(report("child1", "finished"))
+            .await
+            .unwrap();
+        queue.complete_batch_member("child1").await;
+        assert!(queue.is_turn_active());
+        assert!(queue.has_open_batch().await);
+        assert!(queue.expire_batches(0).await.is_empty());
+
+        let released = queue.expire_batches(u64::MAX).await;
+
+        assert_eq!(released.len(), 4);
+        assert!(
+            released[0].text.contains("timed out"),
+            "{}",
+            released[0].text
+        );
+        assert_eq!(released[1].text, "Batch \"b1\" completed (2/2):");
+        assert_eq!(released[2].report.as_ref().unwrap().status, "done");
+        assert_eq!(released[3].report.as_ref().unwrap().session_id, "child2");
+        assert_eq!(released[3].report.as_ref().unwrap().status, "timed_out");
+        assert_eq!(queue.pending_len().await, 4);
+        assert!(!queue.has_open_batch().await);
+    }
+
+    #[tokio::test]
+    async fn startup_reconcile_closes_orphans_and_releases_unsealed_or_sealed_batches() {
+        for sealed_before_restart in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("steer_queue.json");
+            {
+                let queue = SteerQueue::open(&path).await;
+                queue.set_turn_active(true).await;
+                queue
+                    .register_batch_member("b1", "child1", DEFAULT_BATCH_DEADLINE_MS)
+                    .await
+                    .unwrap();
+                queue
+                    .register_batch_member("b1", "child2", DEFAULT_BATCH_DEADLINE_MS)
+                    .await
+                    .unwrap();
+                queue
+                    .enqueue_report(report("child1", "finished"))
+                    .await
+                    .unwrap();
+                queue.complete_batch_member("child1").await;
+                if sealed_before_restart {
+                    queue.set_turn_active(false).await;
+                }
+            }
+
+            let restored = SteerQueue::open(&path).await;
+            assert!(restored.has_open_batch().await);
+            let released = restored.reconcile_on_startup().await;
+
+            assert_eq!(released.len(), 3, "sealed={sealed_before_restart}");
+            assert_eq!(released[0].text, "Batch \"b1\" completed (2/2):");
+            assert_eq!(released[1].report.as_ref().unwrap().status, "done");
+            assert_eq!(released[2].report.as_ref().unwrap().session_id, "child2");
+            assert_eq!(released[2].report.as_ref().unwrap().status, "errored");
+            assert!(!restored.has_open_batch().await);
+        }
     }
 }

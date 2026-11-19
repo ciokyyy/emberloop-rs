@@ -2520,6 +2520,13 @@
                   "spawn"
                 ]
               },
+              "batch": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Groups sibling spawns behind one barrier."
+              },
               "persona": {
                 "type": [
                   "string",

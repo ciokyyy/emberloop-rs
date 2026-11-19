@@ -1,17 +1,22 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use ignore::WalkBuilder;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
+use crate::mcpclient::WithinError;
 use crate::tag::{content_hash, lines_of};
-use crate::{ToolError, ToolResult, Toolbox};
+use crate::{graph, ToolError, ToolResult, Toolbox};
 
 const DEFAULT_HITS: usize = 12;
 const MAX_HITS: usize = 50;
 const MAX_BYTES: usize = 6 * 1024;
+const GRAPH_CONNECT_SECS: u64 = 15;
+const GRAPH_CALL_SECS: u64 = 5;
+const GRAPH_LIMIT: usize = 20;
 const THRESHOLD: f64 = 0.20;
 const PASSAGE_WINDOW: usize = 6;
 
@@ -64,6 +69,10 @@ struct FindArgs {
     mode: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    direction: Option<String>,
+    #[serde(default)]
+    depth: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -84,7 +93,7 @@ struct SearchHit {
     ranges: Vec<PassageRange>,
 }
 
-pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
+pub async fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     let args: FindArgs = serde_json::from_value(args.clone())?;
     let mode = args
         .mode
@@ -95,8 +104,8 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     match mode.as_str() {
         "" | "search" => search_mode(toolbox, &args),
         "outline" => outline_mode(toolbox, &args),
-        "architecture" => architecture_mode(toolbox, &args),
-        "trace" => trace_mode(toolbox, &args),
+        "architecture" => architecture_mode(toolbox, &args).await,
+        "trace" => trace_mode(toolbox, &args).await,
         other => Err(ToolError::msg(format!(
             "unknown find mode {other:?}: use search, outline, architecture, or trace"
         ))),
@@ -527,7 +536,15 @@ fn is_outline_decl(trimmed: &str) -> bool {
     DECLS.iter().any(|p| trimmed.starts_with(p))
 }
 
-fn architecture_mode(toolbox: &Toolbox, args: &FindArgs) -> ToolResult<String> {
+async fn architecture_mode(toolbox: &Toolbox, args: &FindArgs) -> ToolResult<String> {
+    let request = json!({"format": "json", "limit": GRAPH_LIMIT});
+    if let Some(answer) = graph_answer(toolbox, "get_architecture", request).await {
+        return Ok(answer);
+    }
+    architecture_mode_local(toolbox, args)
+}
+
+fn architecture_mode_local(toolbox: &Toolbox, args: &FindArgs) -> ToolResult<String> {
     let base = resolve_base(toolbox, args.path.as_deref())?;
     let files = collect_candidates(&base)?;
     let mut out = format!("architecture summary ({} files):\n", files.len());
@@ -541,20 +558,146 @@ fn architecture_mode(toolbox: &Toolbox, args: &FindArgs) -> ToolResult<String> {
     Ok(out)
 }
 
-fn trace_mode(toolbox: &Toolbox, args: &FindArgs) -> ToolResult<String> {
+async fn trace_mode(toolbox: &Toolbox, args: &FindArgs) -> ToolResult<String> {
     let symbol = args.query.trim();
     if symbol.is_empty() {
         return Err(ToolError::msg("trace mode requires query naming a symbol"));
     }
-    let mut search_args = FindArgs {
+    if args.path.is_some() {
+        return trace_mode_local(toolbox, args);
+    }
+    let direction = args
+        .direction
+        .as_deref()
+        .map(str::trim)
+        .filter(|direction| !direction.is_empty())
+        .unwrap_or("inbound");
+    let depth = args.depth.unwrap_or(2).clamp(1, 5);
+    let request = json!({
+        "function_name": symbol,
+        "direction": direction,
+        "depth": depth,
+        "format": "json",
+        "limit": GRAPH_LIMIT,
+    });
+    if let Some(answer) = graph_answer(toolbox, "trace_path", request).await {
+        return Ok(answer);
+    }
+    trace_mode_local(toolbox, args)
+}
+
+fn trace_mode_local(toolbox: &Toolbox, args: &FindArgs) -> ToolResult<String> {
+    let symbol = args.query.trim();
+    let search_args = FindArgs {
         query: symbol.to_string(),
         grep_keywords: vec![symbol.to_string()],
         path: args.path.clone(),
         mode: Some("search".to_string()),
-        limit: args.limit,
+        limit: Some(args.limit.unwrap_or(DEFAULT_HITS)),
+        direction: None,
+        depth: None,
     };
-    search_args.limit = Some(args.limit.unwrap_or(DEFAULT_HITS));
     search_mode(toolbox, &search_args)
+}
+
+/// Calls one graph tool when it is worth trying, and turns a failure into `None` with the
+/// reason logged: `find` never fails because the graph is cold, stale or broken.
+async fn graph_answer(toolbox: &Toolbox, tool: &str, request: Value) -> Option<String> {
+    if let Some(reason) = graph_skip_reason(toolbox) {
+        tracing::info!(mode = tool, reason, "find.graph.fallback");
+        return None;
+    }
+    let connect = Duration::from_secs(toolbox.cap_secs(GRAPH_CONNECT_SECS));
+    let call = Duration::from_secs(toolbox.cap_secs(GRAPH_CALL_SECS));
+    let name = format!("{}.{tool}", graph::SERVER);
+    let result = toolbox
+        .mcp()
+        .call_within(&name, &request, connect, call)
+        .await;
+    graph_result(toolbox, tool, result)
+}
+
+fn graph_skip_reason(toolbox: &Toolbox) -> Option<&'static str> {
+    if toolbox.is_goldfish() {
+        return Some("goldfish");
+    }
+    if !toolbox.has_mcp_server(graph::SERVER) {
+        return Some("unconfigured");
+    }
+    if !toolbox.is_graph_healthy() {
+        return Some("unhealthy");
+    }
+    None
+}
+
+fn graph_result(
+    toolbox: &Toolbox,
+    tool: &str,
+    result: Result<String, WithinError>,
+) -> Option<String> {
+    let error = match result {
+        Ok(text) => return graph_hit(tool, &text),
+        Err(error) => error,
+    };
+    graph_failure(toolbox, tool, error)
+}
+
+fn graph_failure(toolbox: &Toolbox, tool: &str, error: WithinError) -> Option<String> {
+    match error {
+        WithinError::Warming => graph_fallback(tool, "connecting"),
+        WithinError::Timeout => {
+            toolbox.cool_graph();
+            graph_fallback(tool, "timeout")
+        }
+        WithinError::Failed(error) => {
+            toolbox.cool_graph();
+            tracing::info!(mode = tool, reason = "error", error = %error, "find.graph.fallback");
+            None
+        }
+    }
+}
+
+fn graph_fallback(tool: &str, reason: &'static str) -> Option<String> {
+    tracing::info!(mode = tool, reason, "find.graph.fallback");
+    None
+}
+
+fn graph_hit(tool: &str, text: &str) -> Option<String> {
+    let answer = match compact_graph(text) {
+        Ok(answer) => answer,
+        Err(reason) => return graph_fallback(tool, reason),
+    };
+    tracing::info!(mode = tool, "find.graph.hit");
+    Some(answer)
+}
+
+/// The graph's JSON when it parses and carries something; otherwise why it is unusable.
+fn compact_graph(text: &str) -> Result<String, &'static str> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("empty");
+    }
+    let parsed: Value = serde_json::from_str(trimmed).map_err(|error| {
+        if error.is_eof() {
+            "truncated"
+        } else {
+            "error"
+        }
+    })?;
+    if graph_empty(&parsed) {
+        return Err("empty");
+    }
+    Ok(format!("[graph] {parsed}"))
+}
+
+fn graph_empty(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(text) => text.trim().is_empty(),
+        Value::Array(items) => items.is_empty(),
+        Value::Object(map) => map.values().all(graph_empty),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -563,8 +706,8 @@ mod tests {
     use crate::ToolConfig;
     use serde_json::json;
 
-    #[test]
-    fn find_ranks_matching_files_and_records_seen_lines() {
+    #[tokio::test]
+    async fn find_ranks_matching_files_and_records_seen_lines() {
         let dir = tempfile::tempdir().unwrap();
         let spill = tempfile::tempdir().unwrap();
         fs::write(
@@ -580,6 +723,7 @@ mod tests {
                 "grep_keywords": ["frobulate_widget"]
             }),
         )
+        .await
         .unwrap();
         assert!(res.contains("widget.rs"), "got: {res}");
         assert!(res.contains("[grep]"), "got: {res}");

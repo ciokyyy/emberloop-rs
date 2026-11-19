@@ -66,8 +66,6 @@ pub struct ProxyConfig {
     pub claude_upstream: String,
     /// Replaces every key provider's origin on `x/<id>/…` routes; tests point it at a fake.
     pub provider_origin: Option<String>,
-    /// The `execute` tool can reach the code graph, so the skill is worth the tokens.
-    pub codebase_memory: bool,
     /// Runs the background skill review's tool calls; the daemon injects it.
     pub review_tools: Option<Arc<dyn ReviewTools>>,
     /// The global skills root: with the Project root it locates a goldfish's persona.
@@ -86,7 +84,6 @@ impl ProxyConfig {
             opencode_upstream: DEFAULT_OPENCODE_UPSTREAM.to_string(),
             claude_upstream: DEFAULT_CLAUDE_UPSTREAM.to_string(),
             provider_origin: None,
-            codebase_memory: false,
             review_tools: None,
             global_skills: None,
             round_timeout: DEFAULT_ROUND_TIMEOUT,
@@ -117,12 +114,6 @@ impl ProxyConfig {
         self.provider_origin = Some(origin.into());
         self
     }
-
-    pub fn with_codebase_memory(mut self, codebase_memory: bool) -> Self {
-        self.codebase_memory = codebase_memory;
-        self
-    }
-
     pub fn with_global_skills(mut self, global_skills: Option<std::path::PathBuf>) -> Self {
         self.global_skills = global_skills;
         self
@@ -609,14 +600,7 @@ async fn handle_generation(
     let injected = inject_steer(&runtime, wire, &mut request, &queue).await;
     let window = context_window(state, session_id).await;
     let settings = state.inner.settings.read().await.clone();
-    let outcome = prepare_request(
-        &runtime,
-        wire,
-        &mut request,
-        window,
-        &settings,
-        state.inner.config.codebase_memory,
-    )?;
+    let outcome = prepare_request(&runtime, wire, &mut request, window, &settings)?;
     let observed_gate = outcome.gate.clone();
     let nudge_text = outcome.nudge.as_ref().map(|report| report.text.clone());
     publish_prepare_events(&state.inner.events, session_id, outcome);
@@ -834,7 +818,6 @@ fn prepare_request(
     request: &mut Value,
     window: usize,
     settings: &Settings,
-    codebase_memory: bool,
 ) -> Result<PrepareOutcome, ProxyError> {
     let request = request_body_mut(request);
 
@@ -863,13 +846,7 @@ fn prepare_request(
         if settings.proxy_compression && settings.inject_tool {
             inject_tools_for_wire(wire, request, &runtime.pins);
         }
-        inject_prompts_for_wire(
-            wire,
-            request,
-            &runtime.pins,
-            codebase_memory,
-            &runtime.catalog,
-        );
+        inject_prompts_for_wire(wire, request, &runtime.pins, &runtime.catalog);
     }
     let Some(mut contents) = extract_core_contents(wire, request) else {
         return Ok(PrepareOutcome {

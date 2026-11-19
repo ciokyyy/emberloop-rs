@@ -506,10 +506,9 @@ impl Daemon {
         .with_binaries(Arc::new(binaries::BinariesChecker::new(&config.data_root)));
 
         let updated = announce_update(&app_state, &events, &data_root).await;
-        let codebase_memory = codegraph::ensure(&config.config_root);
+        let _ = codegraph::ensure(&config.config_root);
         let _ = figcraft::ensure(&config.config_root);
         let mut proxy_config = ProxyConfig::new(random_secret())
-            .with_codebase_memory(codebase_memory)
             .with_global_skills(Some(config.global_skills.clone()))
             .with_review_tools(Arc::new(review::ReviewExecutor {
                 sessions: sessions.clone(),

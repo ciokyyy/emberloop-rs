@@ -28,8 +28,7 @@ pub const SUPERPOWERS: &str = "superpowers";
 pub const POLICY: &str = "policy";
 /// The tool-workflow policy a goldfish gets instead of `POLICY`: seven read-only tools, no folds.
 pub const POLICY_GOLDFISH: &str = "policy.goldfish";
-/// The `execute`-only code graph skill, injected when the graph server is up.
-pub const SKILL_CODEBASE_MEMORY: &str = "skill.codebase-memory";
+
 /// The frozen skill catalog's heading and instruction; the daemon appends the skill lines.
 pub const SKILL_CATALOG: &str = "skill.catalog";
 /// The background skill review prompt, sent by the proxy fork; see `proxy::review`.
@@ -106,7 +105,6 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_RETRY_CALL,
     REVIEWER_SPEC,
     REVIEWER_STANDARDS,
-    SKILL_CODEBASE_MEMORY,
     SKILL_CATALOG,
     REVIEW_SKILLS,
     ACP_STATUS_REPORT,
@@ -182,7 +180,7 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_RETRY_CALL => defaults::TOOL_RETRY_CALL,
         REVIEWER_SPEC => defaults::REVIEWER_SPEC,
         REVIEWER_STANDARDS => defaults::REVIEWER_STANDARDS,
-        SKILL_CODEBASE_MEMORY => defaults::SKILL_CODEBASE_MEMORY,
+
         ACP_STATUS_REPORT => defaults::ACP_STATUS_REPORT,
         TODO_REMINDER => defaults::TODO_REMINDER,
         NUDGE_FIRST => defaults::NUDGE_FIRST,

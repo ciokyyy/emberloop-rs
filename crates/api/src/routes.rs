@@ -734,17 +734,7 @@ pub(crate) async fn steer_session_inner(
     let entry = queue
         .enqueue_with_images(SteerKind::Steer, payload.text, images)
         .await;
-    let event = SessionEvent::new(
-        &id,
-        0,
-        EventKind::SteerQueued,
-        serde_json::json!({
-            "id": entry.id,
-            "text": entry.text,
-            "kind": "steer",
-            "imagesCount": entry.images.len()
-        }),
-    );
+    let event = SessionEvent::steer_queued(&id, &entry);
     let appended = log
         .append(event)
         .await
@@ -1706,7 +1696,7 @@ mod prompt_routes_tests {
         });
         let state = AppState::new(data_root, projects, sessions, Arc::new(EventBus::default()))
             .with_driver(driver.clone());
-        state.steers.queue("ses_1").set_turn_active(true);
+        state.steers.queue("ses_1").set_turn_active(true).await;
         let response = build_router(state.clone())
             .oneshot(
                 Request::builder()
@@ -1812,7 +1802,7 @@ mod prompt_routes_tests {
         let mut published = bus.subscribe();
         let state =
             AppState::new(data_root, projects, sessions, Arc::clone(&bus)).with_driver(driver);
-        state.steers.queue("ses_1").set_turn_active(true);
+        state.steers.queue("ses_1").set_turn_active(true).await;
         let app = build_router(state);
 
         let response = app

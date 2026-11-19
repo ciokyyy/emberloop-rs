@@ -15,7 +15,7 @@ use rmcp::transport::TokioChildProcess;
 use rmcp::ServiceExt;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 
 use crate::figcraft;
 use crate::graph;
@@ -91,6 +91,17 @@ pub struct McpTool {
     pub call_name: String,
     pub signature: String,
     pub description: String,
+}
+
+/// Why `call_within` gave up; `find` maps these onto fallback telemetry.
+#[derive(Debug)]
+pub enum WithinError {
+    /// The cold connect outlived its budget; the tracked task keeps warming.
+    Warming,
+    /// The RPC outlived its budget after the server connected.
+    Timeout,
+    /// The server could not connect or the RPC failed.
+    Failed(ToolError),
 }
 
 pub struct McpRegistry {
@@ -277,6 +288,77 @@ impl McpRegistry {
             }
             other => other,
         }
+    }
+
+    /// Whether `name` is a configured server that has not failed to load.
+    pub fn has_server(&self, name: &str) -> bool {
+        self.servers
+            .iter()
+            .any(|server| server.name == name && server.error.is_none())
+    }
+
+    /// Calls `name` with a warmup budget for a cold connect and a tighter budget for the
+    /// RPC. A timed-out connect is not aborted: it stays tracked and the next call finds
+    /// it warm.
+    pub async fn call_within(
+        &self,
+        name: &str,
+        args: &Value,
+        connect_budget: Duration,
+        call_budget: Duration,
+    ) -> Result<String, WithinError> {
+        self.loaded().map_err(WithinError::Failed)?;
+        let Some((server_name, _)) = name.split_once('.') else {
+            return Err(WithinError::Failed(ToolError::msg(format!(
+                "unknown tool {name:?}"
+            ))));
+        };
+        let Some(server) = self.servers.iter().find(|it| it.name == server_name) else {
+            return Err(WithinError::Failed(ToolError::msg(format!(
+                "unknown tool {name:?}"
+            ))));
+        };
+        if let Some(error) = &server.error {
+            return Err(WithinError::Failed(ToolError::msg(error.clone())));
+        }
+        if !self.connected.read().await.contains_key(server_name) {
+            let warm = self.spawn_warm(Arc::clone(server));
+            match tokio::time::timeout(connect_budget, warm).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => return Err(WithinError::Failed(error)),
+                Ok(Err(_)) => {
+                    return Err(WithinError::Failed(ToolError::msg(
+                        "the connect task ended without an answer",
+                    )))
+                }
+                Err(_) => return Err(WithinError::Warming),
+            }
+        }
+        match tokio::time::timeout(call_budget, self.attempt(name, args)).await {
+            Ok(Ok(text)) => Ok(text),
+            Ok(Err(error)) => Err(WithinError::Failed(error)),
+            Err(_) => Err(WithinError::Timeout),
+        }
+    }
+
+    /// A cold connect in its own tracked task, so a caller's budget expiring leaves the
+    /// handshake running instead of aborting it mid-flight.
+    fn spawn_warm(&self, server: Arc<Server>) -> oneshot::Receiver<ToolResult<()>> {
+        let (tx, rx) = oneshot::channel();
+        let root = self.root.clone();
+        let connected = Arc::clone(&self.connected);
+        let lock = self.locks.get(&server.name).cloned();
+        let task = tokio::spawn(async move {
+            let result = match lock {
+                Some(lock) => connect_server(root, server, connected, lock)
+                    .await
+                    .map(|_| ()),
+                None => Err(ToolError::msg("unknown mcp server")),
+            };
+            let _ = tx.send(result);
+        });
+        self.track(task.abort_handle());
+        rx
     }
 
     async fn transport_closed(&self, server: &str, error: &ToolError) -> bool {

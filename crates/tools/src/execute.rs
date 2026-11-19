@@ -903,7 +903,7 @@ _SPECS = {{
     "background": {{"sig": "background(action, id, offset, timeout)", "desc": "Manage background commands."}},
     "find": {{"sig": "find(query, grep_keywords, limit, mode, path)", "desc": "Semantic/lexical code finder with modes."}},
     "websearch": {{"sig": "websearch(query, count, domains, fresh, freshness, provider)", "desc": "Search the web."}},
-    "spawn": {{"sig": "spawn(role, text, title, tier, ticketPath, startingPoint, persona)", "desc": "Start a Worker, Scout or one-shot Goldfish (persona), or start/reuse a Spec or Standards reviewer."}},
+    "spawn": {{"sig": "spawn(role, text, title, tier, ticketPath, startingPoint, persona, batch)", "desc": "Start a Worker, Scout or one-shot Goldfish (persona), or start/reuse a Spec or Standards reviewer."}},
     "steer": {{"sig": "steer(id, text, tier, ticketPath, startingPoint)", "desc": "Continue an existing subagent Session."}},
     "stop": {{"sig": "stop(id)", "desc": "Stop a subagent without deleting its conversation."}},
     "result": {{"sig": "result(id)", "desc": "Retrieve all reports from a subagent."}},

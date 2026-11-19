@@ -8,6 +8,10 @@ use serde_json::{Map, Value};
 use crate::mcp::strip_meta_keys;
 use crate::{ToolError, ToolResult, Toolbox};
 
+/// A failed call's args are only worth keeping while one `retry_call` can carry them.
+const MAX_RECORD_BYTES: usize = 128 * 1024;
+const MAX_RECORDS: usize = 50;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FailedCallRecord {
     pub tool: String,
@@ -41,13 +45,16 @@ impl FailedCallStore {
         }
     }
 
-    pub fn record(&self, tool: &str, args: &Value) -> ToolResult<u64> {
+    pub fn record(&self, tool: &str, args: &Value) -> ToolResult<Option<u64>> {
         fs::create_dir_all(&self.dir)?;
         let record = FailedCallRecord {
             tool: tool.to_string(),
             args: strip_meta_keys(args),
         };
         let payload = serde_json::to_vec_pretty(&record)?;
+        if payload.len() > MAX_RECORD_BYTES {
+            return Ok(None);
+        }
         let max_id = max_stored_id(&self.dir);
         for offset in 0..1000 {
             let id = max_id + 1 + offset;
@@ -58,7 +65,8 @@ impl FailedCallStore {
                         let _ = fs::remove_file(&path);
                         return Err(error.into());
                     }
-                    return Ok(id);
+                    prune_oldest(&self.dir, MAX_RECORDS);
+                    return Ok(Some(id));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error.into()),
@@ -87,7 +95,7 @@ impl FailedCallStore {
     }
 }
 
-fn max_stored_id(dir: &Path) -> u64 {
+fn stored_ids(dir: &Path) -> Vec<u64> {
     fs::read_dir(dir)
         .ok()
         .into_iter()
@@ -101,8 +109,22 @@ fn max_stored_id(dir: &Path) -> u64 {
                 .parse::<u64>()
                 .ok()
         })
-        .max()
-        .unwrap_or(0)
+        .collect()
+}
+
+fn max_stored_id(dir: &Path) -> u64 {
+    stored_ids(dir).into_iter().max().unwrap_or(0)
+}
+
+fn prune_oldest(dir: &Path, max: usize) {
+    let mut ids = stored_ids(dir);
+    if ids.len() <= max {
+        return;
+    }
+    ids.sort_unstable();
+    for id in &ids[..ids.len() - max] {
+        let _ = fs::remove_file(dir.join(format!("{id}.json")));
+    }
 }
 
 // Boxed to break async Send-checking recursion with Toolbox::call.
@@ -211,9 +233,11 @@ mod tests {
                 "spawn",
                 &json!({"role": "worker", "text": "hi", "toolAction": "x", "toolSummary": "y"}),
             )
+            .unwrap()
             .unwrap();
         let id2 = store
             .record("steer", &json!({"id": "ses_1", "text": "next"}))
+            .unwrap()
             .unwrap();
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
@@ -296,6 +320,39 @@ mod tests {
     }
 
     #[test]
+    fn record_skips_payloads_over_128_kib() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FailedCallStore::new(dir.path());
+        let big = "x".repeat(128 * 1024);
+        assert_eq!(
+            store
+                .record("write", &json!({"path": "a.txt", "content": big}))
+                .unwrap(),
+            None
+        );
+        assert_eq!(max_stored_id(&dir.path().join("failed_calls")), 0);
+    }
+
+    #[test]
+    fn record_prunes_the_oldest_records_beyond_fifty() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FailedCallStore::new(dir.path());
+        for _ in 0..51 {
+            store
+                .record("spawn", &json!({"role": "worker"}))
+                .unwrap()
+                .unwrap();
+        }
+        assert!(store.load(1).is_err());
+        assert!(store.load(2).is_ok());
+        assert!(store.load(51).is_ok());
+        let kept = fs::read_dir(dir.path().join("failed_calls"))
+            .unwrap()
+            .count();
+        assert_eq!(kept, 50);
+    }
+
+    #[test]
     fn load_rejects_zero_and_missing_id() {
         let dir = tempfile::tempdir().unwrap();
         let store = FailedCallStore::new(dir.path());
@@ -311,7 +368,10 @@ mod tests {
         let store = FailedCallStore::new(dir.path());
         fs::create_dir_all(dir.path().join("failed_calls")).unwrap();
         fs::write(dir.path().join("failed_calls/3.json"), "{}").unwrap();
-        let id = store.record("spawn", &json!({"role": "worker"})).unwrap();
+        let id = store
+            .record("spawn", &json!({"role": "worker"}))
+            .unwrap()
+            .unwrap();
         assert_eq!(id, 4);
     }
 
@@ -323,6 +383,7 @@ mod tests {
         let id = toolbox
             .failed_calls()
             .record("retry_call", &json!({"id": 1}))
+            .unwrap()
             .unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

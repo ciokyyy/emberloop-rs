@@ -1,3 +1,4 @@
+use crate::steer::SteerEntry;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -56,6 +57,26 @@ impl SessionEvent {
             at,
             data,
         }
+    }
+
+    /// One `SteerQueued` payload for plain steers and Subagent reports, so every
+    /// producer publishes the same shape.
+    pub fn steer_queued(session_id: &str, entry: &SteerEntry) -> Self {
+        let kind = if entry.report.is_some() {
+            "subagent"
+        } else {
+            entry.kind.as_str()
+        };
+        let mut data = serde_json::json!({
+            "id": entry.id,
+            "text": entry.text,
+            "kind": kind,
+            "imagesCount": entry.images.len()
+        });
+        if let Some(report) = &entry.report {
+            data["report"] = serde_json::json!(report);
+        }
+        Self::new(session_id, 0, EventKind::SteerQueued, data)
     }
 }
 

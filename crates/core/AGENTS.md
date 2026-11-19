@@ -21,6 +21,21 @@ in-flight entries as pending. An entry is delivered when the upstream returns a
 `begin_request`/`end_request` hold a per-Session in-flight flag, so `wake_if_idle`
 fires a waker only when no request is in flight and the queue is not empty. One
 wake drains the whole queue as a single `"\n\n"`-joined prompt, with every queued image attached in order.
+`set_turn_active` is async and returns the entries a turn end releases: it seals
+every open batch, and a sealed batch with no pending member flips its `Held`
+reports to `Pending` behind one `Batch "<name>" completed (n/n):` notice.
+`SteerEntry.batch` names the barrier; `register_batch_member` rejects a sealed
+batch or a child already pending in one, `unregister_batch_member` drops an
+empty batch or releases a sealed one, and `complete_batch_member` moves a
+finished child to `completed_ids`. The queue persists `{ entries, batches }`
+while any batch is open and a bare array otherwise; reload preserves `Held` and
+requeues only `InFlight` as `Pending`. `SessionEvent::steer_queued` builds the
+one `SteerQueued` payload for a plain steer and a Subagent report.
+`expire_batches(now)` closes every batch past `deadline_at`: it prepends a
+timeout notice, adds a synthetic `timed_out` report for each pending member and
+releases the batch. `reconcile_on_startup` seals pre-restart batches, closes
+orphaned pending members as `errored` reports when no turn is active, and
+returns the released entries.
 
 ## Child DOX Index
 

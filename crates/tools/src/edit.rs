@@ -94,7 +94,13 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
             parsed.ops = rebased;
             rebase_warning = Some(msg);
         } else {
-            return Err(stale_tag_error(&path, &parsed.tag, &actual_tag, &original));
+            return Err(stale_tag_error(
+                toolbox,
+                &path,
+                &parsed.tag,
+                &actual_tag,
+                &original,
+            ));
         }
     } else {
         check_seen(toolbox, &path, &actual_hash, &parsed.ops, lines.len())?;
@@ -479,13 +485,22 @@ fn ensure_unchanged(path: &Path, expected_hash: &str) -> ToolResult<()> {
     Ok(())
 }
 
-fn stale_tag_error(path: &Path, expected: &str, actual: &str, original: &[u8]) -> ToolError {
+fn stale_tag_error(
+    toolbox: &Toolbox,
+    path: &Path,
+    expected: &str,
+    actual: &str,
+    original: &[u8],
+) -> ToolError {
     let text = String::from_utf8_lossy(original);
     let lines = lines_of(&text);
     let shown = &lines[..lines.len().min(200)];
+    // `retry_call` may only fix the tag, so these lines must not force a fresh `read`.
+    toolbox
+        .seen()
+        .record(path, &content_hash(original), 1..=shown.len() as u32);
     let mut out = format!(
-        "stale tag: {} is #{actual}, not #{expected}. Read {} and copy the current tag.\ncurrent lines:\n",
-        path.display(),
+        "stale tag: {} is #{actual}, not #{expected}. Use #{actual} in the header.\ncurrent lines:\n",
         path.display()
     );
     for (index, line) in shown.iter().enumerate() {

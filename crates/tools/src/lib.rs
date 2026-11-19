@@ -68,6 +68,9 @@ impl ToolError {
 
 pub type ToolResult<T> = std::result::Result<T, ToolError>;
 
+/// How long a failed graph call keeps `find` on its local path.
+const GRAPH_COOLDOWN_SECS: u64 = 60;
+
 #[derive(Clone, Debug)]
 pub struct ToolConfig {
     pub root: PathBuf,
@@ -127,7 +130,10 @@ impl ToolConfig {
             bin_dirs: graph::default_bin_dirs(),
             ctx_spill_enabled: false,
             capture_mcp_output: false,
-            retry_allowlist: ["spawn", "steer"].into_iter().map(str::to_string).collect(),
+            retry_allowlist: ["spawn", "steer", "write", "edit"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
         }
     }
 }
@@ -151,6 +157,8 @@ pub struct Toolbox {
     background: Arc<background::BackgroundManager>,
     mcp: Arc<mcpclient::McpRegistry>,
     failed_calls: failedcalls::FailedCallStore,
+    /// A graph RPC failure spends the rest of the 60s cooldown, so `find` goes local first.
+    graph_unhealthy_until: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 /// The only tools a goldfish may call; the proxy declares exactly these and the tools side denies
@@ -203,6 +211,7 @@ impl Toolbox {
             overflow,
             mcp,
             failed_calls,
+            graph_unhealthy_until: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -272,6 +281,33 @@ impl Toolbox {
     }
     pub fn failed_calls(&self) -> &failedcalls::FailedCallStore {
         &self.failed_calls
+    }
+
+    pub(crate) fn mcp(&self) -> &mcpclient::McpRegistry {
+        &self.mcp
+    }
+
+    pub(crate) fn has_mcp_server(&self, name: &str) -> bool {
+        self.mcp.has_server(name)
+    }
+
+    pub(crate) fn is_graph_healthy(&self) -> bool {
+        let until = *self
+            .graph_unhealthy_until
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match until {
+            Some(until) => std::time::Instant::now() >= until,
+            None => true,
+        }
+    }
+
+    pub(crate) fn cool_graph(&self) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(GRAPH_COOLDOWN_SECS);
+        *self
+            .graph_unhealthy_until
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(until);
     }
 
     pub fn image_input(&self) -> bool {
@@ -447,7 +483,7 @@ impl Toolbox {
             "skill_search" => skillsearch::run(self, args),
             "skill_manage" => skillmanage::run(self, args),
             "prompt_propose" => promptpropose::run(self, args),
-            "find" => find::run(self, args),
+            "find" => find::run(self, args).await,
             "edit" => edit::run(self, args),
             "write" => write::run(self, args),
             "bash" => bash::run(self, args).await,
@@ -484,9 +520,16 @@ impl Toolbox {
             return Err(error);
         }
         match self.failed_calls.record(name, args) {
-            Ok(id) => Err(ToolError::msg(format!(
+            Ok(Some(id)) => Err(ToolError::msg(format!(
                 "{error}\n\n[failed call #{id}] Retry with retry_call(id={id}, ...)"
             ))),
+            Ok(None) => {
+                tracing::debug!(
+                    tool = name,
+                    "failed call payload over 128 KiB; not recorded"
+                );
+                Err(error)
+            }
             Err(record_err) => {
                 tracing::warn!(tool = name, error = %record_err, "failed to record failed call for retry");
                 Err(error)

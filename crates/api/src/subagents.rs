@@ -8,7 +8,7 @@ use axum::{
 use emberloop_core::{
     events::{EventKind, SessionEvent},
     id::generate_id,
-    steer::{SteerEntry, SubagentReport},
+    steer::{SteerEntry, SteerState, SubagentReport, DEFAULT_BATCH_DEADLINE_MS},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -42,6 +42,9 @@ pub enum SubagentRequest {
         /// Persona id, required for the `goldfish` role.
         #[serde(default)]
         persona: Option<String>,
+        /// Groups sibling spawns behind one barrier.
+        #[serde(default)]
+        batch: Option<String>,
     },
     Steer {
         id: String,
@@ -95,6 +98,7 @@ pub async fn action(
             text,
             title,
             persona,
+            batch,
         } => {
             ensure_not_subagent(&caller)?;
             let _guard = state.subagent_gate.lock().await;
@@ -109,6 +113,7 @@ pub async fn action(
                     text,
                     title,
                     persona,
+                    batch,
                 },
             )
             .await?
@@ -298,6 +303,7 @@ struct SpawnInput {
     text: String,
     title: Option<String>,
     persona: Option<String>,
+    batch: Option<String>,
 }
 
 struct SteerInput {
@@ -379,6 +385,11 @@ async fn handle_spawn(
     caller: &SessionMeta,
     input: SpawnInput,
 ) -> Result<Value, Error> {
+    let batch = input
+        .batch
+        .as_deref()
+        .map(validate_batch_name)
+        .transpose()?;
     if emberloop_core::steer::is_reviewer_role(&input.role) {
         if input.tier.is_some() {
             return Err(bad(REVIEWER_TIER_ERROR));
@@ -391,24 +402,72 @@ async fn handle_spawn(
             &input.starting_point,
         )
         .await?;
-        review(
+        if let Some(batch) = &batch {
+            register_batch_member(state, caller, &child.id, batch).await?;
+        }
+        if let Err(error) = review(
             state,
             &child,
             &input.ticket_path,
             &input.starting_point,
             &input.text,
         )
-        .await?;
+        .await
+        {
+            if batch.is_some() {
+                abandon_batch_member(state, caller, &child.id).await;
+            }
+            return Err(error);
+        }
         return Ok(json!({ "id": child.id, "role": input.role }));
     }
     if matches!(input.role.as_str(), "worker" | "scout" | GOLDFISH) {
         let role = input.role.clone();
-        let (child, tier) = spawn_delegate(state, caller, input).await?;
+        let (child, tier) = spawn_delegate(state, caller, input, batch.as_deref()).await?;
         return Ok(json!({ "id": child.id, "role": role, "tier": tier }));
     }
     Err(bad(
         "role must be spec, standards, worker, scout, or goldfish",
     ))
+}
+
+fn validate_batch_name(raw: &str) -> Result<String, Error> {
+    let name = raw.trim();
+    if name.is_empty() || name.chars().count() > 64 || name.chars().any(|c| c.is_ascii_control()) {
+        return Err(bad(
+            "batch must be 1 to 64 characters with no control characters",
+        ));
+    }
+    Ok(name.to_string())
+}
+
+async fn register_batch_member(
+    state: &AppState,
+    parent: &SessionMeta,
+    child_id: &str,
+    batch: &str,
+) -> Result<(), Error> {
+    let queue = state.steers.queue(&parent.id);
+    queue
+        .register_batch_member(batch, child_id, DEFAULT_BATCH_DEADLINE_MS)
+        .await
+        .map_err(|error| (StatusCode::CONFLICT, error))
+}
+
+/// A prompt that never reached its child leaves the barrier; releasing a sealed
+/// batch here still publishes and wakes exactly once.
+async fn abandon_batch_member(state: &AppState, parent: &SessionMeta, child_id: &str) {
+    let released = state
+        .steers
+        .queue(&parent.id)
+        .unregister_batch_member(child_id)
+        .await;
+    release_batch_entries(state, &parent.id, &released).await;
+    if !released.is_empty() {
+        wake_parent(state, &parent.id)
+            .await
+            .unwrap_or_else(|error| tracing::warn!(%error, "released batch entries remain queued"));
+    }
 }
 
 async fn handle_steer(
@@ -541,6 +600,7 @@ async fn spawn_delegate(
     state: &AppState,
     parent: &SessionMeta,
     input: SpawnInput,
+    batch: Option<&str>,
 ) -> Result<(SessionMeta, &'static str), Error> {
     reject_reviewer_fields(&input.ticket_path, &input.starting_point)?;
     if input.text.trim().is_empty() {
@@ -590,7 +650,20 @@ async fn spawn_delegate(
         Some(preset.reasoning_effort.unwrap_or_default()),
     )
     .await?;
-    execute_subagent_prompt(state, &child.id, ladder, 0, input.text).await?;
+    if let Some(batch) = batch {
+        if let Err(error) = register_batch_member(state, parent, &child.id, batch).await {
+            let _ = state.sessions.delete(&child.id).await;
+            crate::subagent_recovery::remove_run(state, &child.id).await;
+            crate::subagent_submit::forget(state, &child.id).await;
+            return Err(error);
+        }
+    }
+    if let Err(error) = execute_subagent_prompt(state, &child.id, ladder, 0, input.text).await {
+        if batch.is_some() {
+            abandon_batch_member(state, parent, &child.id).await;
+        }
+        return Err(error);
+    }
     Ok((child, tier.as_str()))
 }
 
@@ -800,6 +873,9 @@ async fn submit(
     )
     .await?;
     crate::subagent_submit::record_submit(state, &child.id).await;
+    if entry.state == SteerState::Held {
+        return Ok(json!({ "id": entry.id, "status": status, "heldInBatch": entry.batch }));
+    }
     Ok(json!({ "id": entry.id, "status": status }))
 }
 
@@ -853,12 +929,27 @@ pub(crate) async fn deliver(
     if state.sessions.get(parent).await.is_none() {
         return Err((StatusCode::NOT_FOUND, "Parent Session not found".into()));
     }
-    let entry = state
-        .steers
-        .queue(parent)
-        .enqueue_report(report)
-        .await
-        .map_err(internal)?;
+    let queue = state.steers.queue(parent);
+    let mut entry = queue.enqueue_report(report).await.map_err(internal)?;
+    let child = entry
+        .report
+        .as_ref()
+        .map(|report| report.session_id.clone())
+        .unwrap_or_default();
+    let released = queue.complete_batch_member(&child).await;
+    if !released.is_empty() {
+        if let Some(current) = released.iter().find(|current| current.id == entry.id) {
+            entry = current.clone();
+        }
+        release_batch_entries(state, parent, &released).await;
+        wake_parent(state, parent)
+            .await
+            .unwrap_or_else(|error| tracing::warn!(%error, "released report remains queued"));
+        return Ok(entry);
+    }
+    if entry.state == SteerState::Held {
+        return Ok(entry);
+    }
     publish_report(state, parent, &entry).await?;
     wake_parent(state, parent)
         .await
@@ -866,15 +957,16 @@ pub(crate) async fn deliver(
     Ok(entry)
 }
 
+async fn release_batch_entries(state: &AppState, parent: &str, released: &[SteerEntry]) {
+    for entry in released.iter().filter(|entry| entry.report.is_some()) {
+        if let Err(error) = publish_report(state, parent, entry).await {
+            tracing::warn!(error = %error.1, "released batch report not published");
+        }
+    }
+}
+
 async fn publish_report(state: &AppState, parent: &str, entry: &SteerEntry) -> Result<(), Error> {
-    let event = SessionEvent::new(
-        parent,
-        0,
-        EventKind::SteerQueued,
-        json!({
-            "id": entry.id, "text": entry.text, "kind": "subagent", "report": entry.report, "imagesCount": 0
-        }),
-    );
+    let event = SessionEvent::steer_queued(parent, entry);
     let stored = state
         .get_event_log(parent)
         .await
@@ -901,35 +993,51 @@ async fn wake_parent(state: &AppState, id: &str) -> Result<(), String> {
         .map(|_| ())
 }
 
-/// Restore queued report delivery without automatically retrying interrupted reviewer work.
-/// Rebuild a missing feed event if a crash happened after queue persistence.
+/// Restore queued report delivery and rebuild missing feed events after a crash,
+/// without automatically retrying interrupted reviewer work.
 pub async fn recover(state: &AppState) -> Result<(), Error> {
-    let parents: std::collections::HashSet<_> = state
-        .sessions
-        .list(None)
-        .await
-        .into_iter()
-        .filter_map(|meta| meta.reviewer.map(|assignment| assignment.parent_id))
-        .collect();
+    let sessions = state.sessions.list(None).await;
+    let mut parents: std::collections::HashSet<String> =
+        sessions.iter().map(|meta| meta.id.clone()).collect();
+    parents.extend(
+        sessions
+            .into_iter()
+            .filter_map(|meta| meta.reviewer.map(|assignment| assignment.parent_id)),
+    );
     for parent in parents {
-        if state.sessions.get(&parent).await.is_none() {
-            continue;
-        }
-        let log = state.get_event_log(&parent).await.map_err(internal)?;
-        let events = log
-            .kind_tail(&EventKind::SteerQueued, usize::MAX)
-            .await
-            .map_err(internal)?;
-        for entry in state.steers.queue(&parent).entries().await {
-            if entry.report.is_some() && !events.iter().any(|event| event.data["id"] == entry.id) {
-                publish_report(state, &parent, &entry).await?;
+        if state.sessions.get(&parent).await.is_some() {
+            if let Err(error) = recover_parent(state, &parent).await {
+                tracing::warn!(parent = %parent, error = ?error, "startup reconciliation failed for a Session");
             }
         }
-        if state.steers.queue(&parent).pending_len().await > 0 {
-            wake_parent(state, &parent)
-                .await
-                .unwrap_or_else(|error| tracing::warn!(%error, "report remains queued"));
+    }
+    Ok(())
+}
+
+async fn recover_parent(state: &AppState, parent: &str) -> Result<(), Error> {
+    let queue = state.steers.queue(parent);
+    let released = queue.reconcile_on_startup().await;
+    let entries = queue.entries().await;
+    if released.is_empty() && !entries.iter().any(|entry| entry.report.is_some()) {
+        return Ok(());
+    }
+    let log = state.get_event_log(parent).await.map_err(internal)?;
+    let events = log
+        .kind_tail(&EventKind::SteerQueued, usize::MAX)
+        .await
+        .map_err(internal)?;
+    for entry in entries {
+        if entry.report.is_some()
+            && entry.state != SteerState::Held
+            && !events.iter().any(|event| event.data["id"] == entry.id)
+        {
+            publish_report(state, parent, &entry).await?;
         }
+    }
+    if queue.pending_len().await > 0 {
+        wake_parent(state, parent)
+            .await
+            .unwrap_or_else(|error| tracing::warn!(%error, "report remains queued"));
     }
     Ok(())
 }

@@ -1021,3 +1021,192 @@ async fn a_configure_model_double_failure_evicts_the_handle_and_returns_error() 
     prompt_once(&fixture).await;
     assert_eq!(fixture.fake.wirings.lock().unwrap().len(), 2);
 }
+
+fn report(child: &str, summary: &str) -> emberloop_core::steer::SubagentReport {
+    emberloop_core::steer::SubagentReport {
+        session_id: child.into(),
+        role: "worker".into(),
+        ticket_path: String::new(),
+        status: "done".into(),
+        summary: summary.into(),
+        report: format!("{summary} report"),
+    }
+}
+
+async fn queued_events(fixture: &HarnessFixture) -> Vec<emberloop_core::events::SessionEvent> {
+    EventLog::open(&fixture.data_root.session_events_dir("ses_1"))
+        .await
+        .unwrap()
+        .replay(None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == EventKind::SteerQueued)
+        .collect()
+}
+
+async fn seed_held_batch(
+    fixture: &HarnessFixture,
+    batch: &str,
+) -> Arc<emberloop_core::steer::SteerQueue> {
+    let queue = fixture.steers.queue("ses_1");
+    queue.set_turn_active(true).await;
+    for child in ["child1", "child2"] {
+        queue
+            .register_batch_member(
+                batch,
+                child,
+                emberloop_core::steer::DEFAULT_BATCH_DEADLINE_MS,
+            )
+            .await
+            .unwrap();
+        queue.enqueue_report(report(child, child)).await.unwrap();
+        queue.complete_batch_member(child).await;
+    }
+    queue
+}
+
+#[tokio::test]
+async fn a_turn_end_releases_held_batch_reports_behind_one_wake() {
+    let fixture = runner_with(vec![HarnessEvent::TurnFinished {
+        stop_reason: Some("end".into()),
+        usage: None,
+    }])
+    .await;
+    let queue = seed_held_batch(&fixture, "fleet").await;
+    prompt_once(&fixture).await;
+
+    until(|| !fixture.fake.woken.lock().unwrap().is_empty()).await;
+    let woken = fixture.fake.woken.lock().unwrap().clone();
+    assert_eq!(woken.len(), 1, "one wake for the whole batch");
+    assert!(
+        woken[0].contains("Batch \"fleet\" completed (2/2):"),
+        "{}",
+        woken[0]
+    );
+    assert!(woken[0].contains("child1 report"));
+    assert!(woken[0].contains("child2 report"));
+    assert_eq!(queued_events(&fixture).await.len(), 2);
+    assert!(!queue.has_open_batch().await);
+}
+
+#[tokio::test]
+async fn an_open_batch_defers_turn_end_todo_reminders() {
+    let fixture = runner_with(vec![HarnessEvent::TurnFinished {
+        stop_reason: Some("end".into()),
+        usage: None,
+    }])
+    .await;
+    let dir = fixture.data_root.session_dir("ses_1");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("todos.json"),
+        r#"{"next":3,"items":[{"id":"t1","content":"write the parser","status":"pending"}]}"#,
+    )
+    .unwrap();
+    let queue = fixture.steers.queue("ses_1");
+    queue.set_turn_active(true).await;
+    queue
+        .register_batch_member(
+            "fleet",
+            "child1",
+            emberloop_core::steer::DEFAULT_BATCH_DEADLINE_MS,
+        )
+        .await
+        .unwrap();
+    queue
+        .enqueue_report(report("child1", "still running"))
+        .await
+        .unwrap();
+    prompt_once(&fixture).await;
+
+    until(|| !queue.is_turn_active()).await;
+    tokio::task::yield_now().await;
+    assert!(fixture.fake.woken.lock().unwrap().is_empty());
+    assert!(queue.has_open_batch().await);
+}
+
+#[tokio::test]
+async fn a_pump_exit_unwind_releases_held_batch_reports() {
+    let fixture = runner_with(Vec::new()).await;
+    let queue = seed_held_batch(&fixture, "fleet").await;
+    prompt_once(&fixture).await;
+
+    let mut events = Vec::new();
+    for _ in 0..20_000 {
+        events = queued_events(&fixture).await;
+        if events.len() == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(events.len(), 2);
+    assert!(!queue.has_open_batch().await);
+    until(|| !fixture.fake.woken.lock().unwrap().is_empty()).await;
+    let woken = fixture.fake.woken.lock().unwrap().clone();
+    assert_eq!(woken.len(), 1, "one wake for the released batch");
+    assert!(woken[0].contains("Batch \"fleet\" completed (2/2):"));
+    assert_eq!(
+        queue.pending_len().await,
+        0,
+        "the wake delivered everything"
+    );
+}
+
+#[tokio::test]
+async fn reaping_an_expired_batch_times_out_pending_members_behind_one_wake() {
+    let fixture = runner_with(Vec::new()).await;
+    let queue = fixture.steers.queue("ses_1");
+    queue.set_turn_active(true).await;
+    for child in ["child1", "child2"] {
+        queue
+            .register_batch_member("fleet", child, 0)
+            .await
+            .unwrap();
+    }
+    queue
+        .enqueue_report(report("child1", "first"))
+        .await
+        .unwrap();
+    queue.complete_batch_member("child1").await;
+    queue.set_turn_active(false).await;
+    assert!(queue.has_open_batch().await);
+
+    fixture.runner.reap_expired_batches(u64::MAX).await;
+
+    until(|| !fixture.fake.woken.lock().unwrap().is_empty()).await;
+    let woken = fixture.fake.woken.lock().unwrap().clone();
+    assert_eq!(woken.len(), 1, "one wake for the expired batch");
+    assert!(woken[0].contains("timed out"), "{}", woken[0]);
+    assert!(woken[0].contains("Batch \"fleet\" completed (2/2):"));
+    assert!(woken[0].contains("first report"));
+    assert!(woken[0].contains("timed_out"));
+    assert_eq!(queued_events(&fixture).await.len(), 2);
+    assert!(!queue.has_open_batch().await);
+    assert_eq!(queue.pending_len().await, 0);
+}
+
+#[tokio::test]
+async fn reaping_an_expired_batch_while_a_turn_is_active_does_not_wake() {
+    let fixture = runner_with(Vec::new()).await;
+    let queue = fixture.steers.queue("ses_1");
+    queue.set_turn_active(true).await;
+    for child in ["child1", "child2"] {
+        queue
+            .register_batch_member("fleet", child, 0)
+            .await
+            .unwrap();
+    }
+    queue
+        .enqueue_report(report("child1", "first"))
+        .await
+        .unwrap();
+    queue.complete_batch_member("child1").await;
+
+    fixture.runner.reap_expired_batches(u64::MAX).await;
+
+    tokio::task::yield_now().await;
+    assert!(fixture.fake.woken.lock().unwrap().is_empty());
+    assert!(!queue.has_open_batch().await);
+    assert_eq!(queue.pending_len().await, 4);
+}
