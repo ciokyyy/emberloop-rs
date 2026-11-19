@@ -1,5 +1,4 @@
 import { readBreakdown } from './contextBreakdown';
-import { skillDiffText } from './skilldiff';
 import type { ContextBreakdown, SubagentReport, SessionEvent, SessionStatus, SteerRoute } from './api/types';
 
 export type ToolStatus = 'running' | 'completed' | 'failed';
@@ -451,7 +450,7 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
           : action === 'decompress'
             ? text(args?.blockId)
             : text(data.text);
-      const body = action === 'skill-review' ? skillDiffText(data.ops) : text(data.result) || (args ? JSON.stringify(args, null, 2) : text(data.text));
+      const body = text(data.result) || (args ? JSON.stringify(args, null, 2) : text(data.text));
       // Folds and restores join the tool block like the ACP rows, so they share one look.
       if (action === 'compress' || action === 'decompress') {
         const input = JSON.stringify(action === 'compress' ? { range: target } : { blockId: target });

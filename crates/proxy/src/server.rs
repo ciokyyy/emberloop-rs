@@ -30,7 +30,6 @@ use crate::ctx::CtxStore;
 use crate::marker;
 use crate::meter;
 use crate::nudge::{self, NudgeConfig, NudgeKind, NudgeState};
-use crate::review::{self, ReviewTools};
 use crate::splice::{turn_key, Splice, SpliceStore};
 use crate::submit;
 use crate::token::{TokenError, TokenSigner};
@@ -66,8 +65,6 @@ pub struct ProxyConfig {
     pub claude_upstream: String,
     /// Replaces every key provider's origin on `x/<id>/…` routes; tests point it at a fake.
     pub provider_origin: Option<String>,
-    /// Runs the background skill review's tool calls; the daemon injects it.
-    pub review_tools: Option<Arc<dyn ReviewTools>>,
     /// The global skills root: with the Project root it locates a goldfish's persona.
     pub global_skills: Option<std::path::PathBuf>,
     /// How long one upstream round may take to answer or to produce its next chunk.
@@ -84,7 +81,6 @@ impl ProxyConfig {
             opencode_upstream: DEFAULT_OPENCODE_UPSTREAM.to_string(),
             claude_upstream: DEFAULT_CLAUDE_UPSTREAM.to_string(),
             provider_origin: None,
-            review_tools: None,
             global_skills: None,
             round_timeout: DEFAULT_ROUND_TIMEOUT,
             retry_backoff: DEFAULT_RETRY_BACKOFF,
@@ -116,12 +112,6 @@ impl ProxyConfig {
     }
     pub fn with_global_skills(mut self, global_skills: Option<std::path::PathBuf>) -> Self {
         self.global_skills = global_skills;
-        self
-    }
-
-    /// The executor that runs the background skill review's tool calls. Without it no review runs.
-    pub fn with_review_tools(mut self, tools: Arc<dyn ReviewTools>) -> Self {
-        self.review_tools = Some(tools);
         self
     }
 
@@ -215,9 +205,6 @@ struct SessionRuntime {
     /// results, so the truncated prefix stays byte-identical. Cleared by a fold or a reset.
     /// In memory only: a restarted proxy starts clear.
     emergency_truncated: AtomicBool,
-    review: Mutex<review::ReviewState>,
-    /// One line of usage per review round, so the cache behaviour of the fork can be audited.
-    review_log: std::path::PathBuf,
     /// Core turns of the last request the model saw, so a new harness conversation can carry them.
     last_history: Mutex<Arc<Vec<Value>>>,
     /// History carried from an earlier harness conversation; leads every request until the next
@@ -237,7 +224,6 @@ impl SessionRuntime {
         let ctx_file = splices_file.with_file_name("ctx.jsonl");
         let catalog = std::fs::read_to_string(splices_file.with_file_name("skill-catalog.md"))
             .unwrap_or_default();
-        let review_log = splices_file.with_file_name("review.jsonl");
         let ctx = CtxStore::open(&spill_dir, ctx_file);
         Ok(Self {
             pins,
@@ -253,8 +239,6 @@ impl SessionRuntime {
             )),
             last_input_tokens: AtomicU64::new(0),
             emergency_truncated: AtomicBool::new(false),
-            review: Mutex::new(review::ReviewState::default()),
-            review_log,
             last_history: Mutex::new(Arc::new(Vec::new())),
             carried: Mutex::new(Vec::new()),
             last_fold_miss: Mutex::new(None),
@@ -602,7 +586,6 @@ async fn handle_generation(
     let settings = state.inner.settings.read().await.clone();
     let outcome = prepare_request(&runtime, wire, &mut request, window, &settings)?;
     let observed_gate = outcome.gate.clone();
-    let nudge_text = outcome.nudge.as_ref().map(|report| report.text.clone());
     publish_prepare_events(&state.inner.events, session_id, outcome);
     dump_request(session_id, "out", &request);
     let url = upstream_url(base, path, query);
@@ -644,7 +627,7 @@ async fn handle_generation(
         .as_deref()
         .is_some_and(|value| value.contains("text/event-stream"))
     {
-        let mut sse = SseState::new(
+        let sse = SseState::new(
             state.clone(),
             runtime,
             session_id.to_string(),
@@ -657,7 +640,6 @@ async fn handle_generation(
             window,
             call_started,
         );
-        sse.nudge_text = nudge_text;
         return Ok(streaming_response(sse));
     }
     let first_bytes = read_body_with_replay(
@@ -1051,19 +1033,6 @@ fn outgoing_body<'a>(
         write_core_contents(wire, request_body_mut(&mut body), &contents);
     }
     Cow::Owned(body)
-}
-
-/// Removes the nudge turn from a review fork body: the nudge speaks to the main conversation,
-/// and the fork must not see it. The wire holds it as a plain user turn, found by its text.
-fn drop_nudge(wire: WireKind, body: &mut Value, text: &str) {
-    let Some(mut contents) = extract_core_contents(wire, request_body_mut(body)) else {
-        return;
-    };
-    contents.retain(|turn| {
-        turn.get("role").and_then(Value::as_str) != Some("user")
-            || turn.pointer("/parts/0/text").and_then(Value::as_str) != Some(text)
-    });
-    write_core_contents(wire, request_body_mut(body), &contents);
 }
 
 fn truncate_emergency(contents: &mut [Value]) {
@@ -1941,119 +1910,6 @@ async fn send_stream(
     }
 }
 
-/// The background skill review: the fork conversation runs to its end or `MAX_ROUNDS`, its tool
-/// calls go through the daemon's executor, and nothing of it reaches the Session.
-async fn run_review(
-    proxy: ProxyState,
-    runtime: Arc<SessionRuntime>,
-    session_id: String,
-    wire: WireKind,
-    (url, headers): (String, HeaderMap),
-    mut body: Value,
-    tools: Arc<dyn ReviewTools>,
-) {
-    let mut changes = 0usize;
-    let mut skill_args: Vec<Value> = Vec::new();
-    for round in 1..=review::MAX_ROUNDS {
-        let sent = send_generation(
-            &proxy.inner.client,
-            &url,
-            &headers,
-            &body,
-            &proxy.inner.config,
-        )
-        .await;
-        let bytes = match sent {
-            Ok((status, _, bytes)) if status.is_success() => bytes,
-            Ok((status, _, bytes)) => {
-                let text = String::from_utf8_lossy(&bytes);
-                let text: String = text.chars().take(300).collect();
-                log_review(&runtime, round, None, 0, Some(format!("{status}: {text}")));
-                break;
-            }
-            Err(error) => {
-                log_review(&runtime, round, None, 0, Some(error.to_string()));
-                break;
-            }
-        };
-        let Ok(response) = serde_json::from_slice::<Value>(&bytes) else {
-            log_review(
-                &runtime,
-                round,
-                None,
-                0,
-                Some("response is not JSON".into()),
-            );
-            break;
-        };
-        let calls = review::calls(wire, &response);
-        log_review(
-            &runtime,
-            round,
-            meter::extract_usage(&bytes),
-            calls.len(),
-            None,
-        );
-        if calls.is_empty() {
-            break;
-        }
-        let mut results = Vec::new();
-        for call in calls {
-            let result = tools.call(&session_id, &call.name, &call.args).await;
-            if result.is_ok() && call.name.ends_with("skill_manage") {
-                changes += 1;
-                skill_args.extend(call.args["ops"].as_array().cloned().unwrap_or_default());
-            }
-            results.push((call, result.unwrap_or_else(|error| error)));
-        }
-        review::append_round(wire, &mut body, &response, &results);
-    }
-    if changes > 0 {
-        proxy.inner.events.publish(SessionEvent::new(
-            &session_id,
-            0,
-            EventKind::Compression,
-            json!({ "action": "skill-review", "text": format!("skill review: {changes} skill change(s)"), "ops": skill_args }),
-        ));
-    }
-    if let Ok(mut state) = lock(&runtime.review) {
-        state.finished();
-    }
-}
-
-/// Appends one line per review round to the Session's `review.jsonl`. Best effort: a log that
-/// cannot be written never stops the review.
-fn log_review(
-    runtime: &SessionRuntime,
-    round: usize,
-    usage: Option<meter::Usage>,
-    calls: usize,
-    error: Option<String>,
-) {
-    use std::io::Write;
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-    let usage = usage.unwrap_or_default();
-    let line = json!({
-        "at": at,
-        "round": round,
-        "input": usage.input_tokens,
-        "cached": usage.cached_tokens,
-        "created": usage.cache_creation_tokens,
-        "output": usage.output_tokens,
-        "calls": calls,
-        "error": error,
-    });
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&runtime.review_log)
-    {
-        let _ = writeln!(file, "{line}");
-    }
-}
-
 async fn send_generation(
     client: &reqwest::Client,
     url: &str,
@@ -2299,10 +2155,6 @@ struct SseState {
     proxy_round: bool,
     /// The response's content blocks as streamed, kept for an Anthropic follow-up.
     anthropic: AnthropicBlocks,
-    /// Names of the tool calls this round handed to the harness; the review counts rounds by them.
-    forwarded: Vec<String>,
-    /// The nudge text this request carried, so the review fork can leave it out.
-    nudge_text: Option<String>,
     settings: Settings,
     window: usize,
     compress_guard: CompressGuard,
@@ -2357,8 +2209,6 @@ impl SseState {
             stream_finish: Vec::new(),
             proxy_round: false,
             anthropic: AnthropicBlocks::default(),
-            forwarded: Vec::new(),
-            nudge_text: None,
             settings,
             window,
             compress_guard: CompressGuard::default(),
@@ -2430,7 +2280,6 @@ impl SseState {
     async fn follow_up(&mut self) -> Result<(), ProxyError> {
         self.reopen_stream().await?;
         self.published = None;
-        self.forwarded.clear();
         self.step_signature = None;
         self.proxy_round = false;
         self.anthropic = AnthropicBlocks::default();
@@ -2452,7 +2301,6 @@ impl SseState {
         self.stream_events.clear();
         self.stream_finish.clear();
         self.anthropic = AnthropicBlocks::default();
-        self.forwarded.clear();
         self.step_signature = None;
         self.proxy_round = false;
         self.round_emitted = false;
@@ -2475,56 +2323,9 @@ impl SseState {
         self.retry_round().await.err()
     }
 
-    /// A round ended without a proxy call: count it, and start the background skill review when due.
-    fn review_check(&mut self) {
-        // A goldfish is a one-shot reader: nothing it says trains a skill, so it never forks a review.
-        if self.runtime.goldfish.is_some() {
-            return;
-        }
-        let Some(tools) = self.proxy.inner.config.review_tools.clone() else {
-            return;
-        };
-        if !review::offers_skill_tool(&self.request) {
-            return;
-        }
-        let interval = self.settings.skills_review_interval;
-        let due = lock(&self.runtime.review)
-            .is_ok_and(|mut state| state.round_ended(&self.forwarded, interval));
-        if !due {
-            return;
-        }
-        let prompt = self
-            .proxy
-            .inner
-            .prompts
-            .render(prompts::REVIEW_SKILLS, &PromptVars::default());
-        let Ok(prompt) = prompt else {
-            if let Ok(mut state) = lock(&self.runtime.review) {
-                state.finished();
-            }
-            return;
-        };
-        let mut sent = outgoing_body(&self.runtime, self.wire, &self.request).into_owned();
-        if let Some(text) = &self.nudge_text {
-            drop_nudge(self.wire, &mut sent, text);
-        }
-        let (url, body) = review::fork_request(self.wire, &self.url, &sent, &prompt);
-        // The headers live only as long as the review task; they are never stored.
-        tokio::spawn(run_review(
-            self.proxy.clone(),
-            Arc::clone(&self.runtime),
-            self.session_id.clone(),
-            self.wire,
-            (url, self.headers.clone()),
-            body,
-            tools,
-        ));
-    }
-
     fn finish_round(&mut self) -> Result<(), ProxyError> {
         if self.completed.is_empty() {
             self.done = true;
-            self.review_check();
             return Ok(());
         }
         let first_id = self.completed[0].call.id.clone();
@@ -2758,8 +2559,6 @@ impl SseState {
             .iter()
             .any(|call| !call.name.is_empty() && !PROXY_TOOLS.contains(&call.name.as_str()));
         if !proxy || harness {
-            self.forwarded
-                .extend(self.stream_calls.iter().map(|call| call.name.clone()));
             self.forward.extend(self.stream_events.drain(..));
             self.forward.extend(self.stream_finish.drain(..));
             self.stream_calls.clear();
@@ -2973,7 +2772,6 @@ fn rewrite_payload(
     let mut empty = true;
     let mut calls = Vec::new();
     let mut harness_id = None;
-    let mut harness_names: Vec<String> = Vec::new();
     for candidate in candidates.iter_mut() {
         let Some(parts) = candidate
             .get_mut("content")
@@ -2993,9 +2791,6 @@ fn rewrite_payload(
                 changed = true;
                 continue;
             }
-            if let Some(name) = part.pointer("/functionCall/name").and_then(Value::as_str) {
-                harness_names.push(name.to_string());
-            }
             if harness_id.is_none() {
                 harness_id = function_call_id(&part);
             }
@@ -3010,7 +2805,6 @@ fn rewrite_payload(
     if let Some(harness_id) = harness_id {
         state.harness_call_id = Some(harness_id);
     }
-    state.forwarded.extend(harness_names);
     for call in calls {
         state.record_call(call);
     }

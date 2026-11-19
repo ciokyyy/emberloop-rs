@@ -122,7 +122,6 @@ export interface Settings {
   inject_nudge: boolean;
   tier2_trigger: number;
   tier3_trigger: number;
-  skills_review_interval: number;
 }
 
 export interface PromptInfo {

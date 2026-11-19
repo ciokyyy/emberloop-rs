@@ -153,7 +153,7 @@ fn render_config(toolbox: &Toolbox) -> String {
 
 ### `settings.json`
 
-Stored at `<data root>/settings.json` beside the `sessions/` directory and `projects.json`; a save rewrites the whole file. Keys (snake_case) include `default_model`, `title_generation`, `title_model`, `spec_reviewer` and `standards_reviewer` (fallback ladders), `subagent_tiers` and `goldfish_tiers` (`smol`, `mid`, `top`, one fallback ladder each; an empty `goldfish_tiers` ladder inherits the matching `subagent_tiers` one), `proxy_compression`, the compression thresholds `max_context_limit`, `min_pressure_benefit_tokens`, `emergency_threshold_percent`, `preserve_recent_messages`, `protected_tools`, `inject_tool`, `inject_nudge`, `tier2_trigger` and `tier3_trigger`, `ctx_spill_enabled`, `skills_review_interval`, and the `todo_*` toggles.
+Stored at `<data root>/settings.json` beside the `sessions/` directory and `projects.json`; a save rewrites the whole file. Keys (snake_case) include `default_model`, `title_generation`, `title_model`, `spec_reviewer` and `standards_reviewer` (fallback ladders), `subagent_tiers` and `goldfish_tiers` (`smol`, `mid`, `top`, one fallback ladder each; an empty `goldfish_tiers` ladder inherits the matching `subagent_tiers` one), `proxy_compression`, the compression thresholds `max_context_limit`, `min_pressure_benefit_tokens`, `emergency_threshold_percent`, `preserve_recent_messages`, `protected_tools`, `inject_tool`, `inject_nudge`, `tier2_trigger` and `tier3_trigger`, `ctx_spill_enabled`, and the `todo_*` toggles.
 
 ### Runtime `env`
 

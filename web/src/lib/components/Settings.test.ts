@@ -23,7 +23,7 @@ const saved: SettingsData = {
   todo_reminders_max: 3, todo_auto_expand: true, todo_hide_when_done: true,
   max_context_limit: 75, min_pressure_benefit_tokens: 0, emergency_threshold_percent: 95,
   preserve_recent_messages: 4, protected_tools: [], inject_tool: true, inject_nudge: true,
-  tier2_trigger: 1000, tier3_trigger: 2000, skills_review_interval: 5
+  tier2_trigger: 1000, tier3_trigger: 2000
 };
 const models: Model[] = [
   { id: 'model', provider: 'pi', label: 'Model', kind: 'chat', efforts: ['low', 'high'],

@@ -34,7 +34,6 @@ pub mod codex;
 pub mod figcraft;
 pub mod idle;
 pub mod login;
-mod review;
 pub mod runner;
 mod titles;
 pub mod todo_reminder;
@@ -509,14 +508,7 @@ impl Daemon {
         let _ = codegraph::ensure(&config.config_root);
         let _ = figcraft::ensure(&config.config_root);
         let mut proxy_config = ProxyConfig::new(random_secret())
-            .with_global_skills(Some(config.global_skills.clone()))
-            .with_review_tools(Arc::new(review::ReviewExecutor {
-                sessions: sessions.clone(),
-                projects: projects.clone(),
-                data_root: data_root.clone(),
-                global_skills: config.global_skills.clone(),
-                config_root: config.config_root.clone(),
-            }));
+            .with_global_skills(Some(config.global_skills.clone()));
         if let Some(upstream) = &config.upstream {
             proxy_config = proxy_config.with_upstream(upstream.clone());
         }

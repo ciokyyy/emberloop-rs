@@ -11,10 +11,16 @@ use tempfile::tempdir;
 use tower::ServiceExt;
 
 #[test]
-fn skills_review_interval_defaults_to_five_and_stored_settings_without_it_load() {
-    assert_eq!(Settings::default().skills_review_interval, 5);
-    let stored: Settings = serde_json::from_str("{}").unwrap();
-    assert_eq!(stored.skills_review_interval, 5);
+fn settings_load_an_old_review_interval_key_and_stop_writing_it() {
+    let stored: Settings = serde_json::from_str(r#"{"skills_review_interval": 5}"#).unwrap();
+    let defaults = Settings::default();
+    assert_eq!(stored.title_generation, defaults.title_generation);
+    assert_eq!(stored.default_model, defaults.default_model);
+    assert_eq!(stored.tier2_trigger, defaults.tier2_trigger);
+    assert_eq!(stored.tier3_trigger, defaults.tier3_trigger);
+    assert_eq!(stored.max_context_limit, defaults.max_context_limit);
+    let written = serde_json::to_value(Settings::default()).unwrap();
+    assert!(written.get("skills_review_interval").is_none());
 }
 
 struct Listed;

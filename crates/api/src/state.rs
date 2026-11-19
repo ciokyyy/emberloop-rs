@@ -47,8 +47,6 @@ pub struct Settings {
     pub tier2_trigger: u32,
     /// Reference `compress.tiers.tier3Trigger`.
     pub tier3_trigger: u32,
-    /// Background skill review starts after this many tool-calling rounds since the last `skill_manage`; 0 turns it off.
-    pub skills_review_interval: u32,
     /// Whether oversized tool output spills to `ctx:` handles and CCR replacement runs.
     pub ctx_spill_enabled: bool,
 }
@@ -78,7 +76,6 @@ impl Default for Settings {
             inject_nudge: true,
             tier2_trigger: 1000,
             tier3_trigger: 2000,
-            skills_review_interval: 5,
             ctx_spill_enabled: false,
         }
     }

@@ -855,12 +855,6 @@ export interface components {
             /** @default true */
             proxy_compression: boolean;
             /**
-             * Format: int32
-             * @description Background skill review starts after this many tool-calling rounds since the last `skill_manage`; 0 turns it off.
-             * @default 5
-             */
-            skills_review_interval: number;
-            /**
              * @default [
              *       {
              *         "model": "gemini-3.8-flash",

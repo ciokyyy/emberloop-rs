@@ -53,18 +53,11 @@ fn the_retired_codebase_memory_skill_is_not_a_prompt() {
 }
 
 #[test]
-fn skill_creation_assigns_a_module_in_the_tool_text_and_in_the_review() {
+fn skill_creation_assigns_a_module_in_the_tool_text() {
     let manage = default_text(TOOL_SKILL_MANAGE);
     assert!(manage.contains("`module`"), "{manage}");
     assert!(manage.contains("`module_about`"), "{manage}");
     assert!(manage.contains("at most 80 characters"), "{manage}");
-    let review = default_text(REVIEW_SKILLS);
-    assert!(
-        review.contains("Every new skill joins a module"),
-        "{review}"
-    );
-    assert!(review.contains("`module: \"\"`"), "{review}");
-    assert!(review.contains("never changes its module"), "{review}");
 }
 
 /// Tools the harness is offered, as `tools::mcp` declares them. The prompts crate

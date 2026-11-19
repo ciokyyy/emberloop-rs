@@ -2333,13 +2333,6 @@
             "type": "boolean",
             "default": true
           },
-          "skills_review_interval": {
-            "type": "integer",
-            "format": "int32",
-            "description": "Background skill review starts after this many tool-calling rounds since the last `skill_manage`; 0 turns it off.",
-            "default": 5,
-            "minimum": 0
-          },
           "spec_reviewer": {
             "$ref": "#/components/schemas/FallbackLadder",
             "default": [

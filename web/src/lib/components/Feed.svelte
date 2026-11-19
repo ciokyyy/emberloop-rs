@@ -64,7 +64,7 @@
   const pinned = $derived(feed.items.filter(pendingSteer));
   const segs = $derived(segments(feed.items.filter((item) => !pendingSteer(item))));
 
-  // Fold, Restore, Skill review and Context rows open in place, like the tool rows around them.
+  // Fold, Restore and Context rows open in place, like the tool rows around them.
   let opened = $state<Set<string>>(new Set());
   const toggle = (id: string) =>
     (opened = new Set(opened.has(id) ? [...opened].filter((key) => key !== id) : [...opened, id]));
@@ -222,7 +222,6 @@
         {#if item.live}<span class="pulse text-fg-3">▍</span>{/if}
       </div>
     {:else if item.kind === 'compression'}
-      {@const label = item.action === 'skill-review' ? 'Skill review' : 'Context'}
       <div class="my-0.5" in:rise|global={{ skip: !arrived.has(item.id) }}>
         <button
           type="button"
@@ -233,7 +232,7 @@
           <span class="flex h-2 w-2 shrink-0 items-center justify-center" aria-hidden="true">
             <span class="h-[5px] w-[5px] rounded-full bg-fg-4"></span>
           </span>
-          <span class="shrink-0 text-[13px] text-fg-3">{label}</span>
+          <span class="shrink-0 text-[13px] text-fg-3">Context</span>
           <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-4">{item.text}</span>
           {#if item.meta}
             <span class="shrink-0 text-xs text-fg-4 tabular-nums">{item.meta}</span>

@@ -31,8 +31,6 @@ pub const POLICY_GOLDFISH: &str = "policy.goldfish";
 
 /// The frozen skill catalog's heading and instruction; the daemon appends the skill lines.
 pub const SKILL_CATALOG: &str = "skill.catalog";
-/// The background skill review prompt, sent by the proxy fork; see `proxy::review`.
-pub const REVIEW_SKILLS: &str = "review.skills";
 pub const COMPRESS: &str = "compress";
 pub const DECOMPRESS: &str = "decompress";
 pub const SEARCH_CONTEXT: &str = "search_context";
@@ -106,7 +104,6 @@ pub const PROMPT_IDS: &[&str] = &[
     REVIEWER_SPEC,
     REVIEWER_STANDARDS,
     SKILL_CATALOG,
-    REVIEW_SKILLS,
     ACP_STATUS_REPORT,
     TODO_REMINDER,
     NUDGE_FIRST,
@@ -168,7 +165,6 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_TODO => defaults::TOOL_TODO,
         TOOL_CTX_SEARCH => defaults::TOOL_CTX_SEARCH,
         SKILL_CATALOG => defaults::SKILL_CATALOG,
-        REVIEW_SKILLS => defaults::REVIEW_SKILLS,
         TOOL_SKILL_SEARCH => defaults::TOOL_SKILL_SEARCH,
         TOOL_SKILL_MANAGE => defaults::TOOL_SKILL_MANAGE,
         TOOL_PROMPT_PROPOSE => defaults::TOOL_PROMPT_PROPOSE,

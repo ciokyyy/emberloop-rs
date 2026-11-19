@@ -75,8 +75,7 @@
     inject_tool: true,
     inject_nudge: true,
     tier2_trigger: 1000,
-    tier3_trigger: 2000,
-    skills_review_interval: 5
+    tier3_trigger: 2000
   });
   // The window of events in hand: the tail on open, one page older per click. `feed` is folded from
   // it, so a page prepended at the front rebuilds through the same reducer as the live tail.

@@ -61,10 +61,6 @@ sequenceDiagram
   neighbours) and writes them in the new wire's shape.
 - **Usage.** Every response records usage from the request's own input count,
   not a running sum, and publishes events the web UI reads.
-- **Skill review.** After a final answer, `review.rs` replays the request it just
-  sent plus a review prompt as a separate, non-streaming conversation, and runs
-  the model's tool calls through the daemon's executor. Nothing of it reaches the
-  harness or the Session history.
 
 ## Compression: the billion-context backend
 

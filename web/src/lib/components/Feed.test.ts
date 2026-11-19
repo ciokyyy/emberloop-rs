@@ -106,3 +106,16 @@ it('renders a harness retry notice as a muted status row, not a bubble', () => {
   expect(row.getAttribute('data-state')).toBe('retrying');
   expect(row.parentElement?.className ?? '').not.toContain('rounded-xl');
 });
+
+it('labels an old skill-review notice as a plain Context row', () => {
+  const item: FeedItem = {
+    id: 'c1',
+    kind: 'compression',
+    action: 'skill-review',
+    text: 'skill review: 1 skill change(s)',
+    body: 'skill review: 1 skill change(s)'
+  };
+  const view = render(Feed, { feed: state([item]) });
+  expect(view.getByText('Context')).toBeTruthy();
+  expect(view.queryByText('Skill review')).toBeNull();
+});

@@ -119,6 +119,21 @@ describe('feed reducer', () => {
     expect(state.items.map((item) => item.kind)).toEqual(['compression', 'notice', 'error']);
     expect(state.items[2].text).toBe('daemon lost');
   });
+  it('shows an old skill-review notice as a plain compression row', () => {
+    const state = run(
+      ev('compression', {
+        action: 'skill-review',
+        text: 'skill review: 1 skill change(s)',
+        ops: [{ op: 'patch', name: 'x' }]
+      })
+    );
+    expect(state.items[0]).toMatchObject({
+      kind: 'compression',
+      action: 'skill-review',
+      text: 'skill review: 1 skill change(s)',
+      body: 'skill review: 1 skill change(s)'
+    });
+  });
 
   it('folds a harness retry banner and its finish into one status row', () => {
     const state = run(
