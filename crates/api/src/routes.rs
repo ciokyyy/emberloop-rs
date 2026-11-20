@@ -1840,4 +1840,44 @@ mod skill_search_tests {
             50
         );
     }
+
+    #[tokio::test]
+    async fn skills_search_ranks_a_project_module_by_its_name() {
+        let dir = tempdir().unwrap();
+        let global = dir.path().join("global");
+        write_skill(&global, "zeta", "unrelated words", false);
+        let project = dir.path().join("proj");
+        write_skill(
+            &project.join(".agents/skills"),
+            "media-audio",
+            "sound",
+            false,
+        );
+        std::fs::write(
+            global.join("skill-modules.json"),
+            serde_json::json!({"media": {"about": "audio and video", "skills": ["zeta"]}})
+                .to_string(),
+        )
+        .unwrap();
+        let data_root = DataRoot::new(dir.path());
+        std::fs::write(
+            data_root.projects_file(),
+            serde_json::json!([{"id": "p1", "name": "P", "root": project}]).to_string(),
+        )
+        .unwrap();
+        let projects = ProjectsStore::load(data_root.projects_file())
+            .await
+            .unwrap();
+        let sessions = SessionsStore::load(data_root.clone()).await.unwrap();
+        std::mem::forget(dir);
+        let app = build_router(
+            AppState::new(data_root, projects, sessions, Arc::new(EventBus::default()))
+                .with_global_skills(&global),
+        );
+
+        assert_eq!(
+            names(app, "/api/skills?q=MEDIA&project=p1").await,
+            ["media-audio", "zeta"]
+        );
+    }
 }

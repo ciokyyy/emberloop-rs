@@ -72,8 +72,8 @@ pub async fn list_skills(
     if text.is_empty() {
         return Json(found.iter().map(skillview::summary).collect());
     }
-    let modules = match (global.as_deref(), scoped, projects.first()) {
-        (Some(root), true, Some(project)) => skills::modules(Some(root), project),
+    let modules = match (scoped, projects.first()) {
+        (true, Some(project)) => skills::modules(global.as_deref(), project),
         _ => Vec::new(),
     };
     Json(ranked(&found, &modules, text, query.limit))
@@ -86,17 +86,18 @@ fn ranked(
     text: &str,
     limit: Option<usize>,
 ) -> Vec<Summary> {
+    // `skills::valid_name` keeps names lowercase ASCII, so only the query needs folding.
     let needle = text.to_lowercase();
     let mut ranked: Vec<&Skill> = found
         .iter()
-        .filter(|skill| skill.name.to_lowercase().starts_with(&needle))
+        .filter(|skill| skill.name.starts_with(&needle))
         .collect();
     ranked.sort_by(|left, right| left.name.cmp(&right.name));
     ranked.extend(
         tools::skillsearch::score(found, modules, text)
             .into_iter()
             .map(|(index, _)| &found[index])
-            .filter(|skill| !skill.name.to_lowercase().starts_with(&needle)),
+            .filter(|skill| !skill.name.starts_with(&needle)),
     );
     let limit = limit
         .filter(|n| *n > 0)
