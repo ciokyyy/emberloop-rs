@@ -28,7 +28,10 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
         .filter(|n| *n > 0)
         .unwrap_or(DEFAULT_LIMIT)
         .min(MAX_LIMIT);
-    let found = skills::discover(toolbox.global_skills(), toolbox.root());
+    let found: Vec<skills::Skill> = skills::discover(toolbox.global_skills(), toolbox.root())
+        .into_iter()
+        .filter(|skill| !skill.hidden)
+        .collect();
     let modules = skills::modules(toolbox.global_skills(), toolbox.root());
     let docs: Vec<Vec<String>> = found
         .iter()
@@ -280,5 +283,24 @@ mod tests {
 
         let out = run(&tb, &json!({"query": "zebra"})).unwrap();
         assert!(out.contains("- plain [human]: zebra helper"), "{out}");
+    }
+
+    #[test]
+    fn hidden_skills_are_not_searched() {
+        let (_dir, global, project) = fixture();
+        write_skill(&global, "visible", "deploy helper", "rollout");
+        let folder = global.join("quiet");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(
+            folder.join("SKILL.md"),
+            "---\nname: quiet\ndescription: deploy helper\ndisable-model-invocation: true\n---\nrollout\n",
+        )
+        .unwrap();
+        let tb = toolbox(&global, &project);
+
+        let out = run(&tb, &json!({"query": "deploy"})).unwrap();
+        assert!(out.contains("- visible"), "{out}");
+        assert!(!out.contains("quiet"), "{out}");
+        assert_eq!(out.lines().next(), Some("query \"deploy\": 1 match(es)"));
     }
 }

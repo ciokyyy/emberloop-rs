@@ -30,6 +30,9 @@ pub struct Skill {
     pub path: PathBuf,
     /// Found under the project root rather than the global one.
     pub project: bool,
+    /// Frontmatter `disable-model-invocation: true`: out of the catalog and `skill_search`, but a
+    /// direct `read` still loads it.
+    pub hidden: bool,
     /// The file text after the frontmatter.
     pub body: String,
 }
@@ -112,6 +115,7 @@ fn load_one(dir: &Path, project: bool) -> Option<Skill> {
         origin: front.origin,
         path,
         project,
+        hidden: front.hidden,
         body: front.body,
     })
 }
@@ -144,6 +148,7 @@ pub(crate) struct Front {
     pub(crate) name: String,
     pub(crate) description: String,
     pub(crate) origin: String,
+    pub(crate) hidden: bool,
     pub(crate) body: String,
 }
 
@@ -154,6 +159,7 @@ pub(crate) fn parse(text: &str) -> Option<Front> {
     let mut name = None;
     let mut description = None;
     let mut origin = None;
+    let mut hidden = false;
     for line in head.lines() {
         if let Some(value) = line.strip_prefix("name:") {
             name = Some(scalar(value));
@@ -161,6 +167,8 @@ pub(crate) fn parse(text: &str) -> Option<Front> {
             description = Some(scalar(value));
         } else if let Some(value) = line.strip_prefix("  origin:") {
             origin = Some(scalar(value));
+        } else if let Some(value) = line.strip_prefix("disable-model-invocation:") {
+            hidden = scalar(value) == "true";
         }
     }
     let name = name.filter(|name| valid_name(name))?;
@@ -172,6 +180,7 @@ pub(crate) fn parse(text: &str) -> Option<Front> {
         name,
         description,
         origin,
+        hidden,
         body: body.strip_prefix('\n').unwrap_or(body).to_string(),
     })
 }
@@ -232,7 +241,7 @@ pub fn catalog(intro: &str, global: Option<&Path>, project: &Path) -> String {
         .iter()
         .flat_map(|module| module.skills.iter().map(String::as_str))
         .collect();
-    skills.retain(|skill| !grouped.contains(skill.name.as_str()));
+    skills.retain(|skill| !skill.hidden && !grouped.contains(skill.name.as_str()));
     let project_views = last_views(&project.join(PROJECT_SKILLS));
     let global_views = global.map(last_views).unwrap_or_default();
     skills.sort_by_key(|skill| {
@@ -285,10 +294,16 @@ pub fn index(global: Option<&Path>, project: &Path) -> String {
         .iter()
         .flat_map(|module| module.skills.iter().map(String::as_str))
         .collect();
-    let loose: Vec<&str> = skills
+    let loose: Vec<String> = skills
         .iter()
         .filter(|skill| !grouped.contains(skill.name.as_str()))
-        .map(|skill| skill.name.as_str())
+        .map(|skill| {
+            if skill.hidden {
+                format!("{} (hidden)", skill.name)
+            } else {
+                skill.name.clone()
+            }
+        })
         .collect();
     let mut out = format!(
         "Skills: {}. Modules: {}. Read one with el://skills/<name>; skill_search lists and ranks them.\n",
@@ -669,6 +684,7 @@ mod tests {
             origin: "human".into(),
             path: PathBuf::new(),
             project: false,
+            hidden: false,
             body: format!("# Heading\n{}tail-marker", "x".repeat(3000)),
         };
         let text = skill.search_text();
@@ -835,5 +851,32 @@ mod tests {
         let found = modules(Some(&global), &project);
         assert_eq!(module_of(&found, "shared"), Some("alpha"));
         assert!(found[1].skills.is_empty());
+    }
+
+    #[test]
+    fn hidden_skills_leave_the_catalog_and_the_index_marks_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global");
+        skill(&global, "visible", &frontmatter("visible", "shown"));
+        skill(
+            &global,
+            "quiet",
+            "---\nname: quiet\ndescription: hidden one\ndisable-model-invocation: true\n---\n# quiet\n",
+        );
+
+        let text = catalog("INTRO", Some(&global), dir.path());
+        assert_eq!(catalog_names(&text), vec!["visible"]);
+
+        let text = index(Some(&global), dir.path());
+        assert!(text.contains("quiet (hidden)"), "{text}");
+        assert!(!text.contains("visible (hidden)"), "{text}");
+
+        let quiet = super::locate(Some(&global), dir.path(), "quiet").expect("direct read");
+        assert!(quiet.hidden);
+        assert!(
+            !super::locate(Some(&global), dir.path(), "visible")
+                .unwrap()
+                .hidden
+        );
     }
 }
