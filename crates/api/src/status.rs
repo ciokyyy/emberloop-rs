@@ -1047,7 +1047,7 @@ fn aggregate_tokens(
         if last_touch.saturating_add(DAY_SECS as u64 * 1000) < start_ms {
             continue;
         }
-        let lines = load_session_jsonl_lines(data_root, &meta.id);
+        let lines = store::session_event_lines(data_root, &meta.id);
         if lines.is_empty() {
             continue;
         }
@@ -1124,43 +1124,6 @@ fn resolve_model_identity(model: &str, entry: Option<&ModelEntry>) -> (String, S
             .to_string(),
     };
     (harness, harness_label, provider)
-}
-
-fn load_session_jsonl_lines(data_root: &store::DataRoot, session_id: &str) -> Vec<String> {
-    let events_dir = data_root.session_events_dir(session_id);
-    if events_dir.is_dir() {
-        let mut files: Vec<_> = std::fs::read_dir(&events_dir)
-            .ok()
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-            .collect();
-        files.sort();
-        let mut lines = Vec::new();
-        for path in files {
-            if let Ok(text) = std::fs::read_to_string(path) {
-                lines.extend(text.lines().map(str::to_string));
-            }
-        }
-        if !lines.is_empty() {
-            return lines;
-        }
-    }
-
-    let archive = data_root.session_archive_file(session_id);
-    if let Ok(entries) = store::archive::read_archived_events(&archive) {
-        let mut lines = Vec::new();
-        for (name, bytes) in entries {
-            if name.ends_with(".jsonl") {
-                let text = String::from_utf8_lossy(&bytes);
-                lines.extend(text.lines().map(str::to_string));
-            }
-        }
-        return lines;
-    }
-    Vec::new()
 }
 
 #[allow(clippy::too_many_arguments)]

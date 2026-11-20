@@ -422,3 +422,42 @@ async fn last_segment_state(dir: &Path, segments: &[Segment]) -> Result<(u64, u6
     }
     Ok((max_seq, bytes))
 }
+
+/// Every event line of one Session: the live `events/*.jsonl` files in name order, or the archived
+/// `events.zstd` when the live files hold nothing.
+pub fn session_event_lines(root: &crate::DataRoot, session_id: &str) -> Vec<String> {
+    let events_dir = root.session_events_dir(session_id);
+    if events_dir.is_dir() {
+        let mut files: Vec<_> = std::fs::read_dir(&events_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
+            .collect();
+        files.sort();
+        let mut lines = Vec::new();
+        for path in files {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                lines.extend(text.lines().map(str::to_string));
+            }
+        }
+        if !lines.is_empty() {
+            return lines;
+        }
+    }
+
+    let archive = root.session_archive_file(session_id);
+    if let Ok(entries) = crate::archive::read_archived_events(&archive) {
+        let mut lines = Vec::new();
+        for (name, bytes) in entries {
+            if name.ends_with(".jsonl") {
+                let text = String::from_utf8_lossy(&bytes);
+                lines.extend(text.lines().map(str::to_string));
+            }
+        }
+        return lines;
+    }
+    Vec::new()
+}
