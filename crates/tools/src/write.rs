@@ -3,6 +3,7 @@ use std::fs;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::skillpath;
 use crate::tag::{content_hash, content_tag, line_count, lines_of};
 use crate::{ToolError, ToolResult, Toolbox};
 
@@ -16,6 +17,9 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     let args: WriteArgs = serde_json::from_value(args.clone())?;
     if args.path.trim().is_empty() {
         return Err(ToolError::msg("write requires a non-empty path"));
+    }
+    if let Some(resolved) = skillpath::writable(toolbox, &args.path)? {
+        return write_skill(toolbox, &resolved, &args.content);
     }
     let path = toolbox.jail().resolve_writable(&args.path)?;
     if let Some(parent) = path.parent() {
@@ -35,6 +39,28 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     Ok(format!(
         "[{}#{tag}] written ({count} lines)",
         path.display()
+    ))
+}
+
+/// A skill file: the rules run first, then `skillpath::commit` locks, backs up and logs it.
+fn write_skill(
+    toolbox: &Toolbox,
+    resolved: &skillpath::Resolved,
+    content: &str,
+) -> ToolResult<String> {
+    let op = skillpath::check_write(toolbox, resolved, content)?;
+    let old = fs::read(&resolved.path).ok();
+    skillpath::commit(toolbox, resolved, op, old.as_deref(), content.as_bytes())?;
+    let written = fs::read(&resolved.path)?;
+    let lines: Vec<String> = lines_of(&String::from_utf8_lossy(&written))
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    Ok(format!(
+        "[{}#{}] written ({} lines)",
+        skillpath::display(resolved),
+        content_tag(&written),
+        lines.len()
     ))
 }
 

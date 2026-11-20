@@ -1,1 +1,3 @@
 Write `content` as a whole file at `path`, creating parent directories. `path` is any path your account can write: a leading ~ expands from HOME, and a relative path joins the Project root. Records the written snapshot in the seen-line store.
+
+To create a skill, write `el://skills/global/<name>/SKILL.md` or `el://skills/project/<name>/SKILL.md`: the tool checks the name and frontmatter, inserts `metadata.origin: agent`, and refuses the read-only short form for a skill file. Supporting files go under `references/`, `templates/`, `scripts/` or `assets/` of the same skill, after its `SKILL.md` exists.

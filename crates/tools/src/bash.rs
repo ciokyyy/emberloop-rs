@@ -106,6 +106,9 @@ pub(crate) async fn foreground(
     if let Some(session_dir) = toolbox.spill_dir().parent() {
         cmd.env("EMBERLOOP_SESSION_DIR", session_dir);
     }
+    if let Some(global_skills) = toolbox.global_skills() {
+        cmd.env("EMBERLOOP_GLOBAL_SKILLS", global_skills);
+    }
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = cmd.spawn()?;

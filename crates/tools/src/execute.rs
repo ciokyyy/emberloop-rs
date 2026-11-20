@@ -895,10 +895,10 @@ _reader = None
 _run_depth = 0
 
 _SPECS = {{
-    "read": {{"sig": "read(path, limit, offset)", "desc": "Read a file, directory, ctx: handle, or URL. A goldfish reads only the Project, the skill roots and its own Session directory."}},
+    "read": {{"sig": "read(path, limit, offset)", "desc": "Read a file, directory, ctx: handle, URL or skill path. A goldfish reads only the Project, the skill roots and its own Session directory."}},
     "grep": {{"sig": "grep(pattern, case_insensitive, context, glob, max_results, output_mode, path)", "desc": "Search files with regex."}},
-    "edit": {{"sig": "edit(input)", "desc": "Apply line-anchored hashline edits."}},
-    "write": {{"sig": "write(path, content)", "desc": "Write a whole file, creating parent directories. ~ expands from HOME."}},
+    "edit": {{"sig": "edit(input)", "desc": "Apply line-anchored hashline edits. A skill changes through its root-named el://skills path."}},
+    "write": {{"sig": "write(path, content)", "desc": "Write a whole file, creating parent directories. ~ expands from HOME. A skill is written through its root-named el://skills path."}},
     "bash": {{"sig": "bash(command, background, timeout)", "desc": "Run a shell command in the project root."}},
     "background": {{"sig": "background(action, id, offset, timeout)", "desc": "Manage background commands."}},
     "find": {{"sig": "find(query, grep_keywords, limit, mode, path)", "desc": "Semantic/lexical code finder with modes."}},

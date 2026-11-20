@@ -1773,3 +1773,292 @@ fn execute_script_image_read_becomes_an_image_content_block() {
         "{image:?}"
     );
 }
+
+struct Skills {
+    fixture: Fixture,
+    global: PathBuf,
+}
+
+fn skills_fixture() -> Skills {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("project");
+    fs::create_dir(&root).expect("project root");
+    fs::create_dir_all(root.join(".agents/skills")).expect("project skills");
+    let global = dir.path().join("home/.agents/skills");
+    fs::create_dir_all(&global).expect("global skills");
+    let config = ToolConfig {
+        global_skills: Some(global.clone()),
+        ..ToolConfig::new(&root, dir.path().join("spill"))
+    };
+    let toolbox = Arc::new(Toolbox::new(config).expect("toolbox"));
+    Skills {
+        fixture: Fixture {
+            _dir: dir,
+            root,
+            toolbox,
+        },
+        global,
+    }
+}
+
+fn hand_skill(dir: &Path, name: &str, origin: Option<&str>, body: &str) -> PathBuf {
+    let folder = dir.join(name);
+    fs::create_dir_all(&folder).expect("skill folder");
+    let origin = origin
+        .map(|origin| format!("metadata:\n  origin: {origin}\n"))
+        .unwrap_or_default();
+    fs::write(
+        folder.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: the {name} skill\n{origin}---\n{body}"),
+    )
+    .expect("skill file");
+    folder.join("SKILL.md")
+}
+
+fn usage_lines(root: &Path) -> Vec<String> {
+    fs::read_to_string(root.join(".usage.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn read_shows_the_root_named_skill_path() {
+    let skills = skills_fixture();
+    hand_skill(&skills.global, "ember-flow", Some("agent"), "# flow\n");
+    let out = call(
+        &skills.fixture,
+        "read",
+        json!({"path": "el://skills/ember-flow"}),
+    )
+    .expect("read skill");
+    assert!(
+        out.contains("[el://skills/global/ember-flow/SKILL.md#"),
+        "got: {out}"
+    );
+}
+
+#[test]
+fn a_symlinked_skill_folder_reads_then_edits_without_a_stale_tag() {
+    let skills = skills_fixture();
+    let folder = skills.fixture._dir.path().join("real");
+    fs::create_dir_all(&folder).expect("real folder");
+    let target = hand_skill(&folder, "linked", Some("agent"), "one\ntwo\n");
+    std::os::unix::fs::symlink(
+        target.parent().expect("skill folder"),
+        skills.global.join("linked"),
+    )
+    .expect("symlink");
+
+    let out = call(
+        &skills.fixture,
+        "read",
+        json!({"path": "el://skills/global/linked"}),
+    )
+    .expect("read symlinked skill");
+    let tag = tag_of(&out);
+    let edited = call(
+        &skills.fixture,
+        "edit",
+        json!({"input": format!("[el://skills/global/linked/SKILL.md#{tag}]\nPUT >$:\n+three")}),
+    )
+    .expect("edit symlinked skill");
+    assert!(edited.contains("updated"), "got: {edited}");
+    let text = fs::read_to_string(&target).expect("skill text");
+    assert!(text.contains("three"), "{text}");
+    let views: Vec<String> = usage_lines(&skills.global)
+        .into_iter()
+        .filter(|line| line.contains("\"view\""))
+        .collect();
+    assert!(
+        views.iter().any(|line| line.contains("\"linked\"")),
+        "{views:?}"
+    );
+}
+
+#[test]
+fn edit_refuses_a_human_skill_through_a_skill_path() {
+    let skills = skills_fixture();
+    hand_skill(&skills.global, "hand-made", None, "one\n");
+    let out = call(
+        &skills.fixture,
+        "read",
+        json!({"path": "el://skills/global/hand-made"}),
+    )
+    .expect("read");
+    let tag = tag_of(&out);
+    let error = call(
+        &skills.fixture,
+        "edit",
+        json!({"input": format!("[el://skills/global/hand-made/SKILL.md#{tag}]\nPUT >$:\n+two")}),
+    )
+    .expect_err("human skill refused");
+    assert!(
+        error
+            .to_string()
+            .contains("only agent-origin skills change"),
+        "{error}"
+    );
+}
+
+#[test]
+fn edit_and_write_refuse_the_short_form_and_name_the_root_named_form() {
+    let skills = skills_fixture();
+    hand_skill(&skills.global, "ember-flow", Some("agent"), "one\n");
+    call(
+        &skills.fixture,
+        "read",
+        json!({"path": "el://skills/ember-flow"}),
+    )
+    .expect("read");
+
+    let error = call(
+        &skills.fixture,
+        "edit",
+        json!({"input": "[el://skills/ember-flow/SKILL.md#0000]\nPUT 1.=1:\n+x"}),
+    )
+    .expect_err("short form edit refused");
+    let message = error.to_string();
+    assert!(message.contains("el://skills/global/<name>/"), "{message}");
+    assert!(message.contains("el://skills/project/<name>/"), "{message}");
+
+    let error = call(
+        &skills.fixture,
+        "write",
+        json!({"path": "el://skills/ember-flow/SKILL.md", "content": "x"}),
+    )
+    .expect_err("short form write refused");
+    assert!(
+        error.to_string().contains("el://skills/global/<name>/"),
+        "{error}"
+    );
+}
+
+#[test]
+fn write_creates_a_skill_with_agent_origin() {
+    let skills = skills_fixture();
+    call(
+        &skills.fixture,
+        "write",
+        json!({
+            "path": "el://skills/project/fresh-one/SKILL.md",
+            "content": "---\nname: fresh-one\ndescription: a fresh skill\n---\n# fresh\n"
+        }),
+    )
+    .expect("create skill");
+    let text = fs::read_to_string(
+        skills
+            .fixture
+            .root
+            .join(".agents/skills/fresh-one/SKILL.md"),
+    )
+    .expect("created skill");
+    assert!(text.contains("origin: agent"), "{text}");
+    let ops: Vec<String> = usage_lines(&skills.fixture.root.join(".agents/skills"))
+        .into_iter()
+        .filter(|line| line.contains("\"create\""))
+        .collect();
+    assert_eq!(ops.len(), 1, "{ops:?}");
+}
+
+#[test]
+fn write_refuses_reserved_and_taken_names_and_a_support_file_without_skill_md() {
+    let skills = skills_fixture();
+    hand_skill(&skills.global, "taken", Some("agent"), "one\n");
+
+    let error = call(
+        &skills.fixture,
+        "write",
+        json!({"path": "el://skills/global/global/SKILL.md", "content": "x"}),
+    )
+    .expect_err("reserved name");
+    assert!(error.to_string().contains("reserved"), "{error}");
+
+    let error = call(
+        &skills.fixture,
+        "write",
+        json!({
+            "path": "el://skills/project/taken/SKILL.md",
+            "content": "---\nname: taken\ndescription: again\n---\n"
+        }),
+    )
+    .expect_err("name taken in the other root");
+    assert!(error.to_string().contains("already exists"), "{error}");
+
+    let error = call(
+        &skills.fixture,
+        "write",
+        json!({
+            "path": "el://skills/global/empty-one/references/note.md",
+            "content": "note"
+        }),
+    )
+    .expect_err("support file with no SKILL.md");
+    assert!(error.to_string().contains("SKILL.md"), "{error}");
+}
+
+#[test]
+fn write_over_an_existing_skill_file_needs_a_read_first() {
+    let skills = skills_fixture();
+    let path = hand_skill(&skills.global, "grow", Some("agent"), "one\n");
+    let text = fs::read_to_string(&path).expect("skill text");
+    let error = call(
+        &skills.fixture,
+        "write",
+        json!({"path": "el://skills/global/grow/SKILL.md", "content": text}),
+    )
+    .expect_err("unread skill");
+    assert!(
+        error.to_string().contains("with read before changing it"),
+        "{error}"
+    );
+
+    call(
+        &skills.fixture,
+        "read",
+        json!({"path": "el://skills/global/grow"}),
+    )
+    .expect("read");
+    call(
+        &skills.fixture,
+        "write",
+        json!({"path": "el://skills/global/grow/SKILL.md", "content": text}),
+    )
+    .expect("read then write");
+}
+
+#[test]
+fn a_disk_path_edit_of_a_human_skill_succeeds() {
+    let skills = skills_fixture();
+    let path = hand_skill(&skills.global, "hand-made", None, "one\n");
+    let out = call(
+        &skills.fixture,
+        "read",
+        json!({"path": path.display().to_string()}),
+    )
+    .expect("read by disk path");
+    let tag = tag_of(&out);
+    let edited = call(
+        &skills.fixture,
+        "edit",
+        json!({"input": format!("[{}#{tag}]\nPUT >$:\n+two", path.display())}),
+    )
+    .expect("human skill by disk path");
+    assert!(edited.contains("updated"), "got: {edited}");
+}
+
+#[test]
+fn bash_exports_the_global_skills_root() {
+    let skills = skills_fixture();
+    let out = call(
+        &skills.fixture,
+        "bash",
+        json!({"command": "printf %s \"$EMBERLOOP_GLOBAL_SKILLS\""}),
+    )
+    .expect("bash");
+    assert!(
+        out.contains(&skills.global.display().to_string()),
+        "got: {out}"
+    );
+}

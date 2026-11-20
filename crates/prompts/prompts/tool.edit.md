@@ -15,3 +15,5 @@ One call patches one file: send one `[path#TAG]` header per call. Anchors are li
 Ranges: `PUT N.=M:` replaces every line from N through M with the body, so a shorter body deletes the rest; use `PUT N.=N:` for one line and count body lines against the range. `CUT N.=M` deletes; an empty `PUT` is rejected. Every op in one call numbers against the view the tag names, so order does not matter.
 
 After each patch, read the touched range again before the next patch: the returned tag is the new tag. A patch that lands in the wrong block, leaves an orphan or duplicates a line gets one `PUT N.=M:` over the whole enclosing function. Do not chain small corrective patches on a damaged span.
+
+To change a skill, use the root-named path from its read header (`el://skills/global/<name>/...` or `el://skills/project/<name>/...`); only agent-origin skills change.

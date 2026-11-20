@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::tag::{content_hash, lines_of};
-use crate::{docs, skills, skillstore, ToolError, ToolResult, Toolbox};
+use crate::{docs, skillpath, skills, skillstore, ToolError, ToolResult, Toolbox};
 
 #[derive(Deserialize)]
 struct ReadArgs {
@@ -66,17 +66,6 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-#[cfg(test)]
-mod image_tests {
-    #[test]
-    fn base64_pads() {
-        assert_eq!(super::base64(b"Man"), "TWFu");
-        assert_eq!(super::base64(b"Ma"), "TWE=");
-        assert_eq!(super::base64(b"M"), "TQ==");
-        assert_eq!(super::base64(b""), "");
-    }
-}
-
 /// `ctx:<handle>` optionally followed by `:<start>-<end>`, `:<line>` or `:<line>+<count>`.
 fn parse_ctx(raw: &str) -> Option<(&str, Option<&str>)> {
     let rest = raw.strip_prefix("ctx:")?;
@@ -120,8 +109,8 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     if let Some((handle, range)) = parse_ctx(&path_arg) {
         return read_ctx(toolbox, handle, range, args.offset, args.limit);
     }
-    if let Some(target) = parse_skill_target(&path_arg) {
-        return read_skill(toolbox, target, args.offset, args.limit);
+    if let Some(target) = skillpath::parse(&path_arg) {
+        return read_skill(toolbox, &target, args.offset, args.limit);
     }
     if let Some(target) = docs::parse_target(&path_arg) {
         return docs::read(toolbox, target);
@@ -137,7 +126,7 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     } else {
         args.limit
     };
-    let rendered = render_file(toolbox, &path, args.offset, limit)?;
+    let rendered = render_file(toolbox, &path, &path, None, args.offset, limit)?;
     skillstore::log_view(toolbox, &path_arg);
     // No spill: read answers with its own lines, and `:raw` is how a model asks for all of them.
     Ok(rendered)
@@ -173,113 +162,44 @@ fn read_ctx(
         false,
     ))
 }
-#[derive(Debug, PartialEq, Eq)]
-enum SkillTarget<'a> {
-    Catalog,
-    Item {
-        name: &'a str,
-        subpath: Option<&'a str>,
-    },
-}
-
-fn parse_skill_target(raw: &str) -> Option<SkillTarget<'_>> {
-    let raw = raw.trim();
-    let rest = if let Some(rest) = raw.strip_prefix("el://skills") {
-        rest
-    } else if let Some(rest) = raw.strip_prefix("skills://") {
-        rest
-    } else {
-        let rest = raw.strip_prefix("skill:")?;
-        rest.strip_prefix("//").unwrap_or(rest)
-    };
-    let rest = rest.strip_prefix('/').unwrap_or(rest).trim_matches('/');
-    if rest.is_empty() {
-        return Some(SkillTarget::Catalog);
-    }
-    let (name, subpath) = match rest.split_once('/') {
-        Some((name, sub)) => {
-            let sub = sub.trim_matches('/');
-            let sub = if sub.is_empty() || sub == "SKILL.md" {
-                None
-            } else {
-                Some(sub)
-            };
-            (name, sub)
-        }
-        None => (rest, None),
-    };
-    Some(SkillTarget::Item { name, subpath })
-}
-
-fn safe_skill_subpath(dir: &Path, rel: &str) -> ToolResult<PathBuf> {
-    let mut target = dir.to_path_buf();
-    for comp in Path::new(rel).components() {
-        match comp {
-            std::path::Component::Normal(part) => {
-                target.push(part);
-                if target
-                    .symlink_metadata()
-                    .is_ok_and(|m| m.file_type().is_symlink())
-                {
-                    return Err(ToolError::msg(format!(
-                        "{} is a symlink; skill files must stay inside the skill",
-                        target.display()
-                    )));
-                }
-            }
-            _ => {
-                return Err(ToolError::msg(format!(
-                    "path {rel:?} must be relative, with no .. and no leading /"
-                )));
-            }
-        }
-    }
-    Ok(target)
-}
-
 fn read_skill(
     toolbox: &Toolbox,
-    target: SkillTarget<'_>,
+    target: &skillpath::SkillPath,
     offset: usize,
     limit: usize,
 ) -> ToolResult<String> {
-    match target {
-        SkillTarget::Catalog => {
-            let index = skills::index(toolbox.global_skills(), toolbox.root());
-            if index.is_empty() {
-                return Ok("No skills found.\n".to_string());
-            }
-            Ok(index)
+    if matches!(target, skillpath::SkillPath::Index) {
+        let index = skills::index(toolbox.global_skills(), toolbox.root());
+        if index.is_empty() {
+            return Ok("No skills found.\n".to_string());
         }
-        SkillTarget::Item { name, subpath } => {
-            let skill = skills::locate(toolbox.global_skills(), toolbox.root(), name)
-                .ok_or_else(|| ToolError::msg(format!("skill {name:?} was not found")))?;
-            let skill_dir = skill.path.parent().ok_or_else(|| {
-                ToolError::msg(format!("invalid skill path {}", skill.path.display()))
-            })?;
-            let target_path = match subpath {
-                Some(sub) => safe_skill_subpath(skill_dir, sub)?,
-                None => skill.path.clone(),
-            };
-            if target_path.is_dir() {
-                return render_dir(&target_path, offset, limit);
-            }
-            let text = fs::read_to_string(&target_path)?;
-            let total = text.lines().count();
-            let page = skill_page(&text, offset);
-            let mut rendered = render_file(toolbox, &target_path, offset, page)?;
-            let last = (offset.max(1) - 1 + page).min(total);
-            if last < total {
-                rendered.push_str(&format!(
-                    "\n[skill continues at line {}: read again with offset {}]\n",
-                    last + 1,
-                    last + 1
-                ));
-            }
-            skillstore::log_view(toolbox, &target_path.display().to_string());
-            Ok(rendered)
-        }
+        return Ok(index);
     }
+    let resolved = skillpath::resolve(toolbox, target)?;
+    if resolved.path.is_dir() {
+        return render_dir(&resolved.path, offset, limit);
+    }
+    let text = fs::read_to_string(&resolved.path)?;
+    let total = text.lines().count();
+    let page = skill_page(&text, offset);
+    let mut rendered = render_file(
+        toolbox,
+        &resolved.path,
+        &resolved.key,
+        Some(&skillpath::display(&resolved)),
+        offset,
+        page,
+    )?;
+    let last = (offset.max(1) - 1 + page).min(total);
+    if last < total {
+        rendered.push_str(&format!(
+            "\n[skill continues at line {}: read again with offset {}]\n",
+            last + 1,
+            last + 1
+        ));
+    }
+    skillpath::log_view(toolbox, &resolved);
+    Ok(rendered)
 }
 
 /// Input bytes of a skill one tool result may carry. pi cuts a model-facing MCP result over 20 KB
@@ -303,7 +223,14 @@ fn skill_page(text: &str, offset: usize) -> usize {
     lines.max(1)
 }
 
-fn render_file(toolbox: &Toolbox, path: &Path, offset: usize, limit: usize) -> ToolResult<String> {
+fn render_file(
+    toolbox: &Toolbox,
+    path: &Path,
+    key: &Path,
+    label: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> ToolResult<String> {
     let meta = fs::metadata(path)?;
     if !meta.is_file() {
         return Err(ToolError::msg(format!(
@@ -338,14 +265,15 @@ fn render_file(toolbox: &Toolbox, path: &Path, offset: usize, limit: usize) -> T
     let (start, end) = window(&lines, offset, limit);
     let owned_lines: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
     toolbox.seen().record_with_content(
-        path,
+        key,
         &hash,
         owned_lines,
         (start + 1) as u32..=end as u32,
         false,
     );
+    let name = label.map_or_else(|| path.display().to_string(), str::to_string);
     Ok(render_window(
-        &format!("{}#{}", path.display(), tag),
+        &format!("{name}#{tag}"),
         &lines,
         start,
         end,
@@ -414,4 +342,15 @@ fn render_window(label: &str, lines: &[&str], start: usize, end: usize, numbered
 /// project root, and a goldfish is confined to its allowlist.
 pub fn resolve(toolbox: &Toolbox, raw: &str) -> ToolResult<PathBuf> {
     toolbox.resolve_read(raw)
+}
+
+#[cfg(test)]
+mod image_tests {
+    #[test]
+    fn base64_pads() {
+        assert_eq!(super::base64(b"Man"), "TWFu");
+        assert_eq!(super::base64(b"Ma"), "TWE=");
+        assert_eq!(super::base64(b"M"), "TQ==");
+        assert_eq!(super::base64(b""), "");
+    }
 }

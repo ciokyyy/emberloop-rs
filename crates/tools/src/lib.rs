@@ -22,6 +22,7 @@ pub mod read;
 pub mod readurl;
 pub mod seen;
 pub mod skillmanage;
+pub mod skillpath;
 pub mod skills;
 pub mod skillsearch;
 mod skillstore;

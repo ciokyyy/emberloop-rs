@@ -10,14 +10,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::skills::{self, Front, Skill};
+use crate::skillpath;
+use crate::skills::{self, Skill};
 use crate::skillstore;
 use crate::tag::content_hash;
 use crate::{ToolError, ToolResult, Toolbox};
 
-const MAX_SKILL_CHARS: usize = 100_000;
-const MAX_SUPPORT_BYTES: usize = 1 << 20;
-const MAX_DESCRIPTION_CHARS: usize = 1024;
 const MAX_ABOUT_CHARS: usize = 80;
 
 #[derive(Deserialize)]
@@ -266,7 +264,7 @@ fn create(toolbox: &Toolbox, op: &CreateOp, undo: &mut Vec<Undo>) -> ToolResult<
     }
     let content = skills::with_agent_origin(&op.content)
         .ok_or_else(|| ToolError::msg("SKILL.md needs frontmatter"))?;
-    check_skill_text(&op.name, &content)?;
+    skillpath::check_skill_text(&op.name, &content)?;
     let mapping = module_write(toolbox, &root, op)?;
     let dir = root.join(&op.name);
     make_dirs(&dir, undo)?;
@@ -465,12 +463,12 @@ fn write_file(toolbox: &Toolbox, op: &FileOp, undo: &mut Vec<Undo>) -> ToolResul
         .content
         .as_deref()
         .ok_or_else(|| ToolError::msg("content is required for write_file"))?;
-    check_support_size(content.len())?;
+    skillpath::check_support_size(content.len())?;
     if target.exists() {
         let before = editable(toolbox, &skill, &target)?;
         return commit(toolbox, &skill, &target, &before, content.as_bytes(), undo);
     }
-    require_agent(&skill)?;
+    skillpath::require_agent_origin(&skill.name, &skill.origin)?;
     if let Some(parent) = target.parent() {
         make_dirs(parent, undo)?;
     }
@@ -482,7 +480,7 @@ fn write_file(toolbox: &Toolbox, op: &FileOp, undo: &mut Vec<Undo>) -> ToolResul
 
 fn remove_file(toolbox: &Toolbox, op: &FileOp, undo: &mut Vec<Undo>) -> ToolResult<()> {
     let skill = locate(toolbox, &op.name)?;
-    require_agent(&skill)?;
+    skillpath::require_agent_origin(&skill.name, &skill.origin)?;
     let target = skillstore::support_path(&dir_of(&skill), &op.path)?;
     let before = fs::read(&target)?;
     let flat = flat_name(&dir_of(&skill), &target);
@@ -534,30 +532,15 @@ fn target_of(skill: &Skill, path: Option<&str>) -> ToolResult<PathBuf> {
 /// The bytes an op may change. The skill must be agent-origin, the file must exist, and this
 /// Session must have read exactly these bytes.
 fn editable(toolbox: &Toolbox, skill: &Skill, target: &Path) -> ToolResult<Vec<u8>> {
-    require_agent(skill)?;
-    let bytes = fs::read(target)?;
+    skillpath::require_agent_origin(&skill.name, &skill.origin)?;
     let canonical = fs::canonicalize(target)?;
-    if toolbox
-        .seen()
-        .unseen(&canonical, &content_hash(&bytes), &[])
-        .is_none()
-    {
-        return Err(ToolError::msg(format!(
-            "Read {} with read before changing it.",
-            canonical.display()
-        )));
-    }
-    Ok(bytes)
-}
-
-fn require_agent(skill: &Skill) -> ToolResult<()> {
-    if skill.origin == "agent" {
-        return Ok(());
-    }
-    Err(ToolError::msg(format!(
-        "skill {} has origin {}; only agent-origin skills change",
-        skill.name, skill.origin
-    )))
+    skillpath::require_seen_file(
+        toolbox,
+        &canonical,
+        target,
+        &canonical.display().to_string(),
+    )?;
+    Ok(fs::read(target)?)
 }
 
 /// Creates `dir` and its missing parents, logging each new folder for rollback.
@@ -595,45 +578,13 @@ fn record_written(toolbox: &Toolbox, path: &Path, bytes: &[u8]) -> ToolResult<()
 /// file stays under the size limit.
 fn check_result(skill: &Skill, target: &Path, next: &str) -> ToolResult<()> {
     if target != skill.path {
-        return check_support_size(next.len());
+        return skillpath::check_support_size(next.len());
     }
-    let front = check_skill_text(&skill.name, next)?;
+    let front = skillpath::check_skill_text(&skill.name, next)?;
     if front.origin != "agent" {
         return Err(ToolError::msg(
             "the change must keep metadata.origin: agent",
         ));
-    }
-    Ok(())
-}
-
-/// SKILL.md must be under the size limit, name the skill, and carry a description of at most 1024
-/// characters.
-fn check_skill_text(name: &str, text: &str) -> ToolResult<Front> {
-    if text.chars().count() > MAX_SKILL_CHARS {
-        return Err(ToolError::msg(format!(
-            "SKILL.md is over {MAX_SKILL_CHARS} characters"
-        )));
-    }
-    let front = skills::parse(text)
-        .filter(|front| front.name == name)
-        .ok_or_else(|| {
-            ToolError::msg(format!(
-                "SKILL.md needs frontmatter with name {name:?} and a description"
-            ))
-        })?;
-    if front.description.chars().count() > MAX_DESCRIPTION_CHARS {
-        return Err(ToolError::msg(format!(
-            "description is over {MAX_DESCRIPTION_CHARS} characters"
-        )));
-    }
-    Ok(front)
-}
-
-fn check_support_size(len: usize) -> ToolResult<()> {
-    if len > MAX_SUPPORT_BYTES {
-        return Err(ToolError::msg(format!(
-            "file is over {MAX_SUPPORT_BYTES} bytes"
-        )));
     }
     Ok(())
 }

@@ -4,7 +4,6 @@
   import type { PromptInfo } from '$lib/api/types';
 
   let prompts = $state<PromptInfo[]>([]);
-
   let selected = $state<string | null>(null);
   let text = $state('');
   let error = $state('');

@@ -7,6 +7,7 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::skillpath;
 use crate::tag::{content_hash, content_tag, line_count, lines_of};
 use crate::{ToolError, ToolResult, Toolbox};
 
@@ -63,14 +64,21 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
         return Err(ToolError::msg("input is required"));
     }
     let mut parsed = parse_patch(&args.input)?;
-    let path = toolbox.jail().resolve_any(&parsed.path)?;
+    let skill = skillpath::writable(toolbox, &parsed.path)?;
+    let (path, key, label) = match &skill {
+        Some(resolved) => (
+            resolved.path.clone(),
+            resolved.key.clone(),
+            skillpath::display(resolved),
+        ),
+        None => {
+            let path = toolbox.jail().resolve_any(&parsed.path)?;
+            (path.clone(), path.clone(), path.display().to_string())
+        }
+    };
     let original = fs::read(&path)?;
-    let text = String::from_utf8(original.clone()).map_err(|_| {
-        ToolError::msg(format!(
-            "{} is binary; edit only text files",
-            path.display()
-        ))
-    })?;
+    let text = String::from_utf8(original.clone())
+        .map_err(|_| ToolError::msg(format!("{label} is binary; edit only text files")))?;
     let lines = lines_of(&text);
     let actual_hash = content_hash(&original);
     let actual_tag = content_tag(&original);
@@ -78,7 +86,7 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     if actual_tag != parsed.tag {
         let rebased_opt = toolbox
             .seen()
-            .lookup_tag(&path, &parsed.tag)
+            .lookup_tag(&key, &parsed.tag)
             .and_then(|old_snap| {
                 rebase_ops(&parsed.ops, &old_snap.content_lines, &lines, &parsed.tag)
                     .map(|(rebased, msg)| (old_snap, rebased, msg))
@@ -86,7 +94,8 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
         if let Some((old_snap, rebased, msg)) = rebased_opt {
             check_seen(
                 toolbox,
-                &path,
+                &key,
+                &label,
                 &old_snap.hash,
                 &parsed.ops,
                 old_snap.content_lines.len(),
@@ -96,14 +105,22 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
         } else {
             return Err(stale_tag_error(
                 toolbox,
-                &path,
+                &key,
+                &label,
                 &parsed.tag,
                 &actual_tag,
                 &original,
             ));
         }
     } else {
-        check_seen(toolbox, &path, &actual_hash, &parsed.ops, lines.len())?;
+        check_seen(
+            toolbox,
+            &key,
+            &label,
+            &actual_hash,
+            &parsed.ops,
+            lines.len(),
+        )?;
     }
     validate_ops(&parsed.ops, lines.len())?;
     check_overlap(&parsed.ops)?;
@@ -112,16 +129,22 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     let new_hash = content_hash(new_text.as_bytes());
     let new_tag = content_tag(new_text.as_bytes());
     ensure_unchanged(&path, &actual_hash)?;
-    fs::write(&path, &new_text)?;
+    match &skill {
+        Some(resolved) => {
+            let op = skillpath::check_write(toolbox, resolved, &new_text)?;
+            skillpath::commit(toolbox, resolved, op, Some(&original), new_text.as_bytes())?;
+        }
+        None => fs::write(&path, &new_text)?,
+    }
     toolbox.seen().record_with_content(
-        &path,
+        &key,
         &new_hash,
         applied.lines.clone(),
         1..=line_count(&new_text) as u32,
         true,
     );
     Ok(reply(
-        &path,
+        &label,
         &new_tag,
         &applied.lines,
         &applied.changed,
@@ -362,7 +385,8 @@ fn op_anchors(op: &Op) -> Vec<u32> {
 
 fn check_seen(
     toolbox: &Toolbox,
-    path: &Path,
+    key: &Path,
+    label: &str,
     hash: &str,
     ops: &[Op],
     line_count: usize,
@@ -373,20 +397,17 @@ fn check_seen(
         .flat_map(op_anchors)
         .filter(|line| *line as usize <= line_count)
         .collect();
-    match toolbox.seen().unseen(path, hash, &anchors) {
+    match toolbox.seen().unseen(key, hash, &anchors) {
         None => Err(ToolError::msg(format!(
-            "tag #{tag} has no recorded view for {}; read {} first",
-            path.display(),
-            path.display()
+            "tag #{tag} has no recorded view for {label}; read {label} first"
         ))),
         Some(unseen) if !unseen.is_empty() => Err(ToolError::msg(format!(
-            "tag #{tag} did not show these anchor lines: {}; read {} again with enough lines",
+            "tag #{tag} did not show these anchor lines: {}; read {label} again with enough lines",
             unseen
                 .iter()
                 .map(u32::to_string)
                 .collect::<Vec<_>>()
                 .join(", "),
-            path.display()
         ))),
         Some(_) => Ok(()),
     }
@@ -455,7 +476,6 @@ fn emit_all(
         }
     }
 }
-
 fn emit_body(op: &Op, out: &mut Vec<String>, changed: &mut Vec<usize>) {
     for body_line in &op.body {
         out.push(body_line.clone());
@@ -487,7 +507,8 @@ fn ensure_unchanged(path: &Path, expected_hash: &str) -> ToolResult<()> {
 
 fn stale_tag_error(
     toolbox: &Toolbox,
-    path: &Path,
+    key: &Path,
+    label: &str,
     expected: &str,
     actual: &str,
     original: &[u8],
@@ -498,10 +519,9 @@ fn stale_tag_error(
     // `retry_call` may only fix the tag, so these lines must not force a fresh `read`.
     toolbox
         .seen()
-        .record(path, &content_hash(original), 1..=shown.len() as u32);
+        .record(key, &content_hash(original), 1..=shown.len() as u32);
     let mut out = format!(
-        "stale tag: {} is #{actual}, not #{expected}. Use #{actual} in the header.\ncurrent lines:\n",
-        path.display()
+        "stale tag: {label} is #{actual}, not #{expected}. Use #{actual} in the header.\ncurrent lines:\n"
     );
     for (index, line) in shown.iter().enumerate() {
         out.push_str(&format!("{:>6}\u{2192}{line}\n", index + 1));
@@ -510,7 +530,7 @@ fn stale_tag_error(
 }
 
 fn reply(
-    path: &Path,
+    label: &str,
     tag: &str,
     lines: &[String],
     changed: &[usize],
@@ -518,8 +538,7 @@ fn reply(
     rebase_warning: Option<&str>,
 ) -> String {
     let mut out = format!(
-        "[{}#{tag}] updated successfully ({} lines)\n",
-        path.display(),
+        "[{label}#{tag}] updated successfully ({} lines)\n",
         lines.len()
     );
     if let Some(warn) = rebase_warning {
