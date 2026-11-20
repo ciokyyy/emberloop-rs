@@ -180,7 +180,6 @@ const PRIMARY_HANDLERS: Record<string, any> = {
   stop: (json: any) => pick(json, ['id', 'session_id', 'sessionId']),
   cancel: (json: any) => pick(json, ['id', 'session_id', 'sessionId', 'pane', 'target']) || pick(json, ['action']),
   check: (json: any) => pick(json, ['id', 'session_id', 'sessionId', 'pane', 'target']) || pick(json, ['action']),
-  propose: (json: any) => pick(json, ['id']),
   retry: (json: any) => (json.id !== undefined ? `#${json.id}` : ''),
   submit: (json: any) => firstLine(pick(json, ['summary', 'status', 'report']), 70),
   todo: (json: any) => pick(json, ['action']),

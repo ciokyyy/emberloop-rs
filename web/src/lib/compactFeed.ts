@@ -438,7 +438,6 @@ function createAgentItem(run: any, meta: any, fam: string) {
     stop: 'Stopped',
     cancel: 'Cancelled',
     check: 'Checked',
-    propose: 'Proposed prompt',
     retry: 'Retried call',
   };
   const fallback = arg && arg !== run.name ? `${verb[fam] || 'Agent'} ${arg}` : verb[fam] || arg;
@@ -518,7 +517,6 @@ const ITEM_CREATORS: Record<string, any> = {
   stop: (r: any, m: any) => createAgentItem(r, m, 'stop'),
   cancel: (r: any, m: any) => createAgentItem(r, m, 'cancel'),
   check: (r: any, m: any) => createAgentItem(r, m, 'check'),
-  propose: (r: any, m: any) => createAgentItem(r, m, 'propose'),
   retry: (r: any, m: any) => createAgentItem(r, m, 'retry'),
   submit: (r: any, m: any) => createSubmitItem(r, m),
   background: createBgItem,
