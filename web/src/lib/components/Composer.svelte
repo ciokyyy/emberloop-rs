@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
-  import { resolveComposerAction, shouldSend } from '$lib/composer';
+  import { onDestroy, tick } from 'svelte';
+  import { expandSlash, resolveComposerAction, shouldSend, slashQuery } from '$lib/composer';
   import { MAX_IMAGES, pickImages, type ImageAttachment, type RejectReason } from '$lib/images';
   import { api } from '$lib/api';
   import { insertAt, MAX_AUDIO_BYTES, pickAudioType } from '$lib/voice';
@@ -69,6 +69,57 @@
   const clock = $derived(`${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`);
 
   const action = $derived(resolveComposerAction(working));
+  // Slash commands: a leading `/<word>` with the cursor still in that word lists skills, and a known
+  // name, typed or picked, expands to the read instruction when the draft is sent.
+  let cursor = $state(0);
+  let hits = $state<{ name: string; description: string }[]>([]);
+  let known = $state<string[]>([]);
+  let listFailed = $state(false);
+  let menuIndex = $state(0);
+  let request = 0;
+  const word = $derived(text.startsWith('/') ? (text.slice(1).split(/\s/, 1)[0] ?? '') : null);
+  const query = $derived(slashQuery(text, cursor));
+  const menuOpen = $derived(query !== null && hits.length > 0);
+
+  $effect(() => {
+    const value = word;
+    if (value === null) {
+      hits = [];
+      return;
+    }
+    const mine = ++request;
+    const timer = setTimeout(async () => {
+      try {
+        const found = await api.listSkills(null, value, 10);
+        if (mine !== request) return;
+        hits = found.map((skill) => ({ name: skill.name, description: skill.description }));
+        known = found.map((skill) => skill.name);
+        listFailed = false;
+        menuIndex = 0;
+      } catch {
+        if (mine !== request) return;
+        hits = [];
+        known = [];
+        listFailed = true;
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  });
+
+  function trackCursor(event: Event) {
+    const box = event.currentTarget as HTMLTextAreaElement;
+    cursor = box.selectionStart ?? box.value.length;
+  }
+
+  async function pick(name: string) {
+    const space = text.search(/\s/);
+    text = `/${name}${space === -1 ? ' ' : text.slice(space)}`;
+    hits = [];
+    await tick();
+    textarea?.focus();
+    textarea?.setSelectionRange(name.length + 2, name.length + 2);
+    cursor = name.length + 2;
+  }
   const canSend = $derived(!disabled && !busy && (!!text.trim() || attachments.length > 0));
 
   $effect(() => {
@@ -144,7 +195,7 @@
       return;
     }
     const draftText = text;
-    const trimmed = text.trim();
+    const trimmed = expandSlash(text.trim(), known);
     const files = attachments.map((item) => item.file);
     // Clear optimistically right away so slow uploads never leave stale text or previews behind.
     text = '';
@@ -162,6 +213,25 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
+    if (menuOpen) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        menuIndex = (menuIndex + step + hits.length) % hits.length;
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        const hit = hits[menuIndex];
+        if (hit) void pick(hit.name);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        hits = [];
+        return;
+      }
+    }
     if (shouldSend(event)) {
       event.preventDefault();
       void submit();
@@ -265,7 +335,32 @@
 </script>
 
 <div class="px-4 pb-4 pt-1">
-  <div class="w-full">
+  <div class="relative w-full">
+    {#if menuOpen}
+      <ul
+        role="listbox"
+        aria-label="Skills"
+        class="absolute bottom-full left-0 right-0 z-30 mb-2 max-h-56 overflow-y-auto rounded-xl border border-border bg-surface-2 p-1 text-[13px] shadow-xl"
+      >
+        {#each hits as hit, index (hit.name)}
+          <li role="option" aria-selected={index === menuIndex}>
+            <button
+              type="button"
+              class={cn('flex w-full min-w-0 items-baseline gap-2 rounded-lg px-2 py-1 text-left', index === menuIndex && 'bg-surface-3')}
+              onclick={() => void pick(hit.name)}
+            >
+              <span class="shrink-0 font-medium">/{hit.name}</span>
+              <span class="truncate text-fg-3">{hit.description}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if listFailed}
+      <p class="mb-1 px-2 text-[12px] text-fg-3">skill list unavailable</p>
+    {/if}
+
     {#if errors.length}
       <div
         class="mb-2 rounded-xl border border-status-failed px-3 py-1.5 text-[12px]"
@@ -339,6 +434,9 @@
         {disabled}
         {onkeydown}
         {onpaste}
+        oninput={trackCursor}
+        onclick={trackCursor}
+        onkeyup={trackCursor}
       ></textarea>
 
       <div class="flex min-w-0 flex-wrap items-center gap-1.5 px-1 pt-1">
