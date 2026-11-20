@@ -1,4 +1,4 @@
-//! `skill_search`: BM25 over every discovered skill, global and project alike.
+//! `skill_search`: BM25 over every discovered skill that is not hidden, global and project alike.
 
 use serde::Deserialize;
 use serde_json::Value;

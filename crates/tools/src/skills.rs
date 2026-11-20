@@ -152,7 +152,8 @@ pub(crate) struct Front {
     pub(crate) body: String,
 }
 
-/// Reads the frontmatter: `name:`, `description:` and the nested `metadata:` `origin:`.
+/// Reads the frontmatter: `name:`, `description:`, `disable-model-invocation:` and the nested
+/// `metadata:` `origin:`.
 pub(crate) fn parse(text: &str) -> Option<Front> {
     let rest = text.strip_prefix("---\n")?;
     let (head, body) = rest.split_once("\n---")?;
@@ -361,11 +362,13 @@ pub struct Module {
 }
 
 /// The modules of both skills roots, sorted by name. A module named in both roots merges: the
-/// project's `about`, then both member lists, global first. A member that names no skill, or a
-/// skill an earlier module already holds, is dropped.
+/// project's `about`, then both member lists, global first. A member that names no skill, a skill
+/// an earlier module already holds, or a hidden skill is dropped, so the index marks a hidden
+/// skill `(hidden)` whichever module names it.
 pub fn modules(global: Option<&Path>, project: &Path) -> Vec<Module> {
     let existing: HashSet<String> = discover(global, project)
         .into_iter()
+        .filter(|skill| !skill.hidden)
         .map(|skill| skill.name)
         .collect();
     let mut modules = read_modules(&project.join(PROJECT_SKILLS).join(MODULES_FILE));
@@ -878,5 +881,28 @@ mod tests {
                 .unwrap()
                 .hidden
         );
+    }
+
+    #[test]
+    fn a_hidden_skill_in_a_module_is_still_marked_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global");
+        skill(&global, "visible", &frontmatter("visible", "shown"));
+        skill(
+            &global,
+            "quiet",
+            "---\nname: quiet\ndescription: hidden one\ndisable-model-invocation: true\n---\n# quiet\n",
+        );
+        modules_file(
+            &global,
+            r#"{"media": {"about": "audio and video", "skills": ["visible", "quiet"]}}"#,
+        );
+
+        let text = catalog("INTRO", Some(&global), dir.path());
+        let line = "- media (1 skills): audio and video. Use skill_search \"media\" to list.";
+        assert!(text.contains(line), "{text}");
+
+        let text = index(Some(&global), dir.path());
+        assert!(text.contains("- ungrouped (1): quiet (hidden)"), "{text}");
     }
 }
