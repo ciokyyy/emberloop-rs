@@ -10,7 +10,7 @@ use store::{DataRoot, ProjectsStore, SessionsStore};
 use tempfile::tempdir;
 use tower::ServiceExt;
 
-/// The design's grep gate forbids the removed key, so it is spelled in halves.
+// Split the retired literal so a repo-wide removal grep stays clean.
 #[test]
 fn settings_load_an_old_review_interval_key_and_stop_writing_it() {
     let key = concat!("skills_review_", "interval");

@@ -1467,7 +1467,7 @@ mod prompt_routes_tests {
         assert_eq!(deleted["activeHash"], deleted["defaultHash"]);
     }
 
-    /// The design's grep gate forbids the removed path, so it is spelled in halves.
+    // Split the retired literal so a repo-wide removal grep stays clean.
     #[tokio::test]
     async fn prompt_proposal_routes_are_gone() {
         let app = app().await;
