@@ -92,11 +92,6 @@ pub fn parse(raw: &str) -> Option<SkillPath> {
     })
 }
 
-fn is_skill_scheme(raw: &str) -> bool {
-    let raw = raw.trim();
-    raw.starts_with("el://skills") || raw.starts_with("skills://") || raw.starts_with("skill:")
-}
-
 /// The root-named form a write must use.
 fn root_named_required() -> ToolError {
     ToolError::msg(
@@ -250,10 +245,13 @@ impl Op {
 }
 
 /// An edit or write target: `Some` for a root-named skill path, `None` for a disk path, and an
-/// error for the short form and every other skill URL.
+/// error for the short form and every other `el://`, `skills://` or `skill:` path.
 pub fn writable(toolbox: &Toolbox, raw: &str) -> ToolResult<Option<Resolved>> {
     let Some(target) = parse(raw) else {
-        return if is_skill_scheme(raw) {
+        return if ["el://", "skills://", "skill:"]
+            .iter()
+            .any(|scheme| raw.trim().starts_with(scheme))
+        {
             Err(root_named_required())
         } else {
             Ok(None)
@@ -265,7 +263,9 @@ pub fn writable(toolbox: &Toolbox, raw: &str) -> ToolResult<Option<Resolved>> {
     }
 }
 
-/// The rules a write must satisfy before anything is touched, and the op it makes.
+/// The rules a write must satisfy before anything is touched, and the op it makes. The
+/// read-before-write rule is the caller's: `write` asks `require_seen`, `edit` has already
+/// validated the anchor snapshot it applies to.
 pub fn check_write(toolbox: &Toolbox, resolved: &Resolved, new_text: &str) -> ToolResult<Op> {
     let exists = resolved.path.is_file();
     let dir = root_dir(toolbox, resolved.root)?.join(&resolved.name);
@@ -279,29 +279,17 @@ pub fn check_write(toolbox: &Toolbox, resolved: &Resolved, new_text: &str) -> To
             ))
         })?;
         require_agent(&resolved.name, &text)?;
-        if exists {
-            require_seen(toolbox, resolved)?;
-        }
         return Ok(Op::WriteFile);
     }
     if exists {
-        check_skill_text(&resolved.name, new_text)?;
+        let front = check_skill_text(&resolved.name, new_text)?;
         let before = fs::read_to_string(&resolved.path)?;
         require_agent(&resolved.name, &before)?;
-        let front = skills::parse(new_text)
-            .filter(|front| front.name == resolved.name)
-            .ok_or_else(|| {
-                ToolError::msg(format!(
-                    "SKILL.md needs frontmatter with name {:?} and a description",
-                    resolved.name
-                ))
-            })?;
         if front.origin != "agent" {
             return Err(ToolError::msg(
                 "the change must keep metadata.origin: agent",
             ));
         }
-        require_seen(toolbox, resolved)?;
         return Ok(Op::Patch);
     }
     if matches!(resolved.name.as_str(), "global" | "project") {
@@ -326,7 +314,8 @@ pub fn check_write(toolbox: &Toolbox, resolved: &Resolved, new_text: &str) -> To
 }
 
 /// Locks the skill, backs up `old`, writes `new` and appends its usage line. A create inserts
-/// `metadata.origin: agent` when the frontmatter has none.
+/// `metadata.origin: agent` when the frontmatter has none. The caller records the seen snapshot
+/// of `new`, because only it knows the lines the model was shown.
 pub fn commit(
     toolbox: &Toolbox,
     resolved: &Resolved,
@@ -354,11 +343,6 @@ pub fn commit(
         fs::create_dir_all(parent)?;
     }
     fs::write(&resolved.path, &bytes)?;
-    toolbox.seen().record(
-        &resolved.key,
-        &content_hash(&bytes),
-        std::iter::empty::<u32>(),
-    );
     skillstore::log_usage(&root, &resolved.name, op.label(), "ok")?;
     Ok(())
 }
@@ -495,5 +479,72 @@ mod tests {
                 rel: "SKILL.md".to_string()
             })
         );
+    }
+
+    fn toolbox(root: &Path) -> Toolbox {
+        for dir in ["project", "spill", "skills"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let mut config = crate::ToolConfig::new(root.join("project"), root.join("spill"));
+        config.global_skills = Some(root.join("skills"));
+        Toolbox::new(config).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_skill_keeps_its_root_spelling_apart_from_its_canonical_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real/linked");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(
+            real.join("SKILL.md"),
+            "---\nname: linked\ndescription: x\n---\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join("skills")).unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("skills/linked")).unwrap();
+        let toolbox = toolbox(tmp.path());
+        let resolved = resolve(&toolbox, &parse("el://skills/global/linked").unwrap()).unwrap();
+        assert_eq!(resolved.path, tmp.path().join("skills/linked/SKILL.md"));
+        assert_eq!(
+            resolved.key,
+            fs::canonicalize(&real).unwrap().join("SKILL.md")
+        );
+    }
+
+    #[test]
+    fn a_new_skill_may_not_take_a_root_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(tmp.path());
+        let resolved = resolve(&toolbox, &parse("el://skills/project/project").unwrap()).unwrap();
+        let error = check_write(
+            &toolbox,
+            &resolved,
+            "---\nname: project\ndescription: x\n---\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("reserved name"), "got: {error}");
+    }
+
+    #[test]
+    fn only_skill_paths_take_the_skill_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(tmp.path());
+        for path in [
+            "el://docs/config",
+            "skills://docs/config",
+            "skill:docs/config",
+        ] {
+            let error = writable(&toolbox, path).unwrap_err().to_string();
+            assert!(
+                error.contains("el://skills/global/<name>/..."),
+                "{path}: {error}"
+            );
+        }
+        assert!(writable(&toolbox, "/tmp/notes.md").unwrap().is_none());
+        assert!(writable(&toolbox, "el://skills/global/flow")
+            .unwrap()
+            .is_some());
     }
 }

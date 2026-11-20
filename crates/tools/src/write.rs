@@ -49,18 +49,26 @@ fn write_skill(
     content: &str,
 ) -> ToolResult<String> {
     let op = skillpath::check_write(toolbox, resolved, content)?;
+    if resolved.path.is_file() {
+        skillpath::require_seen(toolbox, resolved)?;
+    }
     let old = fs::read(&resolved.path).ok();
     skillpath::commit(toolbox, resolved, op, old.as_deref(), content.as_bytes())?;
     let written = fs::read(&resolved.path)?;
-    let lines: Vec<String> = lines_of(&String::from_utf8_lossy(&written))
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let text = String::from_utf8_lossy(&written).into_owned();
+    let count = line_count(&text);
+    let lines: Vec<String> = lines_of(&text).into_iter().map(str::to_string).collect();
+    toolbox.seen().record_with_content(
+        &resolved.key,
+        &content_hash(&written),
+        lines,
+        1..=count.max(1) as u32,
+        true,
+    );
     Ok(format!(
-        "[{}#{}] written ({} lines)",
+        "[{}#{}] written ({count} lines)",
         skillpath::display(resolved),
         content_tag(&written),
-        lines.len()
     ))
 }
 

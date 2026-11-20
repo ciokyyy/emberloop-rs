@@ -2047,6 +2047,59 @@ fn a_disk_path_edit_of_a_human_skill_succeeds() {
 }
 
 #[test]
+fn a_write_then_an_anchored_edit_of_the_same_skill_works() {
+    let skills = skills_fixture();
+    let written = call(
+        &skills.fixture,
+        "write",
+        json!({
+            "path": "el://skills/project/fresh/SKILL.md",
+            "content": "---\nname: fresh\ndescription: x\n---\n# fresh\n"
+        }),
+    )
+    .expect("create");
+    let tag = tag_of(&written);
+    let edited = call(
+        &skills.fixture,
+        "edit",
+        json!({"input": format!(
+            "[el://skills/project/fresh/SKILL.md#{tag}]\nPUT 7.=7:\n+# fresh and clear\n"
+        )}),
+    )
+    .expect("anchored edit after write");
+    assert!(edited.contains("updated"), "got: {edited}");
+}
+
+#[test]
+fn a_stale_tag_edit_after_a_write_rebases_instead_of_refusing() {
+    let skills = skills_fixture();
+    let written = call(
+        &skills.fixture,
+        "write",
+        json!({
+            "path": "el://skills/project/fresh/SKILL.md",
+            "content": "---\nname: fresh\ndescription: x\n---\n# fresh\n"
+        }),
+    )
+    .expect("create");
+    let stale = tag_of(&written);
+    fs::write(
+        skills.fixture.root.join(".agents/skills/fresh/SKILL.md"),
+        "---\nname: fresh\ndescription: x\nmetadata:\n  origin: agent\n---\n# fresh!\n",
+    )
+    .expect("the file changes behind the tool");
+    let edited = call(
+        &skills.fixture,
+        "edit",
+        json!({"input": format!(
+            "[el://skills/project/fresh/SKILL.md#{stale}]\nPUT 3.=3:\n+description: y\n"
+        )}),
+    )
+    .expect("rebased edit after write");
+    assert!(edited.contains("updated"), "got: {edited}");
+}
+
+#[test]
 fn bash_exports_the_global_skills_root() {
     let skills = skills_fixture();
     let out = call(
