@@ -1,4 +1,4 @@
-//! Filesystem helpers behind `skill_manage` and the `view` log: per-skill locks, backups, the
+//! Filesystem helpers behind a skill write and the `view` log: per-skill locks, backups, the
 //! usage log and the rule for where a supporting file may sit.
 
 use std::fs::{self, File, OpenOptions};
@@ -15,7 +15,7 @@ use crate::{ToolError, ToolResult, Toolbox};
 const KEEP_BACKUPS: usize = 10;
 /// The only folders a supporting file may sit in.
 pub const SUPPORT_DIRS: [&str; 4] = ["references", "templates", "scripts", "assets"];
-/// One JSON line per `skill_manage` call and per `view`, in each skills root.
+/// One JSON line per skill write and per `view`, in each skills root.
 pub const USAGE_LOG: &str = ".usage.jsonl";
 
 pub fn now_secs() -> u64 {

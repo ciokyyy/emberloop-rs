@@ -149,10 +149,10 @@ async fn a_claude_turn_searches_a_skill_and_writes_one_through_the_daemon() {
         .unwrap();
     let mut events = live.events();
     live.send(
-        "Use the skill_search tool to find the skill about zebras. Then use the skill_manage tool \
-         to create a skill named zebra-tips with the description 'Short zebra tips' and the body \
-         '# zebra-tips' followed by one line of advice. Reply with the name of the skill you found \
-         and the path of the one you created.",
+        "Use the skill_search tool to find the skill about zebras. Then use the write tool at \
+         el://skills/project/zebra-tips/SKILL.md to create a skill named zebra-tips with the \
+         description 'Short zebra tips' and the body '# zebra-tips' followed by one line of \
+         advice. Reply with the name of the skill you found and the path of the one you created.",
         Vec::new(),
     )
     .await
@@ -163,11 +163,9 @@ async fn a_claude_turn_searches_a_skill_and_writes_one_through_the_daemon() {
         tools.iter().any(|name| name.contains("skill_search")),
         "{tools:?}"
     );
-    assert!(
-        tools.iter().any(|name| name.contains("skill_manage")),
-        "{tools:?}"
-    );
+    assert!(tools.iter().any(|name| name.contains("write")), "{tools:?}");
     assert!(text.contains("zebra-care"), "{text}");
-    let created = std::fs::read_to_string(global.join("zebra-tips/SKILL.md")).unwrap();
+    let created =
+        std::fs::read_to_string(project.join(".agents/skills/zebra-tips/SKILL.md")).unwrap();
     assert!(created.contains("origin: agent"), "{created}");
 }

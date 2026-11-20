@@ -153,7 +153,7 @@ flowchart LR
   T --> F[read, edit, write, grep, find]
   T --> X[bash, background, execute]
   T --> G[code graph, browser, figcraft]
-  T --> K[skill_search, skill_manage]
+  T --> K[skill_search]
   T --> A[spawn, steer, stop, result, submit]
   T --> O[ctx_search, websearch, todo]
   X -->|output over the cap| S[(spill: ctx handle)]
@@ -198,9 +198,9 @@ flowchart TD
   D -->|project wins same name| C[Session catalog, frozen at start]
   C --> W[proxy: system text of every request]
   D --> Q[skill_search: BM25 over name, description, headings, first 2 KB]
-  M[skill_manage] -->|only agent origin| D
-  M --> B[(.backup per skill, .locks per name)]
-  M --> U[(.usage.jsonl)]
+  F -->|root-named el://skills path, only agent origin| D
+  F --> B[(.backup per skill, .locks per name)]
+  F --> U[(.usage.jsonl)]
   V[web skill view] --> B
   V --> U
 ```
@@ -218,13 +218,15 @@ flowchart TD
 - **Search.** `skill_search` ranks with BM25 over the name, description, body
   headings and the first 2048 bytes of the body; descriptions are clipped to 150
   characters in a hit, and the limit defaults to 5 with a cap of 20.
-- **Editing.** `skill_manage` applies an ordered list of ops (`create`, `patch`,
-  `write_file`, `remove_file`) atomically, refuses to touch human or downloaded
-  skills, keeps the newest 10 backups per skill, locks one skill name at a time,
-  and requires that the file be read earlier in the Session before a patch or a
-  write. Supporting files may sit only under `references/`, `templates/`,
-  `scripts/` or `assets/`; `SKILL.md` is capped at 100000 characters and a
-  supporting file at 1 MiB.
+- **Editing.** `read` shows a skill's root-named path
+  (`el://skills/global/<name>/SKILL.md`); `edit` and `write` take that path and
+  apply one patch, write or create at a time, refusing the short form. They
+  refuse to touch human or downloaded skills, keep the newest 10 backups per
+  skill, lock one skill name at a time, and require that the file be read
+  earlier in the Session before a patch or a write. A disk path still works and
+  skips every skill rule. Supporting files may sit only under `references/`,
+  `templates/`, `scripts/` or `assets/`; `SKILL.md` is capped at 100000
+  characters and a supporting file at 1 MiB.
 - **Provenance.** `.agents/skills` plus `skills-lock.json` record every
   downloaded skill's source, path, hash and install mode, so an update is a
   re-install and a diff, not a silent overwrite.

@@ -48,7 +48,6 @@ pub const TOOL_EXECUTE: &str = "tool.execute.description";
 pub const TOOL_TODO: &str = "tool.todo.description";
 pub const TOOL_CTX_SEARCH: &str = "tool.ctx_search.description";
 pub const TOOL_SKILL_SEARCH: &str = "tool.skill_search.description";
-pub const TOOL_SKILL_MANAGE: &str = "tool.skill_manage.description";
 pub const TOOL_SPAWN: &str = "tool.spawn.description";
 pub const TOOL_STEER: &str = "tool.steer.description";
 pub const TOOL_STOP: &str = "tool.stop.description";
@@ -88,7 +87,6 @@ pub const PROMPT_IDS: &[&str] = &[
     TOOL_TODO,
     TOOL_CTX_SEARCH,
     TOOL_SKILL_SEARCH,
-    TOOL_SKILL_MANAGE,
     TOOL_SPAWN,
     TOOL_STEER,
     TOOL_STOP,
@@ -160,7 +158,6 @@ pub fn default_text(id: &str) -> &'static str {
         TOOL_CTX_SEARCH => defaults::TOOL_CTX_SEARCH,
         SKILL_CATALOG => defaults::SKILL_CATALOG,
         TOOL_SKILL_SEARCH => defaults::TOOL_SKILL_SEARCH,
-        TOOL_SKILL_MANAGE => defaults::TOOL_SKILL_MANAGE,
         TOOL_SPAWN => defaults::TOOL_SPAWN,
         TOOL_STEER => defaults::TOOL_STEER,
         TOOL_STOP => defaults::TOOL_STOP,

@@ -1,5 +1,5 @@
 //! Read-only views of agent-managed skills for the web: the list, one skill in full, and its
-//! change history from the backups and the usage log. Writes stay in `skillmanage`.
+//! change history from the backups and the usage log. Writes go through `edit`/`write`.
 
 use std::cmp::Reverse;
 use std::fs;

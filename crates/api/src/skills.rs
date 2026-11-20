@@ -19,7 +19,7 @@ pub struct SkillsQuery {
     project: Option<String>,
 }
 
-/// The global skills root and every project root, the same roots `skill_manage` writes to.
+/// The global skills root and every project root, the same roots a skill write reaches.
 async fn roots(state: &AppState) -> (Option<PathBuf>, Vec<PathBuf>) {
     let projects = state
         .projects

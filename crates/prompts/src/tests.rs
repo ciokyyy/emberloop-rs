@@ -52,14 +52,6 @@ fn the_retired_codebase_memory_skill_is_not_a_prompt() {
     assert!(!PROMPT_IDS.contains(&"skill.codebase-memory"));
 }
 
-#[test]
-fn skill_creation_assigns_a_module_in_the_tool_text() {
-    let manage = default_text(TOOL_SKILL_MANAGE);
-    assert!(manage.contains("`module`"), "{manage}");
-    assert!(manage.contains("`module_about`"), "{manage}");
-    assert!(manage.contains("at most 80 characters"), "{manage}");
-}
-
 /// Tools the harness is offered, as `tools::mcp` declares them. The prompts crate
 /// cannot depend on the tools crate (it is far heavier and `tool_specs` is private),
 /// so this list is pinned here and must be kept in step with that declaration.
@@ -75,7 +67,6 @@ const OFFERED_TOOLS: &[&str] = &[
     "websearch",
     "ctx_search",
     "skill_search",
-    "skill_manage",
     "retry_call",
     "execute",
     "spawn",

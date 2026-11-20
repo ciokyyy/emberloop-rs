@@ -522,7 +522,6 @@ fn a_goldfish_cannot_call_a_tool_outside_its_allowlist() {
         "bash",
         "execute",
         "skill_search",
-        "skill_manage",
         "retry_call",
         "spawn",
         "steer",
@@ -930,7 +929,6 @@ fn mcp_serves_tools_and_errors() {
             "find",
             "websearch",
             "skill_search",
-            "skill_manage",
             "retry_call",
             "execute"
         ]

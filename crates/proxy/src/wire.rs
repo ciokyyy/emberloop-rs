@@ -1580,7 +1580,6 @@ mod tests {
             "background",
             "execute",
             "skill_search",
-            "skill_manage",
             "retry_call",
             "compress",
             "decompress",

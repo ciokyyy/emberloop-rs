@@ -21,7 +21,6 @@ pub mod personas;
 pub mod read;
 pub mod readurl;
 pub mod seen;
-pub mod skillmanage;
 pub mod skillpath;
 pub mod skills;
 pub mod skillsearch;
@@ -481,7 +480,6 @@ impl Toolbox {
                 ctxsearch::run(self, args)
             }
             "skill_search" => skillsearch::run(self, args),
-            "skill_manage" => skillmanage::run(self, args),
             "find" => find::run(self, args).await,
             "edit" => edit::run(self, args),
             "write" => write::run(self, args),

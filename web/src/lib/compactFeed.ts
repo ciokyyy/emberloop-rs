@@ -3,7 +3,6 @@
 // Rules from .scratch/tool-feed-clarity/spec.md.
 
 import { family, primaryArg, executeCode, parseMcpName, bareName } from './toolfeed';
-import { skillManageView } from './skilldiff';
 
 // parseExitCode extracts the integer exit code from [exit status N] in bash output.
 export function parseExitCode(output: any = '') {
@@ -377,10 +376,7 @@ function formatGroupTitle(children: any[] = [], counts: any = {}) {
 }
 
 function createEditItem(run: any, meta: any) {
-  // skill_manage has no display.diff; its ops hold the old and new text, so show those as the diff.
-  const skill = bareName(run.name) === 'skill_manage' ? skillManageView(run.input) : null;
-  const shown = skill ? { ...run, display: { ...run.display, diff: skill.diff } } : run;
-  const stats = parseDiffStats(shown.display?.diff, skill ? skill.path : primaryArg(run.name, run.input));
+  const stats = parseDiffStats(run.display?.diff, primaryArg(run.name, run.input));
   const intent = runTitle(run);
   return {
     type: 'edit',
@@ -390,7 +386,7 @@ function createEditItem(run: any, meta: any) {
     additions: stats.additions,
     deletions: stats.deletions,
     ...meta,
-    run: shown,
+    run,
   };
 }
 

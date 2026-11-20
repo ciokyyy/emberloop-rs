@@ -1,35 +1,3 @@
-// skillDiffText renders the skill_manage ops a review or a turn applied as plain text: one header
-// per op, then `-` lines for the removed text and `+` lines for the added text of a patch.
-// Ops without old/new text (create, write_file, remove_file) show only their header.
-export function skillDiffText(ops: unknown): string {
-  if (!Array.isArray(ops)) return '';
-  const out: string[] = [];
-  for (const raw of ops) {
-    const op = (raw ?? {}) as Record<string, unknown>;
-    const name = typeof op.name === 'string' ? op.name : '?';
-    const kind = typeof op.op === 'string' ? op.op : 'patch';
-    const file = typeof op.path === 'string' ? ` ${op.path}` : '';
-    out.push(`${name} · ${kind}${file}`);
-    if (typeof op.old_string === 'string' && typeof op.new_string === 'string') {
-      for (const line of op.old_string.split('\n')) out.push(`- ${line}`);
-      for (const line of op.new_string.split('\n')) out.push(`+ ${line}`);
-    }
-  }
-  return out.join('\n');
-}
-
-// skillManageView reads a skill_manage call's arguments: the skill names it touched and the diff of its ops.
-export function skillManageView(input: unknown): { path: string; diff: string } {
-  let ops: unknown = null;
-  try {
-    ops = JSON.parse(String(input ?? ''))?.ops;
-  } catch {
-    return { path: '', diff: '' };
-  }
-  const names = Array.isArray(ops) ? [...new Set(ops.map((op) => (op as { name?: unknown })?.name).filter((n) => typeof n === 'string'))] : [];
-  return { path: names.join(', '), diff: skillDiffText(ops) };
-}
-
 /** lineDiff compares two texts line by line: `same`, `add` (only in `next`) or `del` (only in `prev`). */
 export function lineDiff(prev: string, next: string): { kind: 'same' | 'add' | 'del'; text: string }[] {
   const a = prev.split('\n');

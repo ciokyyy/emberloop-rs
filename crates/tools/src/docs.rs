@@ -181,7 +181,7 @@ Skills stay flat, one folder per skill, in each skills root. Grouping lives in a
 
 - A module named in both roots merges: `about` from the project file, members are the union. A skill belongs to at most one module, first one wins.
 - A mapped name with no skill is skipped with a warning. A missing file means no modules; a malformed one means no modules plus a warning. Unmapped skills stay in the always-on catalog, so keep the three to five most used skills unmapped.
-- When you install or create a skill, assign it to an existing module or create one, through the `skill_manage` `module` field or by editing the JSON.
+- When you install or create a skill, assign it to an existing module or create one by editing `skill-modules.json` at its disk path; `write` of a new `el://skills/<root>/<name>/SKILL.md` leaves the skill ungrouped.
 - A module `about` must be a sharp "use when" trigger: it is what tells the model when to load the module. List the module's skills with `skill_search "<module>"`.
 - The catalog is frozen per Session, so mapping changes apply to new Sessions only. Mapping is by name, so updating or reinstalling a skill never needs re-mapping.
 "#,

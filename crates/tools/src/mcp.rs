@@ -379,35 +379,6 @@ fn tool_specs() -> Vec<Value> {
             }
         },
         {
-            "name": "skill_manage",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "ops": {
-                        "type": "array",
-                        "description": "Operations applied in order, all or nothing.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "op": {"type": "string", "enum": ["create", "patch", "write_file", "remove_file"], "description": "The operation."},
-                                "name": {"type": "string", "description": "Skill name."},
-                                "scope": {"type": "string", "enum": ["global", "project"], "description": "create only: where the new skill lands; global by default."},
-                                "module": {"type": "string", "description": "create only: the module the new skill joins; required once any skill-modules.json exists. Empty string leaves the skill ungrouped."},
-                                "module_about": {"type": "string", "description": "create only: one use-when line, at most 80 characters, for a module this call creates."},
-                                "content": {"type": "string", "description": "create: full SKILL.md. patch: whole-file replacement, last resort. write_file: file text."},
-                                "path": {"type": "string", "description": "patch and write_file: a file under references/, templates/, scripts/ or assets/; patch may omit it to target SKILL.md."},
-                                "old_string": {"type": "string", "description": "patch: exact text to replace; must match once unless replace_all."},
-                                "new_string": {"type": "string", "description": "patch: replacement text."},
-                                "replace_all": {"type": "boolean", "description": "patch: replace every match."}
-                            },
-                            "required": ["op", "name"]
-                        }
-                    }
-                },
-                "required": ["ops"]
-            }
-        },
-        {
             "name": "retry_call",
             "inputSchema": {
                 "type": "object",
