@@ -6,17 +6,24 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
-use tools::skills::Skill;
+use tools::skills::{self, Skill};
 use tools::skillview::{self, Detail, History, Summary};
 
 use crate::state::AppState;
 
 type Failure = (StatusCode, String);
 
-/// `?project=<id>` narrows the list to one project's root plus the global root.
+/// Search hits per request when `q` is set, and the hard cap.
+const DEFAULT_SEARCH_LIMIT: usize = 20;
+const MAX_SEARCH_LIMIT: usize = 50;
+
+/// `?project=<id>` narrows the list to one project's root plus the global root; `?q=` ranks the
+/// skills and `?limit=` caps the hits.
 #[derive(Deserialize)]
 pub struct SkillsQuery {
     project: Option<String>,
+    q: Option<String>,
+    limit: Option<usize>,
 }
 
 /// The global skills root and every project root, the same roots a skill write reaches.
@@ -50,6 +57,7 @@ pub async fn list_skills(
     Query(query): Query<SkillsQuery>,
 ) -> Json<Vec<Summary>> {
     let (global, mut projects) = roots(&state).await;
+    let scoped = query.project.is_some();
     if let Some(id) = query.project {
         projects = state
             .projects
@@ -59,7 +67,46 @@ pub async fn list_skills(
             .unwrap_or_default();
     }
     let found = skillview::list(global.as_deref(), &projects);
-    Json(found.iter().map(skillview::summary).collect())
+    let text = query.q.unwrap_or_default();
+    let text = text.trim();
+    if text.is_empty() {
+        return Json(found.iter().map(skillview::summary).collect());
+    }
+    let modules = match (global.as_deref(), scoped, projects.first()) {
+        (Some(root), true, Some(project)) => skills::modules(Some(root), project),
+        _ => Vec::new(),
+    };
+    Json(ranked(&found, &modules, text, query.limit))
+}
+
+/// Prefix matches alphabetically first, then the rest by BM25 score above 0, capped by `limit`.
+fn ranked(
+    found: &[Skill],
+    modules: &[skills::Module],
+    text: &str,
+    limit: Option<usize>,
+) -> Vec<Summary> {
+    let needle = text.to_lowercase();
+    let mut ranked: Vec<&Skill> = found
+        .iter()
+        .filter(|skill| skill.name.to_lowercase().starts_with(&needle))
+        .collect();
+    ranked.sort_by(|left, right| left.name.cmp(&right.name));
+    ranked.extend(
+        tools::skillsearch::score(found, modules, text)
+            .into_iter()
+            .map(|(index, _)| &found[index])
+            .filter(|skill| !skill.name.to_lowercase().starts_with(&needle)),
+    );
+    let limit = limit
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_SEARCH_LIMIT)
+        .min(MAX_SEARCH_LIMIT);
+    ranked
+        .into_iter()
+        .take(limit)
+        .map(skillview::summary)
+        .collect()
 }
 
 pub async fn skill_detail(

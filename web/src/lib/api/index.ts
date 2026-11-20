@@ -116,10 +116,14 @@ export const api = {
 
   providerUsage: (provider: string, refresh = false): Promise<UsageView> =>
     request(`/api/providers/${encodeURIComponent(provider)}/usage?refresh=${refresh}`),
-  listSkills: (projectId?: string | null) =>
-    request<SkillSummary[]>(
-      projectId ? `/api/skills?project=${encodeURIComponent(projectId)}` : '/api/skills'
-    ),
+  listSkills: (projectId?: string | null, q?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (projectId) params.set('project', projectId);
+    if (q) params.set('q', q);
+    if (limit !== undefined) params.set('limit', String(limit));
+    const query = params.toString();
+    return request<SkillSummary[]>(query ? `/api/skills?${query}` : '/api/skills');
+  },
   skillDetail: (name: string) => request<SkillDetail>(`/api/skills/${encodeURIComponent(name)}`),
   skillHistory: (name: string) => request<SkillHistory>(`/api/skills/${encodeURIComponent(name)}/history`),
   /** The newest `limit` model requests of a Session, oldest first; the server default is 200. */

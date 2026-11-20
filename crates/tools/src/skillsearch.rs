@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::skills::{self, DESCRIPTION_CHARS};
+use crate::skills::{self, Module, Skill, DESCRIPTION_CHARS};
 use crate::{bm25, ToolError, ToolResult, Toolbox};
 
 const DEFAULT_LIMIT: usize = 5;
@@ -33,16 +33,7 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
         .filter(|skill| !skill.hidden)
         .collect();
     let modules = skills::modules(toolbox.global_skills(), toolbox.root());
-    let docs: Vec<Vec<String>> = found
-        .iter()
-        .map(|skill| bm25::tokens(&search_text(skill, &modules)))
-        .collect();
-    let mut hits: Vec<(f64, &skills::Skill)> = bm25::scores(&docs, &bm25::query_terms(query))
-        .into_iter()
-        .zip(&found)
-        .filter(|(score, _)| *score > 0.0)
-        .collect();
-    hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let hits = score(&found, &modules, query);
     let named = modules
         .iter()
         .find(|module| module.name.eq_ignore_ascii_case(query));
@@ -58,7 +49,7 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     let mut ordered: Vec<&skills::Skill> = members.clone();
     ordered.extend(
         hits.iter()
-            .map(|(_, skill)| *skill)
+            .map(|(index, _)| &found[*index])
             .filter(|skill| !members.iter().any(|member| member.name == skill.name)),
     );
     ordered.truncate(members.len() + limit);
@@ -88,8 +79,24 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     Ok(out)
 }
 
-/// What `skill_search` ranks a skill by: its module name, then its own search text.
-fn search_text(skill: &skills::Skill, modules: &[skills::Module]) -> String {
+/// BM25 over `skills`, each ranked by its module name and its own search text: indexes into
+/// `skills`, positive scores only, highest first.
+pub fn score(skills: &[Skill], modules: &[Module], query: &str) -> Vec<(usize, f64)> {
+    let docs: Vec<Vec<String>> = skills
+        .iter()
+        .map(|skill| bm25::tokens(&search_text(skill, modules)))
+        .collect();
+    let mut hits: Vec<(usize, f64)> = bm25::scores(&docs, &bm25::query_terms(query))
+        .into_iter()
+        .enumerate()
+        .filter(|(_, score)| *score > 0.0)
+        .collect();
+    hits.sort_by(|left, right| right.1.total_cmp(&left.1));
+    hits
+}
+
+/// What a skill is ranked by: its module name, then its own search text.
+fn search_text(skill: &Skill, modules: &[Module]) -> String {
     match skills::module_of(modules, &skill.name) {
         Some(module) => format!("{module} {}", skill.search_text()),
         None => skill.search_text(),
@@ -108,6 +115,7 @@ mod tests {
     use serde_json::json;
 
     use super::run;
+    use crate::skills;
     use crate::{ToolConfig, Toolbox};
 
     fn write_skill(root: &Path, name: &str, description: &str, body: &str) {
@@ -302,5 +310,43 @@ mod tests {
         assert!(out.contains("- visible"), "{out}");
         assert!(!out.contains("quiet"), "{out}");
         assert_eq!(out.lines().next(), Some("query \"deploy\": 1 match(es)"));
+    }
+
+    #[test]
+    fn score_ranks_a_module_name_match() {
+        let (_dir, global, project) = fixture();
+        write_skill(&global, "clip", "trim video", "ffmpeg");
+        write_skill(&global, "noise", "zebra", "body");
+        write_modules(
+            &global,
+            r#"{"media-kit": {"about": "audio and video work", "skills": ["clip"]}}"#,
+        );
+        let found = skills::discover(Some(&global), &project);
+        let modules = skills::modules(Some(&global), &project);
+
+        let hits = super::score(&found, &modules, "media");
+        let names: Vec<&str> = hits
+            .iter()
+            .map(|(index, _)| found[*index].name.as_str())
+            .collect();
+        assert_eq!(names, vec!["clip"]);
+    }
+
+    #[test]
+    fn score_drops_zero_scores_and_orders_descending() {
+        let (_dir, global, project) = fixture();
+        write_skill(&global, "alpha", "general helper", &"common\n".repeat(20));
+        write_skill(&global, "beta", "kubernetes rollout", "common");
+        write_skill(&global, "unrelated", "zebra", "body");
+        let found = skills::discover(Some(&global), &project);
+        let modules = skills::modules(Some(&global), &project);
+
+        let hits = super::score(&found, &modules, "common kubernetes");
+        let names: Vec<&str> = hits
+            .iter()
+            .map(|(index, _)| found[*index].name.as_str())
+            .collect();
+        assert_eq!(names, vec!["beta", "alpha"]);
+        assert!(hits[0].1 >= hits[1].1);
     }
 }

@@ -1722,3 +1722,120 @@ mod prompt_routes_tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }
+
+#[cfg(test)]
+mod skill_search_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use emberloop_core::events::EventBus;
+    use std::path::Path;
+    use std::sync::Arc;
+    use store::{DataRoot, ProjectsStore, SessionsStore};
+    use tempfile::tempdir;
+    use tower::ServiceExt;
+
+    fn write_skill(root: &Path, name: &str, description: &str, hidden: bool) {
+        let folder = root.join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        let flag = if hidden {
+            "disable-model-invocation: true\n"
+        } else {
+            ""
+        };
+        std::fs::write(
+            folder.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n{flag}---\n# {name}\n"),
+        )
+        .unwrap();
+    }
+
+    /// A router over a temp global skills root, with the tempdir leaked so it outlives the call.
+    async fn app(skills: &Path) -> Router {
+        let dir = tempdir().unwrap();
+        let data_root = DataRoot::new(dir.path());
+        let projects = ProjectsStore::load(data_root.projects_file())
+            .await
+            .unwrap();
+        let sessions = SessionsStore::load(data_root.clone()).await.unwrap();
+        std::mem::forget(dir);
+        build_router(
+            AppState::new(data_root, projects, sessions, Arc::new(EventBus::default()))
+                .with_global_skills(skills),
+        )
+    }
+
+    async fn names(app: Router, uri: &str) -> Vec<String> {
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+        list.iter()
+            .map(|item| item["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn skills_search_puts_prefixes_first_alphabetically_and_ignores_case() {
+        let dir = tempdir().unwrap();
+        let skills = dir.path().join("global");
+        write_skill(&skills, "delta", "deploy helper", false);
+        write_skill(&skills, "deploy-rollback", "revert a rollout", false);
+        write_skill(&skills, "deploy-canary", "ship to a slice", false);
+        write_skill(&skills, "zeta", "unrelated", false);
+
+        let found = names(app(&skills).await, "/api/skills?q=DEPLOY").await;
+        assert_eq!(found, vec!["deploy-canary", "deploy-rollback", "delta"]);
+    }
+
+    #[tokio::test]
+    async fn skills_search_includes_hidden_skills() {
+        let dir = tempdir().unwrap();
+        let skills = dir.path().join("global");
+        write_skill(&skills, "deploy-quiet", "deploy helper", true);
+
+        let found = names(app(&skills).await, "/api/skills?q=deploy").await;
+        assert_eq!(found, vec!["deploy-quiet"]);
+    }
+
+    #[tokio::test]
+    async fn skills_search_without_q_returns_every_skill_even_with_a_limit() {
+        let dir = tempdir().unwrap();
+        let skills = dir.path().join("global");
+        write_skill(&skills, "one", "first", false);
+        write_skill(&skills, "two", "second", false);
+
+        assert_eq!(names(app(&skills).await, "/api/skills").await.len(), 2);
+        assert_eq!(
+            names(app(&skills).await, "/api/skills?q=&limit=1")
+                .await
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn skills_search_defaults_to_twenty_hits_and_caps_at_fifty() {
+        let dir = tempdir().unwrap();
+        let skills = dir.path().join("global");
+        for index in 0..55 {
+            write_skill(&skills, &format!("zebra-{index:02}"), "striped", false);
+        }
+
+        assert_eq!(
+            names(app(&skills).await, "/api/skills?q=zebra").await.len(),
+            20
+        );
+        assert_eq!(
+            names(app(&skills).await, "/api/skills?q=zebra&limit=1000")
+                .await
+                .len(),
+            50
+        );
+    }
+}
