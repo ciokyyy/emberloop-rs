@@ -13,11 +13,11 @@ use crate::tag::content_hash;
 use crate::{ToolError, ToolResult, Toolbox};
 
 /// `SKILL.md` at most this many characters.
-pub(crate) const MAX_SKILL_CHARS: usize = 100_000;
+const MAX_SKILL_CHARS: usize = 100_000;
 /// One supporting file at most this many bytes.
-pub(crate) const MAX_SUPPORT_BYTES: usize = 1 << 20;
+const MAX_SUPPORT_BYTES: usize = 1 << 20;
 /// A skill description at most this many characters.
-pub(crate) const MAX_DESCRIPTION_CHARS: usize = 1024;
+const MAX_DESCRIPTION_CHARS: usize = 1024;
 
 /// Which root a skill lives in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -363,7 +363,7 @@ pub fn log_view(toolbox: &Toolbox, resolved: &Resolved) {
 
 /// `SKILL.md` must be under the size limit, name the skill, and carry a description of at most
 /// `MAX_DESCRIPTION_CHARS` characters.
-pub(crate) fn check_skill_text(name: &str, text: &str) -> ToolResult<Front> {
+fn check_skill_text(name: &str, text: &str) -> ToolResult<Front> {
     if text.chars().count() > MAX_SKILL_CHARS {
         return Err(ToolError::msg(format!(
             "SKILL.md is over {MAX_SKILL_CHARS} characters"
@@ -384,7 +384,7 @@ pub(crate) fn check_skill_text(name: &str, text: &str) -> ToolResult<Front> {
     Ok(front)
 }
 
-pub(crate) fn check_support_size(len: usize) -> ToolResult<()> {
+fn check_support_size(len: usize) -> ToolResult<()> {
     if len > MAX_SUPPORT_BYTES {
         return Err(ToolError::msg(format!(
             "file is over {MAX_SUPPORT_BYTES} bytes"
@@ -394,7 +394,8 @@ pub(crate) fn check_support_size(len: usize) -> ToolResult<()> {
 }
 
 /// An existing skill must be agent-origin to change; a missing origin means `human`.
-pub(crate) fn require_agent_origin(name: &str, origin: &str) -> ToolResult<()> {
+fn require_agent(name: &str, text: &str) -> ToolResult<()> {
+    let origin = skills::parse(text).map_or_else(|| "human".to_string(), |front| front.origin);
     if origin == "agent" {
         return Ok(());
     }
@@ -403,31 +404,17 @@ pub(crate) fn require_agent_origin(name: &str, origin: &str) -> ToolResult<()> {
     )))
 }
 
-pub(crate) fn require_agent(name: &str, text: &str) -> ToolResult<()> {
-    let origin = skills::parse(text).map_or_else(|| "human".to_string(), |front| front.origin);
-    require_agent_origin(name, &origin)
-}
-
 /// This Session must have read exactly the current bytes of the file.
-pub(crate) fn require_seen(toolbox: &Toolbox, resolved: &Resolved) -> ToolResult<()> {
-    require_seen_file(toolbox, &resolved.key, &resolved.path, &display(resolved))
-}
-
-/// The same read-before-write rule for a caller that keys the seen store itself.
-pub(crate) fn require_seen_file(
-    toolbox: &Toolbox,
-    key: &Path,
-    path: &Path,
-    label: &str,
-) -> ToolResult<()> {
-    let bytes = fs::read(path)?;
+pub fn require_seen(toolbox: &Toolbox, resolved: &Resolved) -> ToolResult<()> {
+    let bytes = fs::read(&resolved.path)?;
     if toolbox
         .seen()
-        .unseen(key, &content_hash(&bytes), &[])
+        .unseen(&resolved.key, &content_hash(&bytes), &[])
         .is_none()
     {
         return Err(ToolError::msg(format!(
-            "Read {label} with read before changing it."
+            "Read {} with read before changing it.",
+            display(resolved)
         )));
     }
     Ok(())

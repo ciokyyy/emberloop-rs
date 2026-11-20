@@ -1156,6 +1156,7 @@ dependencies = [
  "pi-ai",
  "prompts",
  "proxy",
+ "regex",
  "reqwest 0.13.5",
  "rust-embed",
  "serde",

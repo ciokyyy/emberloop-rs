@@ -31,6 +31,7 @@ pub mod binaries;
 pub mod claude_login;
 pub mod codegraph;
 pub mod codex;
+pub mod digest;
 pub mod figcraft;
 pub mod idle;
 pub mod login;
@@ -401,6 +402,21 @@ pub enum Command {
         /// Global skills root, readable beyond the project root; omit for none.
         #[arg(long)]
         global_skills: Option<PathBuf>,
+    },
+    /// Write LLM-free facts about recent Sessions, for the retro skill.
+    Digest {
+        /// Unix milliseconds; only Sessions updated after this count.
+        #[arg(long)]
+        since: Option<u64>,
+        /// Sessions to show, oldest first; defaults to 20.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Digest this one Session and ignore `--since` and `--limit`.
+        #[arg(long)]
+        session: Option<String>,
+        /// Write `index.md` and one file per Session here instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Install the newest release under `releases/` and switch `current` to it.
     Update {

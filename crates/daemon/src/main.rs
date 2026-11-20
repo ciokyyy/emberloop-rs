@@ -21,6 +21,20 @@ async fn main() -> anyhow::Result<()> {
         }) => {
             emberloop_daemon::run_mcp(root, spill, config.config_root.clone(), global_skills).await
         }
+        Some(Command::Digest {
+            since,
+            limit,
+            session,
+            out,
+        }) => emberloop_daemon::digest::run(
+            &config,
+            emberloop_daemon::digest::DigestArgs {
+                since,
+                limit,
+                session,
+                out,
+            },
+        ),
         Some(Command::Update {
             manifest,
             session,

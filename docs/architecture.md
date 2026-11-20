@@ -179,12 +179,10 @@ rewrite one and the next Session's declarations carry it.
   `ctx_search` ranks the spilled text with BM25 and `read ctx:<id>:<start>-<end>`
   pages it.
 - **Subagents** use `spawn`, `steer`, `stop`, `result` and `submit`; the daemon
-  owns their Sessions, and `crates/proxy/src/review.rs` runs the background
-  skill review through the same executor.
-- **Hosts.** The daemon serves the tools over MCP stdio (`emberloop-daemon mcp`)
-  and `crates/daemon` builds the same `Toolbox` for the reviewer fork, so a
-  harness that speaks ACP and one that speaks MCP configuration reach identical
-  tools.
+  owns their Sessions and their reports reach the parent as steers.
+- **Hosts.** The daemon serves the tools over MCP stdio (`emberloop-daemon mcp`),
+  so a harness that speaks ACP and one that speaks MCP configuration reach
+  identical tools.
 
 The proxy's four tools are separate from this server: they are declared on the
 model wire, dispatched inside the proxy, and never reach the harness.
@@ -230,6 +228,17 @@ flowchart TD
 - **Provenance.** `.agents/skills` plus `skills-lock.json` record every
   downloaded skill's source, path, hash and install mode, so an update is a
   re-install and a diff, not a silent overwrite.
+- **Digest.** `emberloop-daemon digest` (`crates/daemon/src/digest.rs`) writes
+  facts about the Sessions in a window to `index.md` and one file per Session,
+  or to stdout. It picks top-level Sessions updated after `--since` (unix ms),
+  oldest first, `--limit` of them (default 20), or exactly `--session`; a
+  subagent's facts fold into its parent. Each file holds the prompt, the steers,
+  the tool calls with their exit status and first error line, the errors, usage
+  and compression count, never a judgement. `index.md` adds the skill table
+  (root, origin, hidden, bytes, catalog exposures, module membership, reads from
+  `.usage.jsonl`, files changed by nobody) and the unattributed changes. Env-file
+  values and secret-shaped strings are redacted. The first line on stdout names
+  the data root and the window, including `through`, the newest Session shown.
 
 ## How the four fit together
 

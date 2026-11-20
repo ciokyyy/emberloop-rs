@@ -24,7 +24,7 @@ pub mod seen;
 pub mod skillpath;
 pub mod skills;
 pub mod skillsearch;
-mod skillstore;
+pub mod skillstore;
 pub mod skillview;
 pub mod subagents;
 pub mod tag;

@@ -84,24 +84,6 @@ pub fn load(root: &Path, project: bool) -> Vec<Skill> {
     skills
 }
 
-/// Finds a single skill by name: project skill first, then global.
-pub fn locate(global: Option<&Path>, project: &Path, name: &str) -> Option<Skill> {
-    if !valid_name(name) {
-        return None;
-    }
-    let project_dir = project.join(PROJECT_SKILLS).join(name);
-    if let Some(skill) = load_one(&project_dir, true) {
-        return Some(skill);
-    }
-    if let Some(global_root) = global {
-        let global_dir = global_root.join(name);
-        if let Some(skill) = load_one(&global_dir, false) {
-            return Some(skill);
-        }
-    }
-    None
-}
-
 fn load_one(dir: &Path, project: bool) -> Option<Skill> {
     let path = dir.join("SKILL.md");
     if !path.is_file() {
@@ -874,13 +856,10 @@ mod tests {
         assert!(text.contains("quiet (hidden)"), "{text}");
         assert!(!text.contains("visible (hidden)"), "{text}");
 
-        let quiet = super::locate(Some(&global), dir.path(), "quiet").expect("direct read");
-        assert!(quiet.hidden);
-        assert!(
-            !super::locate(Some(&global), dir.path(), "visible")
-                .unwrap()
-                .hidden
-        );
+        let found = super::discover(Some(&global), dir.path());
+        let by_name = |name: &str| found.iter().find(|skill| skill.name == name).unwrap();
+        assert!(by_name("quiet").hidden);
+        assert!(!by_name("visible").hidden);
     }
 
     #[test]
