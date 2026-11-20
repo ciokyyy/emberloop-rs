@@ -51,11 +51,7 @@ Session queues with an open batch, expires any past `deadline_at` with synthetic
 `timed_out` reports behind a timeout notice, publishes one `SteerQueued` event
 per report, and wakes an idle parent once.
 
-`tests/skill_roots.rs` checks that `mcp_tool_config` exposes the global skills root only when `--global-skills` is given. `tests/runner.rs` covers the frozen catalog (a skill made mid-Session stays out of that Session's file and appears in the next one).
-
-## Child DOX Index
-
-(none)
+`tests/skill_roots.rs` checks that `mcp_tool_config` exposes the global skills root only when `--global-skills` is given. `tests/runner.rs` covers the frozen catalog (a skill made mid-Session stays out of that Session's file and appears in the next one). `tests/digest.rs` runs `digest` over a fixture data root with a live and an archived Session, a subagent, a skill root with a module and a `.usage.jsonl`, and asserts the window line, the per-Session facts, the skill stats, the unattributed change and the redaction.
 
 ## Titles and provider usage
 
@@ -64,3 +60,7 @@ per report, and wakes an idle parent once.
 `usage.rs` reads ChatGPT subscription windows (primary, secondary, additional rate limits, code-review limit and credits balance; a null window is skipped and labels come from `limit_window_seconds`), Antigravity quota groups and buckets, Claude `limits` entries including model-scoped weekly probes plus extra-usage and spend meters (legacy weekly fields as fallback), OpenCode Go windows, OpenRouter credits and DeepSeek balances. `AgyLogin` caches each provider response for 60 seconds; explicit refresh bypasses the cache. Credentials stay in the daemon. Antigravity exchanges its refresh token at the fixed Google token endpoint without writing credentials; Claude refreshes and atomically rewrites a token about to expire. Provider errors are redacted, JSON responses are capped at 1 MiB, and other cards remain available.
 
 `pi-ai` is pinned to `ciokyyy/pi-rust` commit `f56313f44ab78c6ee762d904dbf90d0fa0bffeaf`, based on upstream `v0.12.13`, with `ruzstd 0.9.1` and SDK Rust minimum 1.87. This fixes `RUSTSEC-2026-0344` without an advisory exemption. Switch back to an upstream release once it includes the dependency fix.
+
+## Child DOX Index
+
+(none)

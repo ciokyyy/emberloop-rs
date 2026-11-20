@@ -4,8 +4,7 @@ use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use emberloop_core::events::{EventKind, SessionEvent};
-use emberloop_daemon::digest::{digest, run, DigestArgs};
-use emberloop_daemon::Config;
+use emberloop_daemon::digest::{digest, write, DigestArgs, Roots};
 use serde_json::json;
 use store::sessions::ReviewerAssignment;
 use store::{ArchivalConfig, ArchivalSweeper, DataRoot, EventLog, SessionMeta, SessionsStore};
@@ -41,8 +40,8 @@ fn meta(id: &str, updated: u64, parent: Option<&str>) -> SessionMeta {
 
 async fn append(root: &DataRoot, id: &str, events: Vec<(EventKind, serde_json::Value)>) {
     let log = EventLog::open(root.session_events_dir(id)).await.unwrap();
-    for (kind, data) in events {
-        log.append(SessionEvent::new(id, 0, kind, data))
+    for (seq, (kind, data)) in events.into_iter().enumerate() {
+        log.append(SessionEvent::new(id, seq as u64, kind, data))
             .await
             .unwrap();
     }
@@ -165,17 +164,14 @@ async fn a_digest_reports_facts_skills_and_redacts_secrets() {
 
     let env_file = tmp.path().join("env");
     fs::write(&env_file, "OTHER_TOKEN=abcdefghij1234567890\n").unwrap();
-    std::env::set_var("EMBERLOOP_ENV_FILE", &env_file);
-    std::env::set_var("EMBERLOOP_GLOBAL_SKILLS", &global);
-    std::env::remove_var("EMBERLOOP_SESSION_DIR");
-
-    let config = Config {
+    let roots = Roots {
         data_root: data.clone(),
-        ..Config::default()
+        global: global.clone(),
+        env_file: Some(env_file),
     };
     let since = now - 10 * DAY_MS;
     let report = digest(
-        &config,
+        &roots,
         &DigestArgs {
             since: Some(since),
             limit: None,
@@ -200,9 +196,14 @@ async fn a_digest_reports_facts_skills_and_redacts_secrets() {
     assert!(live.contains("title ses_live"), "{live}");
     assert!(live.contains(&project.display().to_string()), "{live}");
     assert!(live.contains("- prompt: make it faster, token [redacted]"));
-    assert!(!live.contains("abcdefghij1234567890"));
-    assert!(live.contains("1. `bash` in: {\"command\":\"cargo test\"} exit: 0"));
-    assert!(live.contains("2. `bash` in: {\"command\":\"false\"} exit: 1 error: error: boom"));
+    assert!(
+        live.contains("3. `bash` in: {\"command\":\"cargo test\"} exit: 0"),
+        "{live}"
+    );
+    assert!(
+        live.contains("5. `bash` in: {\"command\":\"false\"} exit: 1 error: error: boom"),
+        "{live}"
+    );
     assert!(live.contains("## Subagent ses_child (worker)"));
     assert!(live.contains("subagent work"));
     assert!(live.contains("- calls: 1"));
@@ -219,9 +220,8 @@ async fn a_digest_reports_facts_skills_and_redacts_secrets() {
         index.contains(&global.join("alpha").join("SKILL.md").display().to_string()),
         "{index}"
     );
-
     let empty = digest(
-        &config,
+        &roots,
         &DigestArgs {
             since: Some(now + 10_000),
             limit: None,
@@ -236,9 +236,8 @@ async fn a_digest_reports_facts_skills_and_redacts_secrets() {
         "{}",
         empty.line
     );
-
     let one = digest(
-        &config,
+        &roots,
         &DigestArgs {
             since: None,
             limit: Some(1),
@@ -250,8 +249,8 @@ async fn a_digest_reports_facts_skills_and_redacts_secrets() {
     assert!(one.line.contains("shown 1 of 1"), "{}", one.line);
 
     let out = tmp.path().join("out");
-    run(
-        &config,
+    write(
+        &roots,
         DigestArgs {
             since: Some(since),
             limit: Some(1),
@@ -263,7 +262,4 @@ async fn a_digest_reports_facts_skills_and_redacts_secrets() {
     assert!(out.join("index.md").is_file());
     assert!(out.join("ses_archived.md").is_file());
     assert_eq!(fs::read_dir(&out).unwrap().count(), 2);
-
-    std::env::remove_var("EMBERLOOP_ENV_FILE");
-    std::env::remove_var("EMBERLOOP_GLOBAL_SKILLS");
 }

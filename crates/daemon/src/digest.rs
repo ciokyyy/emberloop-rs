@@ -41,9 +41,14 @@ pub struct Digest {
     pub sessions: Vec<(String, String)>,
 }
 
-/// Writes the digest and prints one window line.
+/// The CLI: resolves the roots from the environment, then writes the digest.
 pub fn run(config: &Config, args: DigestArgs) -> Result<()> {
-    let digest = digest(config, &args)?;
+    write(&Roots::resolve(config), args)
+}
+
+/// Writes the digest and prints one window line.
+pub fn write(roots: &Roots, args: DigestArgs) -> Result<()> {
+    let digest = digest(roots, &args)?;
     if let Some(dir) = &args.out {
         fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
         fs::write(dir.join("index.md"), &digest.index)
@@ -63,81 +68,99 @@ pub fn run(config: &Config, args: DigestArgs) -> Result<()> {
     Ok(())
 }
 
+/// The roots a digest reads, resolved once from the environment the CLI hands it.
+pub struct Roots {
+    pub data_root: PathBuf,
+    pub global: PathBuf,
+    pub env_file: Option<PathBuf>,
+}
+
+impl Roots {
+    /// `EMBERLOOP_SESSION_DIR` and `EMBERLOOP_GLOBAL_SKILLS` win over the config,
+    /// because `bash` hands a Session paths, not a config file.
+    pub fn resolve(config: &Config) -> Self {
+        let data_root = std::env::var_os("EMBERLOOP_SESSION_DIR")
+            .map(PathBuf::from)
+            .and_then(|dir| dir.parent().and_then(Path::parent).map(Path::to_path_buf))
+            .unwrap_or_else(|| config.data_root.clone());
+        let global = std::env::var_os("EMBERLOOP_GLOBAL_SKILLS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| config.global_skills.clone());
+        Self {
+            data_root,
+            global,
+            env_file: std::env::var_os("EMBERLOOP_ENV_FILE").map(PathBuf::from),
+        }
+    }
+}
+
 /// Builds the digest without writing anything, so a test can inspect it.
-pub fn digest(config: &Config, args: &DigestArgs) -> Result<Digest> {
-    let data_root = std::env::var_os("EMBERLOOP_SESSION_DIR")
-        .map(PathBuf::from)
-        .and_then(|dir| dir.parent().and_then(Path::parent).map(Path::to_path_buf))
-        .unwrap_or_else(|| config.data_root.clone());
-    let global = std::env::var_os("EMBERLOOP_GLOBAL_SKILLS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config.global_skills.clone());
+pub fn digest(roots: &Roots, args: &DigestArgs) -> Result<Digest> {
     let since = args.since.unwrap_or(0);
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT);
-    let root = DataRoot::new(data_root.clone());
+    let root = DataRoot::new(roots.data_root.clone());
     let projects = load_projects(&root);
     let metas = load_metas(&root);
     let (sessions, total) = select(&root, &metas, args, since, limit);
-    let through = sessions.last().map_or(since, |meta| meta.updated_at);
+    let through = sessions.last().map_or(since, |(meta, _)| meta.updated_at);
     let window = (since, through);
-    let redactor = Redactor::new();
-    let folders = folders(&root, &sessions, &metas);
-    let skills = skill_rows(&global, &projects, &folders, window);
+    let redactor = Redactor::new(roots.env_file.as_deref());
+    let mut rendered = Vec::new();
+    let mut dirs = Vec::new();
+    for (meta, lines) in &sessions {
+        let children = children_of(&metas, &meta.id);
+        dirs.push(root.session_dir(&meta.id));
+        dirs.extend(children.iter().map(|child| root.session_dir(&child.id)));
+        rendered.push((
+            meta.id.clone(),
+            redactor.apply(&render_session(
+                &root, meta, lines, &projects, &children, &metas,
+            )),
+        ));
+    }
+    let skills = skill_rows(&roots.global, &projects, &dirs, window);
     let index = redactor.apply(&render_index(&skills, window, (sessions.len(), total)));
     let shown = sessions.len();
-    let sessions = sessions
-        .iter()
-        .map(|meta| {
-            let children = children_of(&metas, &meta.id);
-            (
-                meta.id.clone(),
-                redactor.apply(&render_session(&root, meta, &projects, &children, &metas)),
-            )
-        })
-        .collect();
     let out = args
         .out
         .as_ref()
         .map_or_else(String::new, |dir| format!(" out: {}", dir.display()));
     let line = format!(
         "data-root: {} window: since={since} through={through} shown {shown} of {total}{out}",
-        data_root.display()
+        roots.data_root.display()
     );
     Ok(Digest {
         line,
         index,
-        sessions,
+        sessions: rendered,
     })
 }
 
-/// The selected Sessions, oldest first, and how many matched the window.
+/// The selected Sessions with their event lines, oldest first, and the match count.
 fn select(
     root: &DataRoot,
     metas: &[SessionMeta],
     args: &DigestArgs,
     since: u64,
     limit: usize,
-) -> (Vec<SessionMeta>, usize) {
-    if let Some(id) = &args.session {
-        let found: Vec<SessionMeta> = metas
-            .iter()
-            .filter(|meta| &meta.id == id)
-            .cloned()
-            .collect();
-        let total = found.len();
-        return (found, total);
-    }
-    let mut matching: Vec<SessionMeta> = metas
+) -> (Vec<(SessionMeta, Vec<String>)>, usize) {
+    let explicit = args.session.is_some();
+    let mut found: Vec<(SessionMeta, Vec<String>)> = metas
         .iter()
-        .filter(|meta| meta.reviewer.is_none())
-        .filter(|meta| meta.updated_at > since)
-        .filter(|meta| !store::session_event_lines(root, &meta.id).is_empty())
-        .cloned()
+        .filter(|meta| args.session.as_ref().is_none_or(|id| &meta.id == id))
+        .filter(|meta| explicit || meta.reviewer.is_none())
+        .filter(|meta| explicit || meta.updated_at > since)
+        .filter_map(|meta| {
+            let lines = store::session_event_lines(root, &meta.id);
+            (explicit || !lines.is_empty()).then(|| (meta.clone(), lines))
+        })
         .collect();
-    matching.sort_by_key(|meta| (meta.updated_at, meta.id.clone()));
-    let total = matching.len();
-    matching.truncate(limit);
-    (matching, total)
+    found.sort_by_key(|(meta, _)| (meta.updated_at, meta.id.clone()));
+    let total = found.len();
+    if !explicit {
+        found.truncate(limit);
+    }
+    (found, total)
 }
 
 fn children_of<'a>(metas: &'a [SessionMeta], parent: &str) -> Vec<&'a SessionMeta> {
@@ -151,20 +174,6 @@ fn children_of<'a>(metas: &'a [SessionMeta], parent: &str) -> Vec<&'a SessionMet
         .collect();
     children.sort_by_key(|meta| (meta.updated_at, meta.id.clone()));
     children
-}
-
-/// Every Session a digest looks at: the shown ones and the subagents folded into them.
-fn folders(root: &DataRoot, sessions: &[SessionMeta], metas: &[SessionMeta]) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    for meta in sessions {
-        dirs.push(root.session_dir(&meta.id));
-        dirs.extend(
-            children_of(metas, &meta.id)
-                .into_iter()
-                .map(|child| root.session_dir(&child.id)),
-        );
-    }
-    dirs
 }
 
 fn load_metas(root: &DataRoot) -> Vec<SessionMeta> {
@@ -192,6 +201,7 @@ fn load_projects(root: &DataRoot) -> HashMap<String, PathBuf> {
 fn render_session(
     root: &DataRoot,
     meta: &SessionMeta,
+    lines: &[String],
     projects: &HashMap<String, PathBuf>,
     children: &[&SessionMeta],
     metas: &[SessionMeta],
@@ -207,9 +217,7 @@ fn render_session(
     out.push_str(&format!("- model: {}\n", meta.model));
     out.push_str(&format!("- created: {}\n", meta.created_at));
     out.push_str(&format!("- updated: {}\n\n", meta.updated_at));
-    out.push_str(&render_facts(&facts(&store::session_event_lines(
-        root, &meta.id,
-    ))));
+    out.push_str(&render_facts(&facts(lines)));
     for child in children {
         let role = child
             .reviewer
@@ -253,7 +261,7 @@ fn render_facts(facts: &Facts) -> String {
     if facts.tools.is_empty() {
         out.push_str("- none\n");
     }
-    for (index, call) in facts.tools.iter().enumerate() {
+    for call in &facts.tools {
         let exit = call
             .exit
             .map_or_else(String::new, |code| format!(" exit: {code}"));
@@ -263,9 +271,7 @@ fn render_facts(facts: &Facts) -> String {
             .map_or_else(String::new, |line| format!(" error: {line}"));
         out.push_str(&format!(
             "{}. `{}` in: {}{exit}{error}\n",
-            index + 1,
-            call.name,
-            call.input
+            call.seq, call.name, call.input
         ));
     }
     out.push_str("\n## Errors\n\n");
@@ -308,6 +314,7 @@ struct Usage {
 }
 
 struct ToolCall {
+    seq: u64,
     name: String,
     input: String,
     exit: Option<i32>,
@@ -316,7 +323,7 @@ struct ToolCall {
 
 fn facts(lines: &[String]) -> Facts {
     let mut facts = Facts::default();
-    let mut pending: HashMap<String, (String, String)> = HashMap::new();
+    let mut pending: HashMap<String, usize> = HashMap::new();
     for line in lines {
         let Ok(event) = serde_json::from_str::<SessionEvent>(line) else {
             continue;
@@ -341,20 +348,24 @@ fn facts(lines: &[String]) -> Facts {
                     .get("input")
                     .map(|value| cap(&value.to_string(), MAX_INPUT_CHARS))
                     .unwrap_or_default();
-                pending.insert(id, (name, input));
+                pending.insert(id, facts.tools.len());
+                facts.tools.push(ToolCall {
+                    seq: event.seq,
+                    name,
+                    input,
+                    exit: None,
+                    error: None,
+                });
             }
             EventKind::ToolFinished => {
                 let id = text(&event.data, "id").unwrap_or_default();
                 let output = text(&event.data, "output").unwrap_or_default();
-                let (name, input) = pending
-                    .remove(&id)
-                    .unwrap_or_else(|| ("tool".to_string(), String::new()));
-                facts.tools.push(ToolCall {
-                    name,
-                    input,
-                    exit: exit_status(&output),
-                    error: first_error_line(&output),
-                });
+                let Some(at) = pending.remove(&id) else {
+                    continue;
+                };
+                let call = &mut facts.tools[at];
+                call.exit = exit_status(&output);
+                call.error = first_error_line(&output);
             }
             EventKind::Usage => {
                 facts.usage.calls += 1;
@@ -416,10 +427,17 @@ fn exit_status(output: &str) -> Option<i32> {
 }
 
 fn first_error_line(output: &str) -> Option<String> {
+    let needle = b"error";
     output
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty() && line.to_lowercase().contains("error"))
+        .find(|line| {
+            !line.is_empty()
+                && line
+                    .as_bytes()
+                    .windows(needle.len())
+                    .any(|window| window.eq_ignore_ascii_case(needle))
+        })
         .map(|line| cap(line, MAX_ERROR_CHARS))
 }
 
@@ -490,11 +508,19 @@ fn skill_rows(
             project_roots.insert(root);
         }
     }
-    for project in project_roots {
+    for project in &project_roots {
         let root = project.join(tools::skills::PROJECT_SKILLS);
         if root.is_dir() {
             roots.push((root, true));
         }
+    }
+    let mut module_maps: HashMap<PathBuf, HashMap<String, Vec<String>>> = HashMap::new();
+    for project in &project_roots {
+        let by_module = tools::skills::modules(Some(global), project)
+            .into_iter()
+            .map(|module| (module.name, module.skills))
+            .collect();
+        module_maps.insert(project.clone(), by_module);
     }
     let meetings: Vec<(PathBuf, HashSet<String>, HashSet<String>)> = session_dirs
         .iter()
@@ -502,16 +528,16 @@ fn skill_rows(
             let project = project_of(projects, dir)?;
             let catalog = fs::read_to_string(dir.join("skill-catalog.md")).ok()?;
             let (listed, modules) = listed(&catalog);
-            let module_listed = module_members(&modules, &project, global);
+            let module_listed = module_members(&modules, &project, &module_maps);
             Some((project, listed, module_listed))
         })
         .collect();
     let mut rows = Vec::new();
     for (root, is_project) in roots {
         let skills = tools::skills::load(&root, is_project);
+        let usage = UsageLog::read(&root);
         for skill in skills {
             let bytes = fs::metadata(&skill.path).map_or(0, |meta| meta.len());
-            let reads = views(&root, &skill.name, window);
             let mut exposures = 0;
             let mut module_listed = 0;
             for (project, listed, members) in &meetings {
@@ -525,16 +551,16 @@ fn skill_rows(
                     module_listed += 1;
                 }
             }
-            let changes = unattributed(&root, &skill.name, since);
+            let changes = unattributed(&root, &skill.name, since, usage.attributed(&skill.name));
             rows.push(SkillRow {
                 root: root.display().to_string(),
-                name: skill.name,
+                name: skill.name.clone(),
                 origin: skill.origin,
                 hidden: skill.hidden,
                 bytes,
                 exposures,
                 module_listed,
-                reads,
+                reads: usage.views(&skill.name, window),
                 changes,
             });
         }
@@ -576,35 +602,73 @@ fn listed(catalog: &str) -> (HashSet<String>, HashSet<String>) {
     (names, modules)
 }
 
-fn module_members(modules: &HashSet<String>, project: &Path, global: &Path) -> HashSet<String> {
-    let mut members = HashSet::new();
-    for module in tools::skills::modules(Some(global), project) {
-        if modules.contains(&module.name) {
-            members.extend(module.skills);
-        }
-    }
-    members
+fn module_members(
+    modules: &HashSet<String>,
+    project: &Path,
+    maps: &HashMap<PathBuf, HashMap<String, Vec<String>>>,
+) -> HashSet<String> {
+    let Some(by_module) = maps.get(project) else {
+        return HashSet::new();
+    };
+    modules
+        .iter()
+        .filter_map(|name| by_module.get(name))
+        .flatten()
+        .cloned()
+        .collect()
 }
 
-/// `view` lines for one skill, in the window.
-fn views(root: &Path, name: &str, window: (u64, u64)) -> u64 {
-    let Ok(log) = fs::read_to_string(root.join(tools::skillstore::USAGE_LOG)) else {
-        return 0;
-    };
-    log.lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|entry| entry["op"].as_str() == Some("view"))
-        .filter(|entry| entry["name"].as_str() == Some(name))
-        .filter(|entry| {
-            let time = entry["time"].as_u64().unwrap_or(0).saturating_mul(1000);
-            time >= window.0 && time <= window.1
+/// One skills root's `.usage.jsonl`, grouped per skill name.
+#[derive(Default)]
+struct UsageLog {
+    views: HashMap<String, Vec<u64>>,
+    attributed: HashMap<String, u64>,
+}
+
+impl UsageLog {
+    /// The whole log once per root: `views` in millis, the newest attributed change
+    /// rounded up to the end of its whole second, like a file mtime would be.
+    fn read(root: &Path) -> Self {
+        let mut log = Self::default();
+        let Ok(text) = fs::read_to_string(root.join(tools::skillstore::USAGE_LOG)) else {
+            return log;
+        };
+        for entry in text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        {
+            let Some(name) = entry["name"].as_str() else {
+                continue;
+            };
+            let millis = entry["time"].as_u64().unwrap_or(0).saturating_mul(1000);
+            match entry["op"].as_str() {
+                Some("view") => log.views.entry(name.to_string()).or_default().push(millis),
+                Some("create" | "patch" | "write_file") => {
+                    let slot = log.attributed.entry(name.to_string()).or_insert(0);
+                    *slot = (*slot).max(millis.saturating_add(999));
+                }
+                _ => {}
+            }
+        }
+        log
+    }
+
+    fn views(&self, name: &str, window: (u64, u64)) -> u64 {
+        self.views.get(name).map_or(0, |times| {
+            times
+                .iter()
+                .filter(|millis| **millis >= window.0 && **millis <= window.1)
+                .count() as u64
         })
-        .count() as u64
+    }
+
+    fn attributed(&self, name: &str) -> Option<u64> {
+        self.attributed.get(name).copied()
+    }
 }
 
 /// Skill files changed after the window opened and after the newest attributed change.
-fn unattributed(root: &Path, name: &str, since: u64) -> Vec<String> {
-    let attributed = newest_change(root, name);
+fn unattributed(root: &Path, name: &str, since: u64, attributed: Option<u64>) -> Vec<String> {
     let mut files = Vec::new();
     files_under(&root.join(name), &mut files);
     let mut changes = Vec::new();
@@ -642,23 +706,6 @@ fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The newest `create`, `patch` or `write_file` time for one skill, in milliseconds.
-fn newest_change(root: &Path, name: &str) -> Option<u64> {
-    let log = fs::read_to_string(root.join(tools::skillstore::USAGE_LOG)).ok()?;
-    log.lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|entry| entry["name"].as_str() == Some(name))
-        .filter(|entry| {
-            matches!(
-                entry["op"].as_str(),
-                Some("create" | "patch" | "write_file")
-            )
-        })
-        .filter_map(|entry| entry["time"].as_u64())
-        .max()
-        .map(|time| time.saturating_mul(1000))
-}
-
 /// Replaces env-file values and secret shapes before anything is printed.
 struct Redactor {
     values: Vec<String>,
@@ -666,22 +713,20 @@ struct Redactor {
 }
 
 impl Redactor {
-    fn new() -> Self {
+    fn new(env_file: Option<&Path>) -> Self {
         let mut values: Vec<String> = Vec::new();
-        if let Some(path) = std::env::var_os("EMBERLOOP_ENV_FILE") {
-            if let Ok(text) = fs::read_to_string(path) {
-                for line in text.lines() {
-                    let line = line.trim();
-                    if line.starts_with('#') {
-                        continue;
-                    }
-                    let Some((_, value)) = line.split_once('=') else {
-                        continue;
-                    };
-                    let value = value.trim().trim_matches(['"', '\'']);
-                    if value.len() >= 8 {
-                        values.push(value.to_string());
-                    }
+        if let Some(text) = env_file.and_then(|path| fs::read_to_string(path).ok()) {
+            for line in text.lines() {
+                let line = line.trim();
+                if line.starts_with('#') {
+                    continue;
+                }
+                let Some((_, value)) = line.split_once('=') else {
+                    continue;
+                };
+                let value = value.trim().trim_matches(['"', '\'']);
+                if value.len() >= 8 {
+                    values.push(value.to_string());
                 }
             }
         }
@@ -732,7 +777,7 @@ mod tests {
     fn redacts_env_values_and_secret_shapes() {
         let redactor = Redactor {
             values: vec!["hunter2hunter2".to_string()],
-            secret: Redactor::new().secret,
+            secret: Redactor::new(None).secret,
         };
         assert_eq!(redactor.apply("token hunter2hunter2"), "token [redacted]");
         assert_eq!(
