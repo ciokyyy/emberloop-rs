@@ -239,6 +239,15 @@ flowchart TD
   `.usage.jsonl`, files changed by nobody) and the unattributed changes. Env-file
   values and secret-shaped strings are redacted. The first line on stdout names
   the data root and the window, including `through`, the newest Session shown.
+- **Retro.** `/ember-retro` in the composer expands to a read of
+  `el://skills/ember-retro` (the skill is `disable-model-invocation: true`, so only
+  the User starts it). The skill runs `emberloop-daemon digest --since <through of
+  the newest <data root>/retros/*.md> --out <session dir>/digest`, reads
+  `index.md` and the Session files, and changes a skill only when the same pattern
+  appears in at least 3 independent Sessions, through the root-named
+  `el://skills/...` paths. It writes its report to `<data root>/retros/<UTC>.md`,
+  which the next retro reads for `through:` and for the outcome check of its
+  changes.
 
 ## How the four fit together
 

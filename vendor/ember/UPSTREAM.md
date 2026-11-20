@@ -13,4 +13,4 @@ Upstream packs are merged by hand. To update, read the upstream change, port wha
 
 Emberloop-specific parts: one long-lived elephant Session that uses `compress` at stage and ticket boundaries instead of a fresh Session, goldfish personas spawned with `spawn role=goldfish`, the persistent `spec` and `standards` reviewer pair, numbered question rounds instead of one question per turn, and tier `mid` by default.
 
-`ember-build/references/operator-scripts-and-runbooks.md` is emberloop-rs original, like the emberloop-specific rules above: a ticket that ships an operator script or a runbook reads it.
+`ember-build/references/operator-scripts-and-runbooks.md` and the whole `ember-retro` skill are emberloop-rs original, like the emberloop-specific rules above: a ticket that ships an operator script or a runbook reads the first, and `ember-retro` reads the digests the daemon writes and the reports under `<data root>/retros/`.
