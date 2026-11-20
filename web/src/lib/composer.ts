@@ -11,7 +11,7 @@ export function slashQuery(draft: string, cursor: number): string | null {
   return cursor <= 1 + word.length ? word : null;
 }
 
-const SLASH = /^\/([A-Za-z0-9][\w-]*)(?:[ \t]+([\s\S]*))?$/;
+const SLASH = /^\/([A-Za-z0-9][\w.-]*)(?:\s+([\s\S]*))?$/;
 
 /** A draft that starts with a known skill name becomes the read instruction and the rest, as typed. */
 export function expandSlash(draft: string, knownNames: Iterable<string>): string {

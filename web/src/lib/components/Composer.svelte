@@ -77,7 +77,8 @@
   let listFailed = $state(false);
   let menuIndex = $state(0);
   let request = 0;
-  const word = $derived(text.startsWith('/') ? (text.slice(1).split(/\s/, 1)[0] ?? '') : null);
+  // The cursor-at-start query is the whole first word while a slash leads it.
+  const word = $derived(text.startsWith('/') ? slashQuery(text, 0) : null);
   const query = $derived(slashQuery(text, cursor));
   const menuOpen = $derived(query !== null && hits.length > 0);
 
@@ -85,6 +86,8 @@
     const value = word;
     if (value === null) {
       hits = [];
+      known = [];
+      listFailed = false;
       return;
     }
     const mine = ++request;

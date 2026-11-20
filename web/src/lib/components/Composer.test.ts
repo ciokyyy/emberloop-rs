@@ -168,6 +168,24 @@ describe('Composer slash commands', () => {
     await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
   });
 
+  it('moves the highlight with arrows and picks with Tab', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(skills(['ember-flow', 'ember-retro'])));
+    setup();
+    const box = screen.getByRole('textbox');
+    await fireEvent.input(box, { target: { value: '/ember' } });
+    const first = await screen.findByRole('option', { name: /ember-flow/ });
+    expect(first.getAttribute('aria-selected')).toBe('true');
+    await fireEvent.keyDown(box, { key: 'ArrowDown' });
+    const second = screen.getByRole('option', { name: /ember-retro/ });
+    expect(second.getAttribute('aria-selected')).toBe('true');
+    await fireEvent.keyDown(box, { key: 'ArrowDown' });
+    expect(first.getAttribute('aria-selected')).toBe('true');
+    await fireEvent.keyDown(box, { key: 'ArrowUp' });
+    expect(second.getAttribute('aria-selected')).toBe('true');
+    await fireEvent.keyDown(box, { key: 'Tab' });
+    expect((box as HTMLTextAreaElement).value).toBe('/ember-retro ');
+  });
+
   it('sends the expanded prompt after picking a skill', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(skills(['ember-flow'])));
     const onsubmit = vi.fn();
