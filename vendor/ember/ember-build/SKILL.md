@@ -13,32 +13,49 @@ Three laws hold for every change:
 2. No fix without a root cause first.
 3. No claim of "done", "fixed" or "passing" without fresh command output that shows it.
 
+A ticket that ships an operator script or runbook also reads `references/operator-scripts-and-runbooks.md` before writing either.
+
 ## The ticket loop
 
 For each ticket, lowest unblocked number first:
 
-1. Start. Record the ticket's absolute path. Capture the starting point before any edit: `git rev-parse HEAD` (no commits yet: use the empty tree `4b825dc642cb6eb9a060e54bf8d69288fbee4904`). Record pre-existing dirty files from `git status --short`; they are not part of this ticket. Set the ticket `Status: in progress`.
-2. Build it test first (below). Change only what the ticket needs: minimum code that solves it, no speculative abstractions, configurability or error handling for impossible scenarios, and no dead code "for the next ticket". Keep edits surgical: do not reformat, refactor or rewrite comments on untouched code; remove only imports, variables or helpers orphaned by your edit; report pre-existing dead code instead of deleting it unless the ticket asks.
-3. Update the docs the ticket lists, including the nearest `AGENTS.md`.
+1. Start. Record the ticket's absolute path. Capture the starting point before any edit: `git rev-parse HEAD` (no commits yet: use the empty tree `4b825dc642cb6eb9a060e54bf8d69288fbee4904`). Record pre-existing dirty files from `git status --short`; they are not part of this ticket. Set the ticket `Status: in progress`. When the ticket already claims `done` or `in progress`, prove that claim before editing: run the repository's check command and `git log --oneline` over the ticket's paths. Green code with a committed diff means the remaining work is the record, not the code.
+2. Build it test first (below). Change only what the ticket needs: minimum code that solves it, no speculative abstractions, configurability or error handling for impossible scenarios, and no dead code "for the next ticket". Keep edits surgical: do not reformat, refactor or rewrite comments on untouched code; remove only imports, variables or helpers orphaned by your edit; report pre-existing dead code instead of deleting it unless the ticket asks. Patch by syntactic unit: when a range replaces an import, include every import it held; when it replaces a block interior, account for the closing line so no orphan brace survives; a single-line range on the head of a multi-line expression drops its continuation lines. Read the range back and run the type gate after each patch, because these break only at the gate; after an insert, read the line after the range too, because a body that restates the old last line leaves a duplicate. A hunk that deletes a field or builder call can also swallow an unrelated adjacent line (a bootstrap `ensure`, a default): read the hunk's neighbours, because the type gate and tests stay green without a deleted side-effect call. Format only with the repository's own formatter, run through its gate command; a one-off `npx prettier` or package-wide formatter over an edited file reformats untouched lines, buries the ticket diff, and undoing it means reverting the whole file and reapplying your hunks from the ticket, because `git checkout -- <file>` takes every uncommitted hunk with it.
+3. Update the docs the ticket lists, including the nearest `AGENTS.md`. Correct the sentence that is now false instead of appending a new one beside it: a line that says a case cannot happen must name the new exception. When the ticket adds user-facing copy, use the glossary's preferred terms and grep the new strings for its `Avoid` list; a banned synonym is a review blocker.
 4. Verify (below): focused tests, then the repository's full check command once.
 5. Review: run `ember-review` with the ticket path and starting point. Pause all edits and builds until both reports arrive.
-6. Commit only when the user authorizes it and the checks pass. Stage files by name; never `git add -A`. Set the ticket `Status: done`.
+6. Set the ticket `Status: done` once both reports arrive with no open blocker and every acceptance criterion is checked, whether or not a commit exists; record "uncommitted" in the ticket and your report, because the commit is a separate decision only the user makes. A criterion another ticket owns, or a gate left red on a pre-existing finding, stays unchecked with a one-line pointer to the owning ticket or the pending user decision, and `Status: in progress` stays so the ticket still shows the open work; a tick that hides a deferral costs the next reader the whole recheck. A criterion that counts call sites or quotes line numbers can go stale after earlier tickets: recount the current tree, and annotate the new count in the ticket instead of forcing the code to match the old number. When the user authorizes it and the checks pass, commit with files staged by name; never `git add -A` on your own judgement. Before a commit-and-push request, check `git remote -v` and the branch upstream: with no remote there is no push, so report that with the commit instead of promising both. Stage only the ticket's paths, and when a shared file's hunks mix another stream's uncommitted work, name which hunks are the ticket's and ask for the scope: committing that file whole publishes the other stream, and the ticket's paths alone may not build until that stream commits. When the user answers an explicit whole-tree commit ("commit all"), that answer is the scope decision: `git add -A` runs then, and the commit body names the other streams it carries plus any build risk, because the commit is no longer the ticket alone. A phase commit after every ticket is done is also a scope decision: verify every `git status --short` entry belongs to the phase, stage those paths, and keep ignored secret files and tracked local telemetry (for example `.agents/skills/.usage.jsonl`) out of the index; confirm with `git diff --cached --name-only`.
 7. Compress the ticket's turns. Keep verbatim: ticket path, starting point, commit SHA, check command and result, any open finding. Then take the next ticket.
+
+When the build stops before the ticket is done (the user interrupts or redirects, or a blocker appears), stop editing at once and write the state into the ticket file: keep `Status: in progress`, tick only the criteria that hold, add `## Implemented so far (uncommitted)` listing each file and what changed, and `## Still to do` with the last check result and the next concrete step. The ticket is the handoff record; the user reads it instead of the diff.
+
+## Closing tickets whose code already landed
+
+A request to finish a phase or implement every ticket can arrive after the code landed and only the record went stale: unchecked criteria, `Status: in progress`, and caveat lines naming a red gate or an `uncommitted` tree. Triage before editing: list the unchecked criteria across the ticket files, run the gate they name, and match the ticket paths against `git log --oneline`. Costly work is done when the gate is green and the diff is committed; the tickets then need their evidence recorded, not their code rebuilt.
+
+- Tick a criterion only on fresh output from this session, and rewrite the caveat beside it to the same result. A green tick left next to "blocked only by" text sends the next reader into a recheck.
+- Map the design's item numbers to the ticket files before declaring a phase complete: a design says "item 20 first", and the ticket that carries it can have a different number.
+- When one batch patch touches the same criterion line in many ticket files, find each anchor below the header lines, because a status or summary line can contain the same words, and two ops on one line are refused as overlapping. Strip the read view's `N→` gutter before matching line text.
+- Record the phase's state once in the plan file the phase came from: a line naming the commits, the check result, and what is left. Operator and live checks belong there as remaining work, not as code.
 
 The Session stays alive across tickets. It remembers why each decision was made; `compress` keeps it lean. Do not start a new Session per ticket.
 
 ## Test first
 
-- Red: write one test for one behaviour, with a name that states the behaviour. Use real code; mock only what you cannot run.
+- Red: write one test for one behaviour, with a name that states the behaviour. Use real code; mock only what you cannot run. Assert exactly the contract the ticket or design records; a stricter rule you add (a minimum length, a format check) is an unrecorded decision and its failure message names the wrong cause.
 - A changed default or config value: test the behaviour it drives, read through the production mapping (for example the private settings-to-policy function, reached from the module's own test child), not `Default::default().x == N`. An equality test only restates the number; the behaviour test proves the value reaches the code that uses it, and still fails before the edit.
-- Verify red: run it. It must fail for the expected reason, not from a typo, a compile error or a missing fixture. A test that passes at once proves nothing; fix the test.
+- Verify red: run it. It must fail for the expected reason, not from a typo, a compile error or a missing fixture. A test that passes at once proves nothing; fix the test. A red run that only reports a missing new symbol (an undefined task name, a module that does not exist, an unimplemented export) proves the wiring, not the behaviour: add that symbol alone, run again, and make the behavioural assertion fail before implementing the behaviour. When an earlier layer already removes the trigger (a filter, allowlist or upstream guard the test cannot reach), a named acceptance test cannot go red: keep it as the end-to-end pin, state which new line it leaves unproven, and pass that gap to review instead of faking a seam.
 - Green: write the least code that passes it.
 - Verify green: run the test, then the suites the change can reach. Report every failure by name, even one you think is unrelated.
 - Refactor with tests green, then run them again.
 
 Code written before its test is deleted and rewritten test first. Skip the test only when the user agrees: throwaway prototypes, generated code, pure config. Hard to test means the design needs a seam; say so instead of skipping. For a bug, the first test reproduces the bug and fails.
 
-Good tests (details in `references/writing-good-tests.md`): name the production change that would make the test fail; derive expected values independently (never recompute them with code under test); assert behaviour, not that a mock was called; keep test-only code out of production; know a dependency's side effects before you mock it.
+Good tests (details in `references/writing-good-tests.md`): name the production change that would make the test fail; derive expected values independently (never recompute them with code under test); assert behaviour, not that a mock was called; keep test-only code out of production; know a dependency's side effects before you mock it. A privacy boundary needs one test per path that carries the field: the realtime row's hidden list and the server serializer's allowlist each get an assertion, including an unknown key so the serializer fails closed. A counter assertion starts from the fixture's seed, not zero: read the fixture's initial value, then state only the increments the production path adds, or the test fails on the fixture instead of the behaviour. A test for an absence (no marker, no stored record, no file) also drives the reader of that state to its not-found result: a bare `!contains` assertion passes whenever the code fails before the write it should have made.
+
+## Renames and bulk rewrites
+
+A pure identifier rename is one mechanical rewrite, not a patch per site: `grep -rl` the OLD name across code, tests, fixtures and docs, assert the exact occurrence count per file, replace, assert zero remain, then run the formatter and read the diff yourself. A ticket or design list of files is a starting point, not the whole set; construction sites in test files and fixtures are what a rename misses. When a count differs, read the file and correct the expectation before rewriting; never drop the assertion. Run the formatter after the rename, because new names reorder imports.
 
 ## Debugging
 
@@ -56,6 +73,8 @@ After three failed fixes, stop. The architecture is the likely problem; bring th
 
 Before any claim of status: name the command that proves it, run it fresh and in full, read the output and the exit status, then state the result with the evidence.
 
+Capture the status before you filter the output: `cmd > /tmp/out.log 2>&1; status=$?; tail -20 /tmp/out.log`. In a pipeline such as `cmd | tail`, `$?` is the viewer's status, so a failing check reads as a pass. A check run as a background job must end with `exit $status`: a trailing `echo status=$?` leaves the job's own exit status 0, so the runner reports success for a failed check. Capture with `cmd; status=$?`, not `${PIPESTATUS[0]}`: the harness shell is `sh`, where that expansion is a syntax error after the command already ran, so a successful commit reports failure.
+
 | Claim | Needs |
 | --- | --- |
 | Tests pass | Test output with 0 failures, this run |
@@ -68,6 +87,14 @@ Before any claim of status: name the command that proves it, run it fresh and in
 Words such as "should", "probably" or "seems to" mean you have not verified. Run the command.
 
 A check that fails only on its total time budget while every stage reports green is a cold-build overrun: rerun it once warm and report the overrun. Never raise, skip or soften the budget.
+
+A single test that times out in an otherwise green `nextest` run usually hit parallel-host load, not a regression: rerun that one by name and, when it passes in isolation, report both runs as a flake instead of claiming a clean pass or a broken build.
+
+A gate stage that regenerates committed artifacts and diffs them against `HEAD` (an OpenAPI snapshot, a generated schema) fails while those artifacts are uncommitted, however correct the content: prove the regeneration stage itself is green and idempotent, record the caveat in the ticket, and let the commit close it. Never "fix" it by regenerating again or hand-editing `HEAD`'s copy.
+
+A gate stage that fetches a floating tool (`bunx <tool>` with no pinned version) can go red on findings that pre-date the ticket when a newer release adds checks. Prove a finding is pre-existing before attributing it: `git status --short` shows its file unmodified and `git show <startingPoint>:<file>` matches. Record the command and the finding list in the ticket; leave out-of-scope files alone, because editing them to buy a green gate mixes another owner's work into the ticket diff. When the user authorizes clearing those findings, fix each at its root (delete an unused export or drop `export` when the symbol is internal, move a test-only package to `devDependencies` and refresh the lockfile, point an alias import at a relative path), rerun the same gate, and record the finding list in the ticket.
+
+On a Rust change, run the crate's clippy before the full check so a lint failure costs seconds, not the gate. A new lint such as `clippy::cognitive_complexity` means the branch belongs in a named helper that returns the decision: extract it and re-run instead of adding an `allow`.
 
 ## Delegating to workers
 

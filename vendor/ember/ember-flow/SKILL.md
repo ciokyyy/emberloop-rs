@@ -30,8 +30,13 @@ Read a stage skill whole with `read(path="el://skills/ember-<stage>/SKILL.md")` 
 - Small change that the user stated plainly (one place, no open decision): `ember-build` directly. A direct user instruction wins over every gate here.
 - Change with open decisions but small scope: `ember-grill`, then `ember-slice` from `decisions.md`. Skip design and audit.
 - Feature, refactor across modules, new interface, or anything costly to undo: all six stages.
+- User plans here and builds in another Session ("grill, design, slice, I'll implement elsewhere"): run the stages through `ember-slice`, then stop. End with a handoff note in `.scratch/<slug>/README.md` that names `decisions.md`, `design.md`, the ticket paths in order, and the check command. Done when each ticket stands alone for a Session that never saw this one.
 
 When unsure, recommend an entry point in one line and let the user correct it.
+
+## Find the artifact the user names
+
+A plan, phase or spec the user names often has no file of that name: a phase lives as a section inside the design that owns it, or as a runbook step list. Search the label text, not only filenames (`grep -rn "<label>" .scratch docs` and whatever planning directories the repository uses), then answer with the file and its heading or line numbers. A numbered spec filename is ordering, not the phase number it resembles. Report "no such plan" only after the label-text search came back empty.
 
 ## The elephant and the goldfish
 
@@ -43,6 +48,7 @@ Goldfish are fresh-context subagents: `ember-audit` goldfish, spec and standards
 
 - Disk is the contract. Every decision, design, ticket and report lives in a file under `.scratch/<slug>/` (or `GLOSSARY.md` and `docs/adr/`). A subagent must be able to do its job from files alone.
 - Compress at every boundary: after each stage and after each ticket. Keep verbatim in the summary: artifact paths, decision ids, ticket path, starting-point SHA, open findings, check commands and their last result.
+- Questions put to the user live on disk too. Before asking a numbered list, write it under `## Open questions` in `.scratch/<slug>/decisions.md` during grill (or `.scratch/<slug>/questions.md` in later stages) with number, full question, options, and your pick; the user answers by number ('1 yes, 2 no'), and a fold that drops the question text leaves those answers unmappable. When you fold, copy each open question verbatim with its number, and record each answer beside it in that file.
 - Search before you re-read. Use `search_context` for a folded detail, then `decompress` only when you need the exact words.
 - Reuse subagents. Steer a long-lived worker or reviewer pair across tickets; do not spawn a new one per ticket.
 - Use tier `mid` for every worker, scout and goldfish. Use `top` only when the user allows it.
