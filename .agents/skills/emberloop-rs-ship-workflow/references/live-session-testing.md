@@ -18,7 +18,7 @@ Use when a change must be proven against a real model, not only unit tests.
 ## A tool the Session itself calls
 
 - The Session that resumes after the update restart runs on the new daemon, and its tool declarations come from that daemon's MCP server, so a new argument is advertised without a harness restart: run the tool once with it set, read the tool result, the log it names, and a second call proving the state persisted (a stored key, a written file). No test Session and no HTTP route needed.
-- A background job's exit notice reads `exited (code unknown)`, because the notice path only ever sees a vanished pid; `background` `wait` carries the real exit code. Judge success by `wait` and the log, not by the notice text.
+- A background job writes its exit code to `<id>.exit` from an `EXIT` trap, so the notice, `list` and `wait` name the same real code (`exited (0)`). Only a job with no sidecar (signal-killed, or a record from an older daemon) reads `exited (code unknown)`. Judge success by `wait` and the log.
 - Pass the new argument explicitly: the call that omits it exercises the old path and proves nothing.
 
 ## Mechanics
