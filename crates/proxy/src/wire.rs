@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use prompts::PinnedPrompts;
 use serde_json::{json, Value};
@@ -291,18 +291,201 @@ fn remove_tools(request: &mut Value, matches_tool: fn(&Value) -> bool) {
 
 /// Bare tool name for filtering. Harnesses wrap MCP tools: `mcp__el__read` on most,
 /// `mcp_el_read` on Antigravity; `el_` is a bare prefix.
-fn tool_name(tool: &Value) -> &str {
-    let name = tool
-        .get("name")
-        .or_else(|| tool.pointer("/function/name"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+fn strip_tool_prefix(name: &str) -> &str {
     let bare = name
         .strip_prefix("mcp__el__")
         .or_else(|| name.strip_prefix("mcp__el_"))
         .or_else(|| name.strip_prefix("mcp_el_"))
         .unwrap_or_else(|| name.rsplit("__").next().unwrap_or(name));
     bare.strip_prefix("el_").unwrap_or(bare)
+}
+
+fn tool_name(tool: &Value) -> &str {
+    let name = tool
+        .get("name")
+        .or_else(|| tool.pointer("/function/name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    strip_tool_prefix(name)
+}
+
+/// The names a request declares, in every wire shape, with the Google envelope unwrapped.
+pub fn declared_tool_names(request: &Value) -> Vec<&str> {
+    let body = request.get("request").unwrap_or(request);
+    let mut names = Vec::new();
+    let Some(tools) = body.get("tools").and_then(Value::as_array) else {
+        return names;
+    };
+    for tool in tools {
+        if let Some(list) = tool.get("functionDeclarations").and_then(Value::as_array) {
+            names.extend(
+                list.iter()
+                    .filter_map(|declaration| declaration.get("name").and_then(Value::as_str)),
+            );
+            continue;
+        }
+        let name = tool
+            .get("name")
+            .or_else(|| tool.pointer("/function/name"))
+            .and_then(Value::as_str);
+        names.extend(name);
+    }
+    names
+}
+
+/// Bare name to declared wire name for this request's tools, per design D7. Only an unambiguous
+/// bare name the harness did not declare itself, and no proxy tool, gets one.
+pub fn tool_aliases(request: &Value) -> HashMap<String, String> {
+    let declared = declared_tool_names(request);
+    let known: HashSet<&str> = declared.iter().copied().collect();
+    let mut candidates: HashMap<&str, Option<&str>> = HashMap::new();
+    for full in declared.iter().copied() {
+        let bare = strip_tool_prefix(full);
+        if bare == full || known.contains(bare) || PROXY_TOOLS.contains(&bare) {
+            continue;
+        }
+        match candidates.get_mut(bare) {
+            None => {
+                candidates.insert(bare, Some(full));
+            }
+            Some(current) if current.is_some_and(|name| name != full) => *current = None,
+            Some(_) => {}
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(bare, full)| Some((bare.to_string(), full?.to_string())))
+        .collect()
+}
+
+fn rewrite_name(item: &mut Value, f: &mut impl FnMut(&mut String)) {
+    if let Some(Value::String(name)) = item.get_mut("name") {
+        f(name);
+    }
+}
+
+fn visit_google_candidates(value: &mut Value, f: &mut impl FnMut(&mut String)) {
+    let candidates = match value {
+        Value::Array(list) => list.as_mut_slice(),
+        _ => {
+            let Some(list) = value.get_mut("candidates").and_then(Value::as_array_mut) else {
+                return;
+            };
+            list.as_mut_slice()
+        }
+    };
+    for candidate in candidates {
+        let parts = candidate
+            .get_mut("content")
+            .and_then(|content| content.get_mut("parts"))
+            .and_then(Value::as_array_mut);
+        for part in parts.into_iter().flatten() {
+            if let Some(call) = part.get_mut("functionCall") {
+                rewrite_name(call, f);
+            }
+        }
+    }
+}
+
+fn visit_responses_item(item: &mut Value, f: &mut impl FnMut(&mut String)) {
+    if item.get("type").and_then(Value::as_str) == Some("function_call") {
+        rewrite_name(item, f);
+    }
+}
+
+/// Every emitted tool name in one response, whichever wire carried it.
+fn visit_response_tool_names(wire: WireKind, payload: &mut Value, mut f: impl FnMut(&mut String)) {
+    match wire {
+        WireKind::Anthropic => {
+            if let Some(block) = payload.get_mut("content_block") {
+                if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                    rewrite_name(block, &mut f);
+                }
+            }
+            let blocks = payload.get_mut("content").and_then(Value::as_array_mut);
+            for block in blocks.into_iter().flatten() {
+                if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                    rewrite_name(block, &mut f);
+                }
+            }
+        }
+        WireKind::OpenAiChat => {
+            let choices = payload.get_mut("choices").and_then(Value::as_array_mut);
+            for choice in choices.into_iter().flatten() {
+                for key in ["message", "delta"] {
+                    let calls = choice
+                        .get_mut(key)
+                        .and_then(|message| message.get_mut("tool_calls"))
+                        .and_then(Value::as_array_mut);
+                    for call in calls.into_iter().flatten() {
+                        if let Some(function) = call.get_mut("function") {
+                            rewrite_name(function, &mut f);
+                        }
+                    }
+                }
+            }
+        }
+        WireKind::OpenAiResponses => {
+            if let Some(item) = payload.get_mut("item") {
+                visit_responses_item(item, &mut f);
+            }
+            let output = payload.get_mut("output").and_then(Value::as_array_mut);
+            for item in output.into_iter().flatten() {
+                visit_responses_item(item, &mut f);
+            }
+            let output = payload
+                .get_mut("response")
+                .and_then(|response| response.get_mut("output"))
+                .and_then(Value::as_array_mut);
+            for item in output.into_iter().flatten() {
+                visit_responses_item(item, &mut f);
+            }
+        }
+        WireKind::Google => {
+            if let Some(candidates) = payload.get_mut("candidates") {
+                visit_google_candidates(candidates, &mut f);
+            }
+            if let Some(response) = payload.get_mut("response") {
+                visit_google_candidates(response, &mut f);
+            }
+        }
+    }
+}
+
+/// Log every emitted name the request never declared, no alias rewrote and no proxy tool owns.
+pub fn note_unknown_tool_names(
+    wire: WireKind,
+    payload: &mut Value,
+    declared: &HashSet<String>,
+    aliases: &HashMap<String, String>,
+) {
+    visit_response_tool_names(wire, payload, |name| {
+        if declared.contains(name.as_str())
+            || aliases.contains_key(name.as_str())
+            || PROXY_TOOLS.contains(&name.as_str())
+        {
+            return;
+        }
+        tracing::debug!(tool = %name, ?wire, "proxy forwarded a tool name the request never declared");
+    });
+}
+
+/// Rewrite every emitted tool name through `aliases`; true when one changed.
+pub fn rewrite_response_tool_names(
+    wire: WireKind,
+    payload: &mut Value,
+    aliases: &HashMap<String, String>,
+) -> bool {
+    let mut changed = false;
+    visit_response_tool_names(wire, payload, |name| {
+        let Some(declared) = aliases.get(name.as_str()) else {
+            return;
+        };
+        tracing::debug!(bare = %name, declared = %declared, ?wire, "proxy normalized a bare tool name");
+        *name = declared.clone();
+        changed = true;
+    });
+    changed
 }
 
 fn is_edit_tool(tool: &Value) -> bool {
@@ -1706,5 +1889,160 @@ mod tests {
             agy["tools"][0]["functionDeclarations"],
             json!([{"name": "mcp_el_read"}, {"name": "mcp_el_grep"}])
         );
+    }
+
+    #[test]
+    fn tool_aliases_maps_every_wire_name_shape_to_its_declared_name() {
+        let shapes = [
+            (
+                json!({"tools": [{"name": "mcp__el__read", "input_schema": {}}]}),
+                "mcp__el__read",
+            ),
+            (
+                json!({"tools": [{"type": "function", "function": {"name": "mcp__el__read"}}]}),
+                "mcp__el__read",
+            ),
+            (
+                json!({"tools": [{"type": "function", "name": "mcp__el__read"}]}),
+                "mcp__el__read",
+            ),
+            (
+                json!({"request": {"tools": [{"functionDeclarations": [{"name": "mcp_el_read"}]}]}}),
+                "mcp_el_read",
+            ),
+        ];
+        for (request, declared) in shapes {
+            let aliases = tool_aliases(&request);
+            assert_eq!(
+                aliases.get("read").map(String::as_str),
+                Some(declared),
+                "{request}"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_aliases_keeps_declared_bare_ambiguous_and_proxy_names_out() {
+        let request = json!({"tools": [
+            {"name": "read"},
+            {"name": "mcp__el__grep"},
+            {"name": "mcp_el_grep"},
+            {"name": "mcp__el__compress"},
+            {"name": "mcp__el__decompress"},
+            {"name": "el_search_context"},
+            {"name": "el_acp_status"},
+            {"name": "bash"}
+        ]});
+        let aliases = tool_aliases(&request);
+        assert!(!aliases.contains_key("read"), "{aliases:?}");
+        assert!(!aliases.contains_key("grep"), "{aliases:?}");
+        assert!(!aliases.contains_key("compress"), "{aliases:?}");
+        assert!(!aliases.contains_key("search_context"), "{aliases:?}");
+        assert!(!aliases.contains_key("decompress"), "{aliases:?}");
+        assert!(!aliases.contains_key("acp_status"), "{aliases:?}");
+        assert!(!aliases.contains_key("bash"), "{aliases:?}");
+    }
+
+    #[test]
+    fn rewrite_response_tool_names_covers_all_four_wires() {
+        let aliases = HashMap::from([
+            ("read".to_string(), "mcp__el__read".to_string()),
+            ("grep".to_string(), "el_grep".to_string()),
+        ]);
+        let cases = [
+            (
+                WireKind::Anthropic,
+                json!({"content": [
+                    {"type": "text", "text": "x"},
+                    {"type": "tool_use", "id": "t1", "name": "read", "input": {}}
+                ]}),
+                "/content/1/name",
+                "mcp__el__read",
+            ),
+            (
+                WireKind::Anthropic,
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "t1", "name": "grep"}}),
+                "/content_block/name",
+                "el_grep",
+            ),
+            (
+                WireKind::OpenAiChat,
+                json!({"choices": [{"message": {"tool_calls": [{"function": {"name": "read"}}]}}]}),
+                "/choices/0/message/tool_calls/0/function/name",
+                "mcp__el__read",
+            ),
+            (
+                WireKind::OpenAiChat,
+                json!({"choices": [{"delta": {"tool_calls": [{"function": {"name": "grep"}}]}}]}),
+                "/choices/0/delta/tool_calls/0/function/name",
+                "el_grep",
+            ),
+            (
+                WireKind::OpenAiResponses,
+                json!({"output": [{"type": "function_call", "name": "read"}]}),
+                "/output/0/name",
+                "mcp__el__read",
+            ),
+            (
+                WireKind::OpenAiResponses,
+                json!({"type": "response.output_item.added", "item": {"type": "function_call", "name": "grep"}}),
+                "/item/name",
+                "el_grep",
+            ),
+            (
+                WireKind::OpenAiResponses,
+                json!({"type": "response.completed", "response": {"output": [{"type": "function_call", "name": "read"}]}}),
+                "/response/output/0/name",
+                "mcp__el__read",
+            ),
+            (
+                WireKind::Google,
+                json!({"candidates": [{"content": {"parts": [{"functionCall": {"name": "grep"}}]}}]}),
+                "/candidates/0/content/parts/0/functionCall/name",
+                "el_grep",
+            ),
+            (
+                WireKind::Google,
+                json!({"response": {"candidates": [{"content": {"parts": [{"functionCall": {"name": "read"}}]}}]}}),
+                "/response/candidates/0/content/parts/0/functionCall/name",
+                "mcp__el__read",
+            ),
+        ];
+        for (wire, mut payload, pointer, want) in cases {
+            assert!(
+                rewrite_response_tool_names(wire, &mut payload, &aliases),
+                "{wire:?} did not rewrite {pointer}"
+            );
+            assert_eq!(
+                payload.pointer(pointer).and_then(Value::as_str),
+                Some(want),
+                "{wire:?}"
+            );
+            assert!(
+                !rewrite_response_tool_names(wire, &mut payload, &aliases),
+                "{wire:?} rewrote {pointer} twice"
+            );
+        }
+    }
+
+    #[test]
+    fn rewrite_response_tool_names_leaves_unaliased_names_alone() {
+        let aliases = HashMap::from([("read".to_string(), "mcp__el__read".to_string())]);
+        let mut payload = json!({"content": [
+            {"type": "tool_use", "id": "t1", "name": "bash"},
+            {"type": "text", "text": "read"}
+        ]});
+        assert!(!rewrite_response_tool_names(
+            WireKind::Anthropic,
+            &mut payload,
+            &aliases
+        ));
+        assert_eq!(payload["content"][0]["name"], "bash");
+        assert_eq!(payload["content"][1]["text"], "read");
+        assert!(!rewrite_response_tool_names(
+            WireKind::Anthropic,
+            &mut payload,
+            &HashMap::new()
+        ));
     }
 }

@@ -5122,3 +5122,298 @@ async fn a_goldfish_with_an_unknown_persona_is_refused_before_any_upstream_call(
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(fixture.fake.calls(), 0);
 }
+
+/// Answers every wire from a script: a bare `read` tool call, streaming or buffered.
+async fn bare_tool_name_upstream(uri: axum::http::Uri, Json(body): Json<Value>) -> Response {
+    let path = uri.path();
+    let wire = if path.contains("v1internal") {
+        WireKind::Google
+    } else if path.ends_with("/chat/completions") {
+        WireKind::OpenAiChat
+    } else if path.ends_with("/responses") {
+        WireKind::OpenAiResponses
+    } else {
+        WireKind::Anthropic
+    };
+    let streaming = match wire {
+        WireKind::Google => path.ends_with(":streamGenerateContent"),
+        _ => body["stream"] == json!(true),
+    };
+    let event = |payload: Value| format!("data: {payload}\n\n");
+    let reply = match (wire, streaming) {
+        (WireKind::Google, true) => [
+            event(json!({"response": {"candidates": [{"content": {"role": "model", "parts": [
+                {"functionCall": {"id": "fc1", "name": "read", "args": {"path": "a"}}}
+            ]}}]}})),
+            event(json!({"response": {"candidates": [{"content": {"role": "model", "parts": [
+                {"text": "done"}
+            ]}, "finishReason": "STOP"}]}})),
+        ]
+        .concat(),
+        (WireKind::Google, false) => json!({"response": {"candidates": [{
+            "content": {"role": "model", "parts": [
+                {"functionCall": {"id": "fc1", "name": "read", "args": {}}}
+            ]},
+            "finishReason": "STOP"
+        }]}})
+        .to_string(),
+        (WireKind::OpenAiChat, true) => [
+            event(json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
+                "type": "function", "function": {"name": "read", "arguments": "{}"}}]}}]})),
+            event(json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})),
+            "data: [DONE]\n\n".to_string(),
+        ]
+        .concat(),
+        (WireKind::OpenAiChat, false) => json!({"choices": [{
+            "message": {"role": "assistant", "content": null, "tool_calls": [{"id": "c1",
+                "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+            "finish_reason": "tool_calls"
+        }]})
+        .to_string(),
+        (WireKind::OpenAiResponses, true) => [
+            event(json!({"type": "response.output_item.added", "item": {"type": "function_call",
+                "id": "fc1", "call_id": "c1", "name": "read", "arguments": ""}})),
+            event(json!({"type": "response.completed", "response": {"output": [{"type": "function_call",
+                "id": "fc1", "call_id": "c1", "name": "read", "arguments": "{}"}]}})),
+        ]
+        .concat(),
+        (WireKind::OpenAiResponses, false) => json!({"id": "r1", "output": [{"type": "function_call",
+            "id": "fc1", "call_id": "c1", "name": "read", "arguments": "{}"}]})
+        .to_string(),
+        (WireKind::Anthropic, true) => "event: message_start\n\
+             data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\"}}\n\n\
+             event: content_block_start\n\
+             data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+             event: content_block_delta\n\
+             data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello once\"}}\n\n\
+             event: content_block_stop\n\
+             data: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+             event: content_block_start\n\
+             data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"read\",\"input\":{}}}\n\n\
+             event: content_block_stop\n\
+             data: {\"type\":\"content_block_stop\",\"index\":1}\n\n\
+             event: message_delta\n\
+             data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n\
+             event: message_stop\n\
+             data: {\"type\":\"message_stop\"}\n\n"
+            .to_string(),
+        (WireKind::Anthropic, false) => json!({"id": "msg_1", "type": "message", "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t1", "name": "read", "input": {}}]})
+        .to_string(),
+    };
+    let content_type = if streaming {
+        "text/event-stream"
+    } else {
+        "application/json"
+    };
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(reply))
+        .unwrap()
+}
+
+fn bare_name_request(wire: WireKind, stream: bool) -> (&'static str, Value, &'static str) {
+    match wire {
+        WireKind::Google => (
+            "v1internal:streamGenerateContent",
+            json!({"request": {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "tools": [
+                {"functionDeclarations": [{"name": "mcp_el_read",
+                    "parameters": {"type": "OBJECT", "properties": {}}}]}
+            ]}}),
+            "mcp_el_read",
+        ),
+        WireKind::OpenAiChat => {
+            let name = if stream { "el_read" } else { "mcp__el__read" };
+            (
+                "v1/chat/completions",
+                json!({"model": "glm-5", "stream": stream,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [{"type": "function", "function": {"name": name}}]}),
+                name,
+            )
+        }
+        WireKind::OpenAiResponses => (
+            "v1/responses",
+            json!({"model": "gpt-5", "stream": stream, "input": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "name": "mcp__el__read"}]}),
+            "mcp__el__read",
+        ),
+        WireKind::Anthropic => (
+            "v1/v1/messages",
+            json!({"model": "claude-sonnet", "max_tokens": 64, "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"name": "mcp__el__read", "input_schema": {"type": "object"}}]}),
+            "mcp__el__read",
+        ),
+    }
+}
+
+#[tokio::test]
+async fn a_bare_tool_name_comes_back_as_the_declared_name_on_every_wire() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = AxumRouter::new()
+        .route("/v1internal:generateContent", post(bare_tool_name_upstream))
+        .route(
+            "/v1internal:streamGenerateContent",
+            post(bare_tool_name_upstream),
+        )
+        .route(
+            "/inference/go/openai/v1/chat/completions",
+            post(bare_tool_name_upstream),
+        )
+        .route(
+            "/inference/go/openai/v1/responses",
+            post(bare_tool_name_upstream),
+        )
+        .route(
+            "/inference/go/anthropic/v1/messages",
+            post(bare_tool_name_upstream),
+        );
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let root = format!("http://{addr}");
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config
+            .with_upstream(root.clone())
+            .with_opencode_upstream(format!("{root}/inference/go"))
+    })
+    .await;
+
+    for wire in [
+        WireKind::Google,
+        WireKind::OpenAiChat,
+        WireKind::OpenAiResponses,
+        WireKind::Anthropic,
+    ] {
+        for stream in [true, false] {
+            let (path, request, declared) = bare_name_request(wire, stream);
+            let path = if wire == WireKind::Google && !stream {
+                "v1internal:generateContent"
+            } else {
+                path
+            };
+            let (status, bytes) = send(&fixture.state, &fixture.token, path, request).await;
+            assert_eq!(status, StatusCode::OK, "{wire:?} stream={stream}");
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                text.contains(declared),
+                "{wire:?} stream={stream} kept the bare name: {text}"
+            );
+            assert!(
+                !text.contains("\"name\":\"read\"") && !text.contains("\"name\": \"read\""),
+                "{wire:?} stream={stream} emitted the bare name: {text}"
+            );
+            if wire == WireKind::Anthropic && stream {
+                assert_eq!(
+                    text.matches("event: content_block_start").count(),
+                    2,
+                    "{text}"
+                );
+                assert_eq!(text.matches("hello once").count(), 1, "{text}");
+            }
+        }
+    }
+}
+
+/// Answers a Google buffered call with bare names a Goldfish or Scout allowlist strips.
+async fn stripped_tool_upstream() -> Response {
+    Json(json!({"response": {"candidates": [{
+        "content": {"role": "model", "parts": [
+            {"functionCall": {"id": "fc1", "name": "execute", "args": {}}},
+            {"functionCall": {"id": "fc2", "name": "write", "args": {}}},
+            {"functionCall": {"id": "fc3", "name": "edit", "args": {}}}
+        ]},
+        "finishReason": "STOP"
+    }]}}))
+    .into_response()
+}
+
+#[tokio::test]
+async fn a_bare_name_for_a_tool_the_request_strips_is_never_aliased() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = AxumRouter::new().route("/v1internal:generateContent", post(stripped_tool_upstream));
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_upstream(format!("http://{addr}"))
+    })
+    .await;
+    let root = fixture.projects.get("proj_1").await.unwrap().root;
+    let agents = root.join(".agents/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("p.md"),
+        "---\nname: egm-test\ndescription: d\n---\nBODY\n",
+    )
+    .unwrap();
+    mark_goldfish(&fixture, "egm-test").await;
+
+    let (status, bytes) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "tools": [
+            {"functionDeclarations": [
+                {"name": "mcp__el__execute", "parameters": {"type": "OBJECT", "properties": {}}},
+                {"name": "mcp__el__read", "parameters": {"type": "OBJECT", "properties": {}}}
+            ]}
+        ]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("\"name\":\"execute\""), "{text}");
+    assert!(text.contains("\"name\":\"write\""), "{text}");
+    assert!(text.contains("\"name\":\"edit\""), "{text}");
+    assert!(!text.contains("mcp__el__execute"), "{text}");
+}
+
+#[tokio::test]
+async fn a_bare_name_for_a_tool_a_scout_strips_is_never_aliased() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = AxumRouter::new().route("/v1internal:generateContent", post(stripped_tool_upstream));
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fixture = fixture_config(FakeUpstream::new(), |config| {
+        config.with_upstream(format!("http://{addr}"))
+    })
+    .await;
+    let mut meta = fixture.sessions.get("ses_1").await.unwrap();
+    meta.reviewer = Some(store::sessions::ReviewerAssignment {
+        parent_id: "parent".into(),
+        role: "scout".into(),
+        ticket_path: String::new(),
+        starting_point: String::new(),
+        tier: None,
+        persona: None,
+    });
+    fixture.sessions.save(&meta).await.unwrap();
+
+    let (status, bytes) = send(
+        &fixture.state,
+        &fixture.token,
+        "v1internal:generateContent",
+        json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "tools": [
+            {"functionDeclarations": [
+                {"name": "mcp__el__edit", "parameters": {"type": "OBJECT", "properties": {}}},
+                {"name": "mcp__el__read", "parameters": {"type": "OBJECT", "properties": {}}}
+            ]}
+        ]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("\"name\":\"edit\""), "{text}");
+    assert!(!text.contains("mcp__el__edit"), "{text}");
+}
+
+#[test]
+fn replace_sse_data_keeps_event_lines_and_writes_a_multiline_payload_once() {
+    let event = b"event: content_block_start\ndata: {\"a\":1,\ndata: \"b\":2}\n";
+    let out = replace_sse_data(event, &json!({"a": 1, "b": 2})).unwrap();
+    let text = String::from_utf8_lossy(&out);
+    assert_eq!(text.matches("data:").count(), 1, "{text}");
+    assert!(text.starts_with("event: content_block_start\n"), "{text}");
+    assert!(text.contains("\"a\":1"), "{text}");
+    assert!(text.ends_with("\n\n"), "{text}");
+}

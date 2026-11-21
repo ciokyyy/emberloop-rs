@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
@@ -714,6 +714,7 @@ async fn buffered_generation(
     window: usize,
     mut round_started: std::time::Instant,
 ) -> Result<Response<Body>, ProxyError> {
+    let aliases = crate::wire::tool_aliases(&request);
     let mut final_response = None;
     let mut current = Some(first);
     let mut compress_guard = CompressGuard::default();
@@ -756,9 +757,23 @@ async fn buffered_generation(
         store_proxy_splice(&runtime, &turns, after)?;
     }
 
-    let Some((status, content_type, bytes)) = final_response else {
+    let Some((status, content_type, mut bytes)) = final_response else {
         return Err(ProxyError::ToolRoundLimit);
     };
+    if !aliases.is_empty() {
+        if let Ok(mut payload) = serde_json::from_slice::<Value>(&bytes) {
+            if crate::wire::rewrite_response_tool_names(wire, &mut payload, &aliases) {
+                bytes = Bytes::from(serde_json::to_vec(&payload).map_err(ProxyError::Json)?);
+            }
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let declared: HashSet<String> = crate::wire::declared_tool_names(&request)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
+                crate::wire::note_unknown_tool_names(wire, &mut payload, &declared, &aliases);
+            }
+        }
+    }
     let sent = outgoing_body(&runtime, wire, &request);
     let duration_ms = round_started.elapsed().as_millis() as u64;
     publish_usage(
@@ -2127,6 +2142,10 @@ struct SseState {
     runtime: Arc<SessionRuntime>,
     session_id: String,
     wire: WireKind,
+    /// Bare tool names this request's declared tools make unambiguous, per design D7.
+    tool_aliases: HashMap<String, String>,
+    /// The names that request declared, kept to tell a hallucinated tool name from a real one.
+    declared_tools: HashSet<String>,
     url: String,
     headers: HeaderMap,
     request: Value,
@@ -2184,6 +2203,11 @@ impl SseState {
         window: usize,
         call_started: std::time::Instant,
     ) -> Self {
+        let tool_aliases = crate::wire::tool_aliases(&request);
+        let declared_tools: HashSet<String> = crate::wire::declared_tool_names(&request)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
         Self {
             proxy,
             runtime,
@@ -2192,7 +2216,9 @@ impl SseState {
             url,
             headers,
             request,
+            tool_aliases,
             stream: Some(response.bytes_stream().boxed()),
+            declared_tools,
             pending: Vec::new(),
             forward: VecDeque::new(),
             rounds: 1,
@@ -2368,7 +2394,7 @@ impl SseState {
     }
 
     async fn process_event(&mut self, event: &[u8]) -> Result<Option<Bytes>, ProxyError> {
-        let raw = delimited(event);
+        let mut raw = delimited(event);
         let text = String::from_utf8_lossy(event);
         let Some(data) = sse_data(&text) else {
             return Ok(Some(raw));
@@ -2376,6 +2402,17 @@ impl SseState {
         let Ok(mut payload) = serde_json::from_str::<Value>(&data) else {
             return Ok((!self.proxy_round || data.trim() != "[DONE]").then_some(raw));
         };
+        if crate::wire::rewrite_response_tool_names(self.wire, &mut payload, &self.tool_aliases) {
+            raw = replace_sse_data(event, &payload)?;
+        }
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            crate::wire::note_unknown_tool_names(
+                self.wire,
+                &mut payload,
+                &self.declared_tools,
+                &self.tool_aliases,
+            );
+        }
         if self.wire == WireKind::Anthropic {
             self.anthropic.observe(&payload);
         }
@@ -2986,6 +3023,32 @@ fn delimited(event: &[u8]) -> Bytes {
     bytes.extend_from_slice(event);
     bytes.extend_from_slice(b"\n\n");
     Bytes::from(bytes)
+}
+
+/// One SSE event with its `data:` payload replaced: every other line, and the delimiters, stay
+/// byte-identical so `event:`, `id:` and `retry:` reach the harness as the provider sent them. A
+/// multi-line `data:` field is joined by `sse_data`, so the payload lands once, on its first line.
+fn replace_sse_data(event: &[u8], payload: &Value) -> Result<Bytes, ProxyError> {
+    let text = String::from_utf8_lossy(event);
+    let body = serde_json::to_string(payload).map_err(ProxyError::Json)?;
+    let mut out = String::with_capacity(text.len() + body.len());
+    let mut replaced = false;
+    for line in text.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        if content.starts_with("data:") {
+            if !replaced {
+                out.push_str("data: ");
+                out.push_str(&body);
+                if line.ends_with('\n') {
+                    out.push('\n');
+                }
+                replaced = true;
+            }
+            continue;
+        }
+        out.push_str(line);
+    }
+    Ok(delimited(out.as_bytes()))
 }
 
 /// The next buffered event, processed; `Ok(None)` swallows it, `None` means
