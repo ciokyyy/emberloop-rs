@@ -107,6 +107,8 @@ pub struct ToolConfig {
     pub capture_mcp_output: bool,
     /// Tool names whose failures persist under `spill_dir/failed_calls/` for `retry_call`.
     pub retry_allowlist: BTreeSet<String>,
+    /// A persistent `execute` interpreter above this RSS warns; `None` disables the report-only check.
+    pub repl_rss_warn_bytes: Option<u64>,
 }
 impl ToolConfig {
     pub fn new(root: impl Into<PathBuf>, spill_dir: impl Into<PathBuf>) -> Self {
@@ -133,6 +135,7 @@ impl ToolConfig {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+            repl_rss_warn_bytes: Some(512 * 1024 * 1024),
         }
     }
 }
@@ -158,6 +161,8 @@ pub struct Toolbox {
     failed_calls: failedcalls::FailedCallStore,
     /// A graph RPC failure spends the rest of the 60s cooldown, so `find` goes local first.
     graph_unhealthy_until: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    /// One interpreter per Session, shared by every clone of this Toolbox.
+    repl: Option<Arc<execute::ReplRuntime>>,
 }
 
 /// The only tools a goldfish may call; the proxy declares exactly these and the tools side denies
@@ -211,6 +216,7 @@ impl Toolbox {
             mcp,
             failed_calls,
             graph_unhealthy_until: Arc::new(std::sync::Mutex::new(None)),
+            repl: Some(Arc::new(execute::ReplRuntime::new())),
         })
     }
 
@@ -265,6 +271,33 @@ impl Toolbox {
 
     pub fn spill_dir(&self) -> &Path {
         &self.config.spill_dir
+    }
+
+    pub(crate) fn repl(&self) -> Option<&Arc<execute::ReplRuntime>> {
+        self.repl.as_ref()
+    }
+
+    pub(crate) fn repl_rss_warn_bytes(&self) -> Option<u64> {
+        self.config.repl_rss_warn_bytes
+    }
+
+    /// A clone that reaches no interpreter: any long-lived task that keeps a Toolbox alive must use
+    /// this, or the REPL's child and task outlive the Session that owns it.
+    pub(crate) fn without_repl(&self) -> Self {
+        Self {
+            repl: None,
+            ..self.clone()
+        }
+    }
+
+    /// The Session's own environment, shared by bash, the REPL and background jobs.
+    pub(crate) fn apply_session_env(&self, cmd: &mut tokio::process::Command) {
+        if let Some(session_dir) = self.config.spill_dir.parent() {
+            cmd.env("EMBERLOOP_SESSION_DIR", session_dir);
+        }
+        if let Some(global_skills) = self.global_skills() {
+            cmd.env("EMBERLOOP_GLOBAL_SKILLS", global_skills);
+        }
     }
 
     pub fn seen(&self) -> &SeenLines {

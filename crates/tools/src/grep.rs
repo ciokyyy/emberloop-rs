@@ -5,7 +5,7 @@ use glob::Pattern;
 use ignore::WalkBuilder;
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::tag::{content_hash, lines_of};
 use crate::{ToolError, ToolResult, Toolbox};
@@ -27,7 +27,7 @@ struct GrepArgs {
     context: usize,
     #[serde(default)]
     max_results: Option<usize>,
-    /// `content` (default), `files` or `count`.
+    /// `content` (default), `files`, `count` or `json`.
     #[serde(default)]
     output_mode: Option<String>,
 }
@@ -153,17 +153,40 @@ fn scan_file(path: &Path, root: &Path, regex: &Regex, limit: usize) -> Option<Fi
 }
 
 fn render(args: &GrepArgs, hits: &[FileHits]) -> ToolResult<String> {
+    let mode = args.output_mode.as_deref().unwrap_or("content");
+    if !matches!(mode, "content" | "files" | "count" | "json") {
+        return Err(ToolError::msg(format!(
+            "unknown output_mode {mode:?}; use content, files, count or json"
+        )));
+    }
+    if mode == "json" {
+        return Ok(render_json(hits));
+    }
     if hits.is_empty() {
         return Ok(format!("no matches for {:?}\n", args.pattern));
     }
-    match args.output_mode.as_deref().unwrap_or("content") {
+    match mode {
         "files" => Ok(render_files(hits)),
         "count" => Ok(render_counts(hits)),
-        "content" => Ok(render_content(args.context, hits)),
-        other => Err(ToolError::msg(format!(
-            "unknown output_mode {other:?}; use content, files or count"
-        ))),
+        _ => Ok(render_content(args.context, hits)),
     }
+}
+
+/// One object per match, so a script reads the line without parsing `path:line:text`.
+fn render_json(hits: &[FileHits]) -> String {
+    let rows: Vec<Value> = hits
+        .iter()
+        .flat_map(|hit| {
+            hit.matches.iter().map(|&line| {
+                json!({
+                    "path": hit.display,
+                    "line": line,
+                    "text": hit.lines[line - 1],
+                })
+            })
+        })
+        .collect();
+    serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string())
 }
 
 fn render_files(hits: &[FileHits]) -> String {
@@ -235,4 +258,134 @@ fn display_path(path: &Path, root: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tag::content_hash;
+    use crate::ToolConfig;
+    use serde_json::json;
+
+    fn toolbox(dir: &Path) -> Toolbox {
+        let root = dir.join("project");
+        fs::create_dir_all(&root).unwrap();
+        Toolbox::new(ToolConfig::new(&root, dir.join("spill"))).unwrap()
+    }
+
+    fn parse(output: &str) -> Vec<Value> {
+        serde_json::from_str::<Vec<Value>>(output).expect("valid JSON array")
+    }
+
+    #[test]
+    fn json_grep_returns_path_line_and_raw_text_and_records_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        fs::create_dir_all(dir.path().join("project/src")).unwrap();
+        let path = dir.path().join("project/src/main.rs");
+        fs::write(&path, "fn main() {\n    let needle = 1; // padded\n}\n").unwrap();
+
+        let output = run(
+            &toolbox,
+            &json!({"pattern": "needle", "output_mode": "json"}),
+        )
+        .unwrap();
+        assert_eq!(
+            parse(&output),
+            vec![
+                json!({"path": "src/main.rs", "line": 2, "text": "    let needle = 1; // padded"})
+            ]
+        );
+        let hash = content_hash(&fs::read(&path).unwrap());
+        assert_eq!(
+            toolbox.seen().unseen(&path, &hash, &[2]),
+            Some(Vec::new()),
+            "json grep did not record line 2"
+        );
+    }
+
+    #[test]
+    fn json_grep_returns_an_empty_array_on_no_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        fs::write(dir.path().join("project/a.txt"), "alpha\n").unwrap();
+
+        let output = run(&toolbox, &json!({"pattern": "zzz", "output_mode": "json"})).unwrap();
+        assert_eq!(output.trim(), "[]");
+    }
+
+    #[test]
+    fn unknown_output_mode_errors_even_with_no_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        fs::write(dir.path().join("project/a.txt"), "alpha\n").unwrap();
+
+        let error = run(&toolbox, &json!({"pattern": "zzz", "output_mode": "csv"})).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown output_mode \"csv\"; use content, files, count or json"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn json_grep_is_not_spilled_inside_execute() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = ToolConfig::new(dir.path().join("project"), dir.path().join("spill"));
+        config.ctx_spill_enabled = true;
+        config.overflow_threshold = 32;
+        fs::create_dir_all(&config.root).unwrap();
+        let toolbox = Toolbox::new(config).unwrap();
+        fs::write(dir.path().join("project/a.txt"), "needle\nneedle\nneedle\n").unwrap();
+
+        let spilled = run(
+            &toolbox,
+            &json!({"pattern": "needle", "output_mode": "json"}),
+        )
+        .unwrap();
+        assert!(
+            serde_json::from_str::<Vec<Value>>(&spilled).is_err(),
+            "spill replaced the array: {spilled}"
+        );
+
+        let unspilled = crate::IN_SCRIPT
+            .sync_scope((), || {
+                run(
+                    &toolbox,
+                    &json!({"pattern": "needle", "output_mode": "json"}),
+                )
+            })
+            .unwrap();
+        assert_eq!(parse(&unspilled).len(), 3, "{unspilled}");
+    }
+
+    #[test]
+    fn json_grep_ignores_context_and_caps_at_max_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        fs::write(
+            dir.path().join("project/a.txt"),
+            "needle one\nfiller\nneedle two\nfiller\nneedle three\n",
+        )
+        .unwrap();
+
+        let output = run(
+            &toolbox,
+            &json!({
+                "pattern": "needle",
+                "output_mode": "json",
+                "context": 2,
+                "max_results": 2
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            parse(&output),
+            vec![
+                json!({"path": "a.txt", "line": 1, "text": "needle one"}),
+                json!({"path": "a.txt", "line": 3, "text": "needle two"}),
+            ]
+        );
+    }
 }

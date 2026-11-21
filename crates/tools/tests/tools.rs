@@ -926,13 +926,27 @@ fn mcp_serves_tools_and_errors() {
             "bash",
             "background",
             "write",
-            "find",
             "websearch",
             "skill_search",
             "retry_call",
             "execute"
         ]
     );
+    // `find` is no longer advertised, but both routes still reach it.
+    let found = runtime
+        .block_on(fixture.toolbox.call(
+            "find",
+            &json!({"query": "hello", "grep_keywords": ["hello"]}),
+        ))
+        .expect("find");
+    assert!(found.contains("mcp.txt"), "{found}");
+    let bridged = runtime
+        .block_on(fixture.toolbox.call(
+            "execute",
+            &json!({"code": "import tools\nprint(tools.find(query='hello', grep_keywords=['hello']))"}),
+        ))
+        .expect("execute find");
+    assert!(bridged.contains("mcp.txt"), "{bridged}");
 
     let call = runtime.block_on(server.call(
         "read",
@@ -1085,13 +1099,68 @@ fn an_exit_while_down_notices_exactly_once() {
         .expect("runtime");
     let notices = runtime.block_on(restarted.background().take_notices());
     assert_eq!(notices.len(), 1, "{notices:?}");
-    assert!(notices[0].contains("exited (code unknown)"), "{notices:?}");
+    assert!(notices[0].contains("exited (0)"), "{notices:?}");
 
     let again = Toolbox::new(config).expect("third toolbox");
     let notices = runtime.block_on(again.background().take_notices());
     assert!(notices.is_empty(), "{notices:?}");
 }
 
+#[test]
+fn a_job_without_a_sidecar_falls_back_to_code_unknown() {
+    let fixture = setup();
+    let started = call(
+        &fixture,
+        "bash",
+        json!({"command": "true", "background": true}),
+    )
+    .expect("background start");
+    let id = started
+        .split_whitespace()
+        .nth(3)
+        .expect("job id")
+        .to_string();
+    let pid = started
+        .split("pid ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .expect("pid");
+    wait_until_exited(pid);
+    fs::remove_file(fixture.toolbox.spill_dir().join(format!("{id}.exit"))).expect("sidecar");
+
+    let config = ToolConfig::new(&fixture.root, fixture.toolbox.spill_dir());
+    let restarted = Toolbox::new(config).expect("restarted toolbox");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let notices = runtime.block_on(restarted.background().take_notices());
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(notices[0].contains("exited (code unknown)"), "{notices:?}");
+}
+
+#[test]
+fn execute_background_reports_the_python_exit_code() {
+    let fixture = setup();
+    let started = call(
+        &fixture,
+        "execute",
+        json!({"code": "import sys; sys.exit(2)", "background": true}),
+    )
+    .expect("background execute");
+    let id = started
+        .split_whitespace()
+        .nth(3)
+        .expect("job id")
+        .to_string();
+    let waited = call(
+        &fixture,
+        "background",
+        json!({"action": "wait", "id": id, "timeout": 20}),
+    )
+    .expect("wait");
+    assert_eq!(waited, "exited (2)\n");
+}
 fn wait_until_exited(pid: &str) {
     let path = format!("/proc/{pid}/stat");
     for _ in 0..100_000 {

@@ -103,12 +103,7 @@ pub(crate) async fn foreground(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    if let Some(session_dir) = toolbox.spill_dir().parent() {
-        cmd.env("EMBERLOOP_SESSION_DIR", session_dir);
-    }
-    if let Some(global_skills) = toolbox.global_skills() {
-        cmd.env("EMBERLOOP_GLOBAL_SKILLS", global_skills);
-    }
+    toolbox.apply_session_env(&mut cmd);
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = cmd.spawn()?;

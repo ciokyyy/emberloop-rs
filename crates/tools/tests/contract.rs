@@ -32,6 +32,37 @@ fn advertised() -> Vec<Tool> {
     server().with_descriptions(prompt_descriptions()).tools()
 }
 
+/// A Goldfish Session has no `execute`, so it keeps `find` at the top level.
+fn goldfish_advertised() -> Vec<Tool> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("project");
+    std::fs::create_dir(&root).expect("root");
+    let config = ToolConfig {
+        subagent_role: Some("goldfish".into()),
+        ..ToolConfig::new(&root, dir.path().join("spill"))
+    };
+    let toolbox = Toolbox::new(config).expect("toolbox");
+    McpServer::new(Arc::new(toolbox))
+        .with_descriptions(prompt_descriptions())
+        .tools()
+}
+
+#[test]
+fn find_is_top_level_only_without_execute() {
+    let standard: BTreeSet<String> = advertised()
+        .into_iter()
+        .map(|tool| tool.name.to_string())
+        .collect();
+    assert!(standard.contains("execute"), "{standard:?}");
+    assert!(!standard.contains("find"), "{standard:?}");
+    let goldfish: BTreeSet<String> = goldfish_advertised()
+        .into_iter()
+        .map(|tool| tool.name.to_string())
+        .collect();
+    assert!(goldfish.contains("find"), "{goldfish:?}");
+    assert!(!goldfish.contains("execute"), "{goldfish:?}");
+}
+
 fn schema(tool: &Tool) -> Value {
     Value::Object(Map::clone(&tool.input_schema))
 }
@@ -102,7 +133,7 @@ fn is_parameter_word(span: &str) -> bool {
 
 #[test]
 fn every_advertised_tool_has_a_prompt_store_description() {
-    for tool in advertised() {
+    for tool in advertised().into_iter().chain(goldfish_advertised()) {
         let id = format!("tool.{}.description", tool.name);
         assert!(
             prompts::PROMPT_IDS.contains(&id.as_str()),
@@ -119,7 +150,10 @@ fn every_advertised_tool_has_a_prompt_store_description() {
 
 #[test]
 fn backticked_words_in_tool_text_are_real_parameters_values_or_tools() {
-    let tools = advertised();
+    let tools: Vec<Tool> = advertised()
+        .into_iter()
+        .chain(goldfish_advertised())
+        .collect();
     let tool_names: BTreeSet<String> = tools.iter().map(|t| t.name.to_string()).collect();
     let mut failures = Vec::new();
     for tool in &tools {
@@ -144,7 +178,7 @@ fn backticked_words_in_tool_text_are_real_parameters_values_or_tools() {
 #[test]
 fn every_top_level_parameter_is_named_in_its_tool_text() {
     let mut failures = Vec::new();
-    for tool in advertised() {
+    for tool in advertised().into_iter().chain(goldfish_advertised()) {
         let schema = schema(&tool);
         let text = description(&tool);
         for name in schema
@@ -224,7 +258,7 @@ fn read_path_names_every_form_read_accepts() {
 #[test]
 fn every_enum_value_is_named_in_its_tool_text() {
     let mut failures = Vec::new();
-    for tool in advertised() {
+    for tool in advertised().into_iter().chain(goldfish_advertised()) {
         let mut values = BTreeSet::new();
         enum_values(&schema(&tool), &mut values);
         let spans = code_spans(&description(&tool));

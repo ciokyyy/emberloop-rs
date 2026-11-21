@@ -98,11 +98,29 @@ async fn scouts_lose_edit_and_write_and_enforce_readonly_bash_allowlist() {
             "scout must omit {forbidden}"
         );
     }
-    for allowed in ["bash", "read", "grep", "find", "execute", "submit"] {
+    for allowed in ["bash", "read", "grep", "execute", "submit"] {
         assert!(names.contains(&allowed.into()), "scout must keep {allowed}");
     }
+    assert!(!names.contains(&"find".into()), "scout must omit find");
 
-    // Direct and execute-bridged edit/write fail.
+    // `find` stays reachable directly and through `execute` without being advertised.
+    let found = toolbox
+        .call(
+            "find",
+            &json!({"query": "hello", "grep_keywords": ["hello"]}),
+        )
+        .await
+        .unwrap();
+    assert!(found.contains("notes.txt"), "{found}");
+    let exec_find = toolbox
+        .call(
+            "execute",
+            &json!({"code": "import tools\nprint(tools.find(query='hello', grep_keywords=['hello']))"}),
+        )
+        .await
+        .unwrap();
+    assert!(exec_find.contains("notes.txt"), "{exec_find}");
+
     for blocked_tool in [
         ("edit", json!({"input":""})),
         ("write", json!({"path":"x.txt","content":"no"})),

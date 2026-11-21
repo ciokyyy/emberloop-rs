@@ -156,6 +156,20 @@ fn policy_says_system_prompts_and_reminders_never_fold() {
 }
 
 #[test]
+fn the_policy_fits_the_request_budget_and_names_no_hidden_tool() {
+    let policy = default_text(POLICY);
+    assert!(policy.len() <= 3_550, "policy is {} B", policy.len());
+    assert!(
+        !policy.contains("`find`,"),
+        "the policy must not offer find as an edit anchor"
+    );
+    assert!(
+        policy.contains("then patch one or more files per `edit` call"),
+        "the policy must describe one multi-file edit call"
+    );
+}
+
+#[test]
 fn default_used_when_no_override_exists() {
     let dir = tempdir().unwrap();
     let store = PromptStore::new(dir.path());

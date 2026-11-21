@@ -10,7 +10,7 @@ PUT 4.=4:
 
 `PUT 4:` is invalid. After a syntax error, correct the patch; after a stale-view error, read the range again. Supported bash reads can also supply tagged views; bash is not inherently incompatible with edit.
 
-One call patches one file: send one `[path#TAG]` header per call. Anchors are line numbers only; a string anchor is rejected. Paths may contain brackets.
+One call can patch one or more files: send one `[path#TAG]` header per file (each file at most once); all files validate before any write. Anchors are line numbers only; a string anchor is rejected. Paths may contain brackets.
 
 Ranges: `PUT N.=M:` replaces every line from N through M with the body, so a shorter body deletes the rest; use `PUT N.=N:` for one line and count body lines against the range. `CUT N.=M` deletes; an empty `PUT` is rejected. Every op in one call numbers against the view the tag names, so order does not matter.
 

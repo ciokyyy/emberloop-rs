@@ -80,30 +80,37 @@ impl BackgroundManager {
     // Real waits: a short one so a quick command's first line lands in the
     // reply, and a 100 ms poll of a pid outside our process tree.
     pub async fn spawn(&self, command: &str, prelude: &str) -> ToolResult<String> {
-        self.spawn_with(None, |log| {
+        self.spawn_with(None, |log, exit| {
+            let tmp = shell_quote(&exit_tmp_path(exit));
+            let exit = shell_quote(exit);
             let mut cmd = tokio::process::Command::new("sh");
             cmd.arg("-c")
-                .arg(format!("{prelude}exec 2>&1\n{command}"))
+                .arg(format!(
+                    "__el_exit_trap() {{ __el_rc=$?; printf '%d\\n' \"$__el_rc\" > {tmp} && mv -f {tmp} {exit}; }}\ntrap __el_exit_trap EXIT\n{prelude}exec 2>&1\n{command}"
+                ))
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(log))
                 .stderr(Stdio::null());
-            cmd
+            Ok(cmd)
         })
         .await
     }
 
     /// Starts a process the caller built. `build` receives the job's log file, which it must send
-    /// stdout to; `keepalive` lives exactly as long as the job, so `stop` ends it too.
+    /// stdout to, and the exit sidecar it should write; `keepalive` lives exactly as long as the
+    /// job, so `stop` ends it too.
     #[allow(clippy::disallowed_methods)]
     pub async fn spawn_with(
         &self,
         keepalive: Option<Box<dyn Any + Send>>,
-        build: impl FnOnce(File) -> tokio::process::Command,
+        build: impl FnOnce(File, &Path) -> ToolResult<tokio::process::Command>,
     ) -> ToolResult<String> {
         fs::create_dir_all(&self.dir)?;
         let id = self.next_id();
         let log = self.dir.join(format!("{id}.log"));
-        let mut cmd = build(File::create(&log)?);
+        let exit = exit_path(&self.dir, &id);
+        let mut cmd = build(File::create(&log)?, &exit)?;
+
         cmd.current_dir(&self.root);
         #[cfg(unix)]
         cmd.process_group(0);
@@ -236,19 +243,19 @@ impl BackgroundManager {
                 return Ok(format!("lost (pid {pid})\n"));
             }
             entry.adopted = false;
-            entry.status = Some("exited (code unknown)".to_string());
+            let label = exit_status_label(&self.dir, id);
+            entry.status = Some(label.clone());
             remove_meta(&self.dir, id);
-            return Ok("exited (code unknown)\n".to_string());
+            return Ok(format!("{}\n", wait_reply(&label)));
         }
         let Some(child) = entry.child.as_mut() else {
-            return Ok(format!(
-                "already {}\n",
-                wait_reply(entry.status.as_deref().unwrap_or("exited"))
-            ));
+            let label =
+                cached_exit_label(&self.dir, id, entry.status.as_deref().unwrap_or("exited"));
+            return Ok(format!("already {}\n", wait_reply(&label)));
         };
         match tokio::time::timeout(Duration::from_secs(secs), child.wait()).await {
             Ok(Ok(status)) => {
-                let label = status_label(&status);
+                let label = reaped_label(&status, &self.dir, id);
                 entry.child = None;
                 entry.keepalive = None;
                 entry.status = Some(label.clone());
@@ -284,9 +291,10 @@ impl BackgroundManager {
             }
             if !process_alive(entry.pid) {
                 entry.adopted = false;
-                entry.status = Some("exited (code unknown)".to_string());
+                let label = exit_status_label(&self.dir, id);
+                entry.status = Some(label.clone());
                 remove_meta(&self.dir, id);
-                return Ok("already exited (code unknown)\n".to_string());
+                return Ok(format!("already {}\n", wait_reply(&label)));
             }
             crate::bash::kill_group(entry.pid);
             entry.adopted = false;
@@ -295,10 +303,11 @@ impl BackgroundManager {
             return Ok(format!("stopped (pid {})\n", entry.pid));
         }
         let Some(mut child) = entry.child.take() else {
-            return Ok(format!(
-                "already exited ({})\n",
-                entry.status.as_deref().unwrap_or("unknown")
-            ));
+            let label =
+                cached_exit_label(&self.dir, id, entry.status.as_deref().unwrap_or("unknown"));
+            let reply = format!("already {}\n", wait_reply(&label));
+            remove_meta(&self.dir, id);
+            return Ok(reply);
         };
         entry.keepalive = None;
         crate::bash::kill_group(entry.pid);
@@ -345,7 +354,7 @@ fn refresh_status(entry: &mut Entry, dir: &Path, id: &str) -> String {
     if let Some(child) = entry.child.as_mut() {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let label = status_label(&status);
+                let label = reaped_label(&status, dir, id);
                 entry.child = None;
                 entry.keepalive = None;
                 entry.status = Some(label.clone());
@@ -367,18 +376,12 @@ fn refresh_status(entry: &mut Entry, dir: &Path, id: &str) -> String {
             "running".to_string()
         } else {
             entry.adopted = false;
-            entry.status = Some("exited (code unknown)".to_string());
-            "exited (code unknown)".to_string()
+            let label = exit_status_label(dir, id);
+            entry.status = Some(label.clone());
+            label
         }
     } else {
         entry.status.clone().unwrap_or_else(|| "exited".to_string())
-    }
-}
-
-fn status_label(status: &std::process::ExitStatus) -> String {
-    match status.code() {
-        Some(code) => format!("exited({code})"),
-        None => "terminated".to_string(),
     }
 }
 
@@ -390,6 +393,69 @@ fn wait_reply(status: &str) -> String {
         Some(code) => format!("exited ({code})"),
         None => status.to_string(),
     }
+}
+
+fn exit_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.exit"))
+}
+
+pub(crate) fn exit_tmp_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.tmp", path.display()))
+}
+
+fn read_exit_code(dir: &Path, id: &str) -> Option<i32> {
+    fs::read_to_string(exit_path(dir, id))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn write_exit_code(dir: &Path, id: &str, code: i32) {
+    let path = exit_path(dir, id);
+    let tmp = exit_tmp_path(&path);
+    if fs::write(&tmp, format!("{code}\n")).is_ok() {
+        let _ = fs::rename(&tmp, &path);
+    }
+}
+
+fn exit_status_label(dir: &Path, id: &str) -> String {
+    match read_exit_code(dir, id) {
+        Some(code) => format!("exited({code})"),
+        None => "exited (code unknown)".to_string(),
+    }
+}
+
+/// A status that already names a code outlives the sidecar `remove_meta` deletes.
+fn cached_exit_label(dir: &Path, id: &str, status: &str) -> String {
+    let coded = status
+        .strip_prefix("exited(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .is_some_and(|code| code.parse::<i32>().is_ok());
+    if coded {
+        return status.to_string();
+    }
+    if status.starts_with("exited") {
+        return exit_status_label(dir, id);
+    }
+    status.to_string()
+}
+
+/// Label a reaped owned child, recording its code when the shell wrote no sidecar.
+fn reaped_label(status: &std::process::ExitStatus, dir: &Path, id: &str) -> String {
+    match status.code() {
+        Some(code) => {
+            if read_exit_code(dir, id).is_none() {
+                write_exit_code(dir, id, code);
+            }
+            exit_status_label(dir, id)
+        }
+        None => "terminated".to_string(),
+    }
+}
+
+pub(crate) fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
 
 fn valid_id(id: &str) -> ToolResult<()> {
@@ -416,6 +482,7 @@ fn write_meta(dir: &Path, id: &str, meta: &Meta) {
 
 fn remove_meta(dir: &Path, id: &str) {
     let _ = fs::remove_file(meta_path(dir, id));
+    let _ = fs::remove_file(exit_path(dir, id));
 }
 
 fn mark_notice_emitted(dir: &Path, id: &str) {
@@ -432,11 +499,12 @@ fn mark_notice_emitted(dir: &Path, id: &str) {
     }
 }
 
-fn exit_notice(id: &str, log: &Path) -> String {
-    format!(
-        "background {id} exited (code unknown)\nlog: {}",
-        log.display()
-    )
+fn exit_notice(dir: &Path, id: &str, log: &Path) -> String {
+    let label = match read_exit_code(dir, id) {
+        Some(code) => format!("exited ({code})"),
+        None => "exited (code unknown)".to_string(),
+    };
+    format!("background {id} {label}\nlog: {}", log.display())
 }
 
 fn read_meta_entries(dir: &Path) -> Vec<(String, Meta, PathBuf)> {
@@ -483,7 +551,7 @@ pub fn collect_notices_for(dir: &Path, watched: &HashSet<String>) -> Vec<String>
         let matches = identity_matches(meta.pid, &meta.start_time, &meta.boot_id);
         let alive = matches && process_alive(meta.pid);
         if (matches && !alive) || (!matches && watched.contains(&id)) {
-            notices.push(exit_notice(&id, &log));
+            notices.push(exit_notice(dir, &id, &log));
             meta.notice_emitted = true;
             write_meta(dir, &id, &meta);
         }
@@ -506,11 +574,11 @@ fn load_adopted(dir: &Path) -> (HashMap<String, Entry>, Vec<String>) {
             (true, false, None)
         } else if matches {
             if !meta.notice_emitted {
-                notices.push(exit_notice(&id, &log));
+                notices.push(exit_notice(dir, &id, &log));
                 meta.notice_emitted = true;
                 write_meta(dir, &id, &meta);
             }
-            (false, false, Some("exited (code unknown)".to_string()))
+            (false, false, Some(exit_status_label(dir, &id)))
         } else {
             if !meta.notice_emitted {
                 meta.notice_emitted = true;
@@ -624,6 +692,158 @@ mod tests {
         assert!(!any_running(dir.path()));
         record(dir.path(), std::process::id());
         assert!(any_running(dir.path()));
+    }
+
+    fn manager(dir: &Path) -> BackgroundManager {
+        let spill = dir.join("spill");
+        fs::create_dir_all(&spill).unwrap();
+        BackgroundManager::new(&spill, dir)
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    fn id_of(reply: &str) -> String {
+        reply.split_whitespace().nth(3).unwrap().to_string()
+    }
+
+    fn wait_for_sidecar(dir: &Path, id: &str) {
+        let path = dir.join("spill").join(format!("{id}.exit"));
+        for _ in 0..10_000 {
+            if path.exists() {
+                return;
+            }
+            std::thread::yield_now();
+        }
+        panic!("{id} never wrote an exit sidecar");
+    }
+
+    #[test]
+    fn an_adopted_job_lists_its_recorded_exit_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = manager(dir.path());
+        let started = block_on(owner.spawn("exit 3", "")).unwrap();
+        let id = id_of(&started);
+        wait_for_sidecar(dir.path(), &id);
+        wait_for_exit(pid_of(&started));
+        let list =
+            block_on(manager(dir.path()).run(&serde_json::json!({"action": "list"}))).unwrap();
+        assert!(list.contains("exited(3)"), "{list}");
+    }
+
+    #[test]
+    fn a_completion_notice_names_the_recorded_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = manager(dir.path());
+        let started = block_on(owner.spawn("exit 5", "")).unwrap();
+        let id = id_of(&started);
+        wait_for_sidecar(dir.path(), &id);
+        wait_for_exit(pid_of(&started));
+        let notices = collect_notices(&dir.path().join("spill"));
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(
+            notices[0].contains(&format!("{id} exited (5)")),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn a_sidecar_survives_the_notice_and_dies_with_the_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = manager(dir.path());
+        let started = block_on(owner.spawn("exit 5", "")).unwrap();
+        let id = id_of(&started);
+        wait_for_sidecar(dir.path(), &id);
+        wait_for_exit(pid_of(&started));
+        let spill = dir.path().join("spill");
+        assert_eq!(collect_notices(&spill).len(), 1);
+        assert!(spill.join(format!("{id}.exit")).exists());
+        remove_meta(&spill, &id);
+        assert!(!spill.join(format!("{id}.exit")).exists());
+    }
+
+    fn pid_of(reply: &str) -> u32 {
+        reply
+            .split("pid ")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .and_then(|pid| pid.parse().ok())
+            .unwrap()
+    }
+
+    fn wait_for_exit(pid: u32) {
+        for _ in 0..10_000 {
+            if !process_alive(pid) {
+                return;
+            }
+            std::thread::yield_now();
+        }
+        panic!("{pid} never exited");
+    }
+
+    #[test]
+    fn a_job_without_a_sidecar_falls_back_to_code_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let spill = dir.path().join("spill");
+        let owner = manager(dir.path());
+        let started = block_on(owner.spawn("exit 0", "")).unwrap();
+        let id = id_of(&started);
+        wait_for_exit(pid_of(&started));
+        let _ = fs::remove_file(spill.join(format!("{id}.exit")));
+        let list =
+            block_on(manager(dir.path()).run(&serde_json::json!({"action": "list"}))).unwrap();
+        assert!(list.contains("exited (code unknown)"), "{list}");
+    }
+
+    #[test]
+    fn wait_and_stop_read_the_code_before_remove_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let spill = dir.path().join("spill");
+        let owner = manager(dir.path());
+        let started = block_on(owner.spawn("exit 4", "")).unwrap();
+        let id = id_of(&started);
+        wait_for_sidecar(dir.path(), &id);
+        wait_for_exit(pid_of(&started));
+        let reply =
+            block_on(manager(dir.path()).run(&serde_json::json!({"action": "stop", "id": id})))
+                .unwrap();
+        assert_eq!(reply, "already exited (4)\n");
+        assert!(!spill.join(format!("{id}.json")).exists());
+        assert!(!spill.join(format!("{id}.exit")).exists());
+    }
+
+    #[test]
+    fn a_repeated_wait_keeps_the_code_after_stop_removed_the_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = manager(dir.path());
+        let started = block_on(owner.spawn("exit 4", "")).unwrap();
+        let id = id_of(&started);
+        wait_for_sidecar(dir.path(), &id);
+        wait_for_exit(pid_of(&started));
+        let mgr = manager(dir.path());
+        let first = block_on(mgr.run(&serde_json::json!({"action": "wait", "id": id}))).unwrap();
+        assert_eq!(first, "already exited (4)\n");
+        let stopped = block_on(mgr.run(&serde_json::json!({"action": "stop", "id": id}))).unwrap();
+        assert_eq!(stopped, "already exited (4)\n");
+        let again = block_on(mgr.run(&serde_json::json!({"action": "wait", "id": id}))).unwrap();
+        assert_eq!(again, "already exited (4)\n");
+    }
+
+    #[test]
+    fn a_failing_script_records_the_code_set_e_produced() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = manager(dir.path());
+        let started = block_on(mgr.spawn("set -e\ncat <<'EOF'\nhello\nEOF\nfalse\n", "")).unwrap();
+        let id = id_of(&started);
+        let waited =
+            block_on(mgr.run(&serde_json::json!({"action": "wait", "id": id, "timeout": 10})))
+                .unwrap();
+        assert_eq!(waited, "exited (1)\n");
     }
 }
 

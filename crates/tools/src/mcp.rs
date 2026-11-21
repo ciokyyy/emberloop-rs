@@ -52,7 +52,12 @@ impl McpServer {
             .filter_map(|spec| {
                 let name = spec.get("name")?.as_str()?.to_string();
                 // The todo tool is switched off for now; its code and tests stay.
-                if name == "todo" || !self.toolbox.tool_available(&name) {
+                // `execute` sessions reach find through tools.find, so the top-level
+                // declaration only costs schema bytes; Goldfish has no execute and keeps it.
+                if name == "todo"
+                    || !self.toolbox.tool_available(&name)
+                    || (name == "find" && self.toolbox.tool_available("execute"))
+                {
                     return None;
                 }
                 let description = self.descriptions.get(&name).cloned().unwrap_or_default();
@@ -215,7 +220,8 @@ fn tool_specs() -> Vec<Value> {
                 "properties": {
                     "path": {"type": "string", "description": "File, directory, http(s) URL, ctx:<handle> pointer, el://skills/<name> or el://docs/<topic>. Append :raw to a file or URL path to read it whole; without it the first 300 lines. A goldfish Session reads only the Project, the skill roots and its own Session directory."},
                     "offset": {"type": "integer", "description": "First line, 1-based."},
-                    "limit": {"type": "integer", "description": "Maximum lines."}
+                    "limit": {"type": "integer", "description": "Maximum lines."},
+                    "plain": {"type": "boolean", "description": "Return regular file and ctx: lines raw, with no tag header and no line numbers, and without recording them for edit anchors."}
                 },
                 "required": ["path"]
             }
@@ -231,7 +237,7 @@ fn tool_specs() -> Vec<Value> {
                     "case_insensitive": {"type": "boolean"},
                     "context": {"type": "integer"},
                     "max_results": {"type": "integer"},
-                    "output_mode": {"type": "string", "enum": ["content", "files", "count"]}
+                    "output_mode": {"type": "string", "enum": ["content", "files", "count", "json"]}
                 },
                 "required": ["pattern"]
             }
@@ -410,11 +416,11 @@ fn tool_specs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "code": {"type": "string", "description": "The Python script to run."},
+                    "code": {"type": "string", "description": "The Python code to run in the persistent REPL."},
                     "timeout": {"type": "integer", "description": "Seconds, default 120, max 600."},
-                    "background": {"type": "boolean"}
-                },
-                "required": ["code"]
+                    "background": {"type": "boolean"},
+                    "reset": {"type": "boolean", "description": "Discard the persistent REPL state first; alone it returns [repl reset]."}
+                }
             }
         }
     ]);

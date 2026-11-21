@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -63,7 +63,36 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
     if args.input.trim().is_empty() {
         return Err(ToolError::msg("input is required"));
     }
-    let mut parsed = parse_patch(&args.input)?;
+    let mut seen_keys = HashSet::new();
+    let mut prepared = Vec::new();
+    for section in parse_patches(&args.input)? {
+        prepared.push(prepare(toolbox, section, &mut seen_keys)?);
+    }
+    commit_all(toolbox, prepared)
+}
+
+struct PreparedEdit {
+    path: PathBuf,
+    key: PathBuf,
+    label: String,
+    skill: Option<skillpath::Resolved>,
+    skill_op: Option<skillpath::Op>,
+    original: Vec<u8>,
+    actual_hash: String,
+    new_text: String,
+    new_hash: String,
+    new_tag: String,
+    applied: Applied,
+    ops: Vec<Op>,
+    rebase_warning: Option<String>,
+}
+
+/// Phase 1: validate one section completely, writing nothing.
+fn prepare(
+    toolbox: &Toolbox,
+    parsed: Parsed,
+    seen_keys: &mut HashSet<PathBuf>,
+) -> ToolResult<PreparedEdit> {
     let skill = skillpath::writable(toolbox, &parsed.path)?;
     let (path, key, label) = match &skill {
         Some(resolved) => (
@@ -76,19 +105,26 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
             (path.clone(), path.clone(), path.display().to_string())
         }
     };
-    let original = fs::read(&path)?;
+    let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    if !seen_keys.insert(canonical) {
+        return Err(ToolError::msg(format!(
+            "duplicate path {label} in one edit call; combine its operations under one header"
+        )));
+    }
+    let original = fs::read(&path).map_err(|error| named(&label, ToolError::from(error)))?;
     let text = String::from_utf8(original.clone())
         .map_err(|_| ToolError::msg(format!("{label} is binary; edit only text files")))?;
     let lines = lines_of(&text);
     let actual_hash = content_hash(&original);
     let actual_tag = content_tag(&original);
+    let mut ops = parsed.ops;
     let mut rebase_warning: Option<String> = None;
     if actual_tag != parsed.tag {
         let rebased_opt = toolbox
             .seen()
             .lookup_tag(&key, &parsed.tag)
             .and_then(|old_snap| {
-                rebase_ops(&parsed.ops, &old_snap.content_lines, &lines, &parsed.tag)
+                rebase_ops(&ops, &old_snap.content_lines, &lines, &parsed.tag)
                     .map(|(rebased, msg)| (old_snap, rebased, msg))
             });
         if let Some((old_snap, rebased, msg)) = rebased_opt {
@@ -97,10 +133,10 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
                 &key,
                 &label,
                 &old_snap.hash,
-                &parsed.ops,
+                &ops,
                 old_snap.content_lines.len(),
             )?;
-            parsed.ops = rebased;
+            ops = rebased;
             rebase_warning = Some(msg);
         } else {
             return Err(stale_tag_error(
@@ -113,70 +149,174 @@ pub fn run(toolbox: &Toolbox, args: &Value) -> ToolResult<String> {
             ));
         }
     } else {
-        check_seen(
-            toolbox,
-            &key,
-            &label,
-            &actual_hash,
-            &parsed.ops,
-            lines.len(),
-        )?;
+        check_seen(toolbox, &key, &label, &actual_hash, &ops, lines.len())?;
     }
-    validate_ops(&parsed.ops, lines.len())?;
-    check_overlap(&parsed.ops)?;
-    let applied = apply(&parsed.ops, &lines);
+    validate_ops(&ops, lines.len()).map_err(|error| named(&label, error))?;
+    check_overlap(&ops).map_err(|error| named(&label, error))?;
+    let applied = apply(&ops, &lines);
     let new_text = join_lines(&applied.lines, &text);
     let new_hash = content_hash(new_text.as_bytes());
     let new_tag = content_tag(new_text.as_bytes());
-    ensure_unchanged(&path, &actual_hash)?;
-    match &skill {
-        Some(resolved) => {
-            let op = skillpath::check_write(toolbox, resolved, &new_text)?;
-            skillpath::commit(toolbox, resolved, op, Some(&original), new_text.as_bytes())?;
-        }
-        None => fs::write(&path, &new_text)?,
-    }
-    toolbox.seen().record_with_content(
-        &key,
-        &new_hash,
-        applied.lines.clone(),
-        1..=line_count(&new_text) as u32,
-        true,
-    );
-    Ok(reply(
-        &label,
-        &new_tag,
-        &applied.lines,
-        &applied.changed,
-        &parsed.ops,
-        rebase_warning.as_deref(),
-    ))
+    let skill_op = match &skill {
+        Some(resolved) => Some(
+            skillpath::check_write(toolbox, resolved, &new_text)
+                .map_err(|error| named(&label, error))?,
+        ),
+        None => None,
+    };
+    Ok(PreparedEdit {
+        path,
+        key,
+        label,
+        skill,
+        skill_op,
+        original,
+        actual_hash,
+        new_text,
+        new_hash,
+        new_tag,
+        applied,
+        ops,
+        rebase_warning,
+    })
 }
 
-fn parse_patch(input: &str) -> ToolResult<Parsed> {
-    let text = input
+/// Phase 2: write every entry, rolling already-written ones back on a failure.
+fn commit_all(toolbox: &Toolbox, prepared: Vec<PreparedEdit>) -> ToolResult<String> {
+    let mut written: Vec<usize> = Vec::new();
+    for (index, entry) in prepared.iter().enumerate() {
+        let outcome = ensure_unchanged(&entry.path, &entry.actual_hash).and_then(|()| {
+            match (&entry.skill, entry.skill_op) {
+                (Some(resolved), Some(op)) => skillpath::commit(
+                    toolbox,
+                    resolved,
+                    op,
+                    Some(&entry.original),
+                    entry.new_text.as_bytes(),
+                ),
+                _ => fs::write(&entry.path, &entry.new_text).map_err(ToolError::from),
+            }
+        });
+        match outcome {
+            Ok(()) => written.push(index),
+            Err(error) => {
+                let error = named(&entry.label, error);
+                return Err(rollback(&prepared, &written, error));
+            }
+        }
+    }
+    let mut replies = Vec::with_capacity(prepared.len());
+    for entry in &prepared {
+        toolbox.seen().record_with_content(
+            &entry.key,
+            &entry.new_hash,
+            entry.applied.lines.clone(),
+            1..=line_count(&entry.new_text) as u32,
+            true,
+        );
+        replies.push(reply(
+            &entry.label,
+            &entry.new_tag,
+            &entry.applied.lines,
+            &entry.applied.changed,
+            &entry.ops,
+            entry.rebase_warning.as_deref(),
+        ));
+    }
+    Ok(replies.join("\n\n"))
+}
+
+/// Restore entries 0..failed only where nothing else touched them since.
+fn rollback(prepared: &[PreparedEdit], written: &[usize], error: ToolError) -> ToolError {
+    let mut restored = 0usize;
+    let mut kept = Vec::new();
+    let mut unrestored = Vec::new();
+    for &index in written {
+        let entry = &prepared[index];
+        let untouched = fs::read(&entry.path)
+            .map(|current| content_hash(&current) == entry.new_hash)
+            .unwrap_or(false);
+        if !untouched {
+            kept.push(entry.label.as_str());
+        } else if fs::write(&entry.path, &entry.original).is_ok() {
+            restored += 1;
+        } else {
+            unrestored.push(entry.label.as_str());
+        }
+    }
+    let mut outcome = if written.is_empty() {
+        "no file had been written yet".to_string()
+    } else {
+        format!("rolled back {restored} already-written file(s)")
+    };
+    if !kept.is_empty() {
+        outcome.push_str(&format!(
+            "; kept the concurrent external changes in {}",
+            kept.join(", ")
+        ));
+    }
+    if !unrestored.is_empty() {
+        outcome.push_str(&format!("; could not restore {}", unrestored.join(", ")));
+    }
+    ToolError::msg(format!("{error}; {outcome}"))
+}
+
+pub(crate) fn headers(input: &str) -> Vec<&str> {
+    strip_wrapper(input)
+        .lines()
+        .filter(|line| !line.trim_end().starts_with('+'))
+        .filter_map(|line| header_regex().captures(line.trim_end()))
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str()))
+        .collect()
+}
+
+fn strip_wrapper(input: &str) -> &str {
+    input
         .trim()
         .trim_start_matches("*** Begin Patch")
         .trim_end_matches("*** End Patch")
-        .trim();
-    let header = header_regex()
-        .captures(text)
-        .ok_or_else(|| missing_header_error(text))?;
-    let path = match header.get(1) {
-        Some(m) => m.as_str().to_string(),
-        None => return Err(missing_header_error(text)),
-    };
-    let tag = match header.get(2) {
-        Some(m) => m.as_str().to_uppercase(),
-        None => return Err(missing_header_error(text)),
-    };
-    let ops = parse_ops(text)?;
-    if ops.is_empty() {
-        return Err(ToolError::msg(
-            "no operations in the patch, so nothing was written",
-        ));
+        .trim()
+}
+
+fn parse_patches(input: &str) -> ToolResult<Vec<Parsed>> {
+    let text = strip_wrapper(input);
+    let mut sections: Vec<(String, String, String)> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim_end();
+        if let Some(caps) = header_regex().captures(line) {
+            sections.push((caps[1].to_string(), caps[2].to_uppercase(), String::new()));
+            continue;
+        }
+        if !line.starts_with('+') && loose_header_regex().is_match(line) {
+            return Err(missing_header_error(line));
+        }
+        match sections.last_mut() {
+            Some((_, _, body)) => {
+                body.push_str(raw);
+                body.push('\n');
+            }
+            None => {
+                if line.trim().is_empty() || line.trim_start().starts_with("***") {
+                    continue;
+                }
+                return Err(missing_header_error(text));
+            }
+        }
     }
-    Ok(Parsed { path, tag, ops })
+    if sections.is_empty() {
+        return Err(missing_header_error(text));
+    }
+    let mut parsed = Vec::with_capacity(sections.len());
+    for (path, tag, body) in sections {
+        let ops = parse_ops(&body).map_err(|error| named(&path, error))?;
+        if ops.is_empty() {
+            return Err(ToolError::msg(format!(
+                "no operations in the patch for {path}, so nothing was written"
+            )));
+        }
+        parsed.push(Parsed { path, tag, ops });
+    }
+    Ok(parsed)
 }
 
 fn missing_header_error(text: &str) -> ToolError {
@@ -225,7 +365,7 @@ fn parse_ops(text: &str) -> ToolResult<Vec<Op>> {
             validate_body(&done)?;
             ops.push(done);
         }
-        if header_regex().is_match(line) || line.trim_start().starts_with("***") {
+        if line.trim_start().starts_with("***") {
             continue;
         }
         current = Some(parse_op(line.trim(), &regexes)?);
@@ -491,12 +631,22 @@ fn join_lines(lines: &[String], original: &str) -> String {
     text
 }
 
+/// Names the file an error came from, unless its message already does.
+fn named(label: &str, error: ToolError) -> ToolError {
+    let text = error.to_string();
+    if text.starts_with(label) {
+        error
+    } else {
+        ToolError::msg(format!("{label}: {text}"))
+    }
+}
+
 fn ensure_unchanged(path: &Path, expected_hash: &str) -> ToolResult<()> {
     let current = fs::read(path)?;
     let now = content_hash(&current);
     if now != expected_hash {
         return Err(ToolError::msg(format!(
-            "{} changed while this edit was being applied (tag {} is now {}); nothing was written",
+            "{} changed while this edit was being applied (tag {} is now {})",
             path.display(),
             &expected_hash[..4],
             &now[..4]
@@ -653,4 +803,287 @@ fn deletion_net(ops: &[Op]) -> isize {
         }
     }
     deleted - added
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ToolConfig;
+    use serde_json::json;
+
+    fn toolbox(dir: &Path) -> Toolbox {
+        let root = dir.join("project");
+        fs::create_dir_all(&root).unwrap();
+        Toolbox::new(ToolConfig::new(&root, dir.join("spill"))).unwrap()
+    }
+
+    fn tag_of(toolbox: &Toolbox, path: &str) -> String {
+        let view = crate::read::run(toolbox, &json!({ "path": path })).unwrap();
+        let header = view.lines().next().unwrap();
+        header.rsplit_once('#').unwrap().1[..4].to_string()
+    }
+
+    #[test]
+    fn multi_file_patch_writes_every_file_and_joins_replies() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        let project = dir.path().join("project");
+        fs::write(project.join("a.txt"), "one\n").unwrap();
+        fs::write(project.join("b.txt"), "two\n").unwrap();
+        let a_tag = tag_of(&toolbox, "a.txt");
+        let b_tag = tag_of(&toolbox, "b.txt");
+
+        let reply = run(
+            &toolbox,
+            &json!({ "input": format!(
+                "[a.txt#{a_tag}]\nPUT 1.=1:\n+one changed\n\n[b.txt#{b_tag}]\nPUT 1.=1:\n+two changed\n"
+            )}),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(project.join("a.txt")).unwrap(),
+            "one changed\n"
+        );
+        assert_eq!(
+            fs::read_to_string(project.join("b.txt")).unwrap(),
+            "two changed\n"
+        );
+        for name in ["a.txt", "b.txt"] {
+            let path = project.join(name);
+            let hash = content_hash(&fs::read(&path).unwrap());
+            assert_eq!(
+                toolbox.seen().unseen(&path, &hash, &[1]),
+                Some(Vec::new()),
+                "{name} must authorize its own lines after the batch"
+            );
+        }
+        let parts: Vec<&str> = reply.split("\n\n").collect();
+        assert_eq!(parts.len(), 2, "{reply}");
+        assert!(parts[0].contains("a.txt#"), "{reply}");
+        assert!(parts[1].contains("b.txt#"), "{reply}");
+        let tag = parts[0].split('#').nth(1).unwrap();
+        assert_eq!(tag_of(&toolbox, "a.txt"), tag[..4].to_string());
+    }
+
+    #[test]
+    fn a_failing_validation_in_a_later_file_leaves_earlier_files_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        let project = dir.path().join("project");
+        fs::write(project.join("a.txt"), "one\n").unwrap();
+        fs::write(project.join("b.txt"), "two\n").unwrap();
+        let a_tag = tag_of(&toolbox, "a.txt");
+        tag_of(&toolbox, "b.txt");
+
+        let error = run(
+            &toolbox,
+            &json!({ "input": format!(
+                "[a.txt#{a_tag}]\nPUT 1.=1:\n+one changed\n\n[b.txt#0000]\nPUT 1.=1:\n+two changed\n"
+            )}),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("b.txt"), "{error}");
+        assert_eq!(fs::read_to_string(project.join("a.txt")).unwrap(), "one\n");
+        assert_eq!(fs::read_to_string(project.join("b.txt")).unwrap(), "two\n");
+    }
+
+    #[test]
+    fn duplicate_canonical_paths_are_rejected_before_any_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        let project = dir.path().join("project");
+        fs::write(project.join("a.txt"), "one\n").unwrap();
+        let tag = tag_of(&toolbox, "a.txt");
+
+        let error = run(
+            &toolbox,
+            &json!({ "input": format!(
+                "[a.txt#{tag}]\nPUT 1.=1:\n+one changed\n\n[./a.txt#{tag}]\nPUT 1.=1:\n+other\n"
+            )}),
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("duplicate path")
+                && error
+                    .to_string()
+                    .contains("combine its operations under one header"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(project.join("a.txt")).unwrap(), "one\n");
+    }
+
+    #[test]
+    fn a_malformed_later_header_errors_naming_that_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        let project = dir.path().join("project");
+        fs::write(project.join("a.txt"), "one\n").unwrap();
+        fs::write(project.join("b.txt"), "two\n").unwrap();
+        let a_tag = tag_of(&toolbox, "a.txt");
+
+        let error = run(
+            &toolbox,
+            &json!({ "input": format!(
+                "[a.txt#{a_tag}]\nPUT 1.=1:\n+one changed\n\n[b.txt#nope]\nPUT 1.=1:\n+two changed\n"
+            )}),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("b.txt"), "{error}");
+        assert_eq!(fs::read_to_string(project.join("a.txt")).unwrap(), "one\n");
+        assert_eq!(fs::read_to_string(project.join("b.txt")).unwrap(), "two\n");
+    }
+
+    #[test]
+    fn a_plus_prefixed_header_looking_line_is_written_as_file_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        let project = dir.path().join("project");
+        fs::write(project.join("a.txt"), "one\n").unwrap();
+        let tag = tag_of(&toolbox, "a.txt");
+
+        run(
+            &toolbox,
+            &json!({ "input": format!(
+                "[a.txt#{tag}]\nPUT 1.=1:\n+[foo#1A2B]\n"
+            )}),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(project.join("a.txt")).unwrap(),
+            "[foo#1A2B]\n"
+        );
+    }
+
+    fn prepare_input(toolbox: &Toolbox, input: &str) -> Vec<PreparedEdit> {
+        let mut seen_keys = HashSet::new();
+        parse_patches(input)
+            .unwrap()
+            .into_iter()
+            .map(|section| prepare(toolbox, section, &mut seen_keys).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn an_invalid_op_in_a_later_file_names_that_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        let project = dir.path().join("project");
+        fs::write(project.join("a.txt"), "one\n").unwrap();
+        fs::write(project.join("b.txt"), "two\n").unwrap();
+        let a_tag = tag_of(&toolbox, "a.txt");
+        let b_tag = tag_of(&toolbox, "b.txt");
+
+        let error = run(
+            &toolbox,
+            &json!({ "input": format!(
+                "[a.txt#{a_tag}]\nPUT 1.=1:\n+one changed\n\n[b.txt#{b_tag}]\nPUT 9.=9:\n+two changed\n"
+            )}),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("b.txt"), "{error}");
+        assert_eq!(fs::read_to_string(project.join("a.txt")).unwrap(), "one\n");
+    }
+
+    #[test]
+    fn a_phase_two_concurrent_change_rolls_back_the_earlier_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        let project = dir.path().join("project");
+        fs::write(project.join("a.txt"), "one\n").unwrap();
+        fs::write(project.join("b.txt"), "two\n").unwrap();
+        let a_tag = tag_of(&toolbox, "a.txt");
+        let b_tag = tag_of(&toolbox, "b.txt");
+        let prepared = prepare_input(
+            &toolbox,
+            &format!(
+                "[a.txt#{a_tag}]\nPUT 1.=1:\n+one changed\n\n[b.txt#{b_tag}]\nPUT 1.=1:\n+two changed\n"
+            ),
+        );
+
+        fs::write(project.join("b.txt"), "two external\n").unwrap();
+        let error = commit_all(&toolbox, prepared).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("b.txt"), "{message}");
+        assert!(message.contains("rolled back 1"), "{message}");
+        assert_eq!(fs::read_to_string(project.join("a.txt")).unwrap(), "one\n");
+        assert_eq!(
+            fs::read_to_string(project.join("b.txt")).unwrap(),
+            "two external\n"
+        );
+        let hash = content_hash(&fs::read(project.join("a.txt")).unwrap());
+        assert_eq!(
+            toolbox.seen().unseen(&project.join("a.txt"), &hash, &[1]),
+            Some(Vec::new()),
+            "a rollback must keep the pre-edit seen snapshot"
+        );
+    }
+
+    #[test]
+    fn rollback_keeps_a_concurrent_external_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        let project = dir.path().join("project");
+        fs::write(project.join("a.txt"), "one\n").unwrap();
+        fs::write(project.join("b.txt"), "two\n").unwrap();
+        let a_tag = tag_of(&toolbox, "a.txt");
+        let b_tag = tag_of(&toolbox, "b.txt");
+        let prepared = prepare_input(
+            &toolbox,
+            &format!(
+                "[a.txt#{a_tag}]\nPUT 1.=1:\n+one changed\n\n[b.txt#{b_tag}]\nPUT 1.=1:\n+two changed\n"
+            ),
+        );
+
+        fs::write(project.join("a.txt"), "one external\n").unwrap();
+        let error = rollback(&prepared, &[0], ToolError::msg("b.txt write failed"));
+
+        assert!(
+            error
+                .to_string()
+                .contains("kept the concurrent external changes"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(project.join("a.txt")).unwrap(),
+            "one external\n"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_phase_two_write_failure_rolls_back_the_committed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let toolbox = toolbox(dir.path());
+        let project = dir.path().join("project");
+        fs::write(project.join("a.txt"), "one\n").unwrap();
+        let a_tag = tag_of(&toolbox, "a.txt");
+        let readonly = "/proc/sys/kernel/ostype";
+        let readonly_tag = tag_of(&toolbox, readonly);
+
+        let error = run(
+            &toolbox,
+            &json!({ "input": format!(
+                "[a.txt#{a_tag}]\nPUT 1.=1:\n+one changed\n\n[{readonly}#{readonly_tag}]\nPUT 1.=1:\n+Linux\n"
+            )}),
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains(readonly), "{message}");
+        assert!(message.contains("rolled back"), "{message}");
+        assert_eq!(fs::read_to_string(project.join("a.txt")).unwrap(), "one\n");
+        let hash = content_hash(&fs::read(project.join("a.txt")).unwrap());
+        assert_eq!(
+            toolbox.seen().unseen(&project.join("a.txt"), &hash, &[1]),
+            Some(Vec::new()),
+            "rollback must keep the pre-edit seen snapshot"
+        );
+    }
 }
