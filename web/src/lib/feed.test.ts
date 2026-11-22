@@ -323,6 +323,24 @@ it('replaces optimistic user and steer items in place when server events arrive'
   expect(afterSteer.items[1]).toMatchObject({ id: 'srv-2', kind: 'steer', text: 'wait', route: 'pending', optimistic: false });
 });
 
+it('keeps one row when the daemon appends the saved attachment lines', () => {
+  const attachment = '\nAttached file saved at .emberloop/files/s1/notes.pdf';
+  const seeded = {
+    ...emptyFeedState(),
+    items: [
+      { id: 'opt-1', kind: 'user' as const, text: 'look at this', imagesCount: 0, optimistic: true },
+      { id: 'opt-2', kind: 'steer' as const, text: 'and this', route: 'pending' as const, optimistic: true }
+    ]
+  };
+  const afterPrompt = applyEvent(seeded, ev('prompt', { text: `look at this${attachment}`, imagesCount: 0 }, 1));
+  expect(afterPrompt.items).toHaveLength(2);
+  expect(afterPrompt.items[0]).toMatchObject({ id: 'opt-1', kind: 'user', text: `look at this${attachment}`, optimistic: false });
+
+  const afterSteer = applyEvent(afterPrompt, ev('steer_queued', { id: 'srv-2', text: `and this${attachment}` }, 2));
+  expect(afterSteer.items).toHaveLength(2);
+  expect(afterSteer.items[1]).toMatchObject({ id: 'srv-2', kind: 'steer', text: `and this${attachment}`, optimistic: false });
+});
+
 it('merges display metadata from tool_started and tool_finished without losing title', () => {
   const state = run(
     ev('tool_started', {

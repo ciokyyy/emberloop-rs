@@ -334,6 +334,11 @@ function todosOf(value: unknown): TodoItem[] {
       status: statuses.includes(item.status as TodoStatus) ? (item.status as TodoStatus) : 'pending'
     }));
 }
+// The daemon appends its own lines (saved attachment paths) to the text it stores, so the
+// server copy is no longer equal to the optimistic one; compare the user's own words only.
+function samePromptText(server: string, local: string | undefined): boolean {
+  return server === local || (!!local && server.startsWith(`${local}\n`));
+}
 
 export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
   const data = event.data ?? {};
@@ -350,11 +355,11 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
       const promptText = text(data.text);
       const imagesCount = number(data.imagesCount) || number(data.images);
       const optIndex = state.items.findIndex(
-        (item) => item.optimistic && item.kind === 'user' && (item.text ?? '') === promptText
+        (item) => item.optimistic && item.kind === 'user' && samePromptText(promptText, item.text)
       );
       if (optIndex !== -1) {
         const next = [...state.items];
-        next[optIndex] = { ...next[optIndex], imagesCount, optimistic: false };
+        next[optIndex] = { ...next[optIndex], text: promptText, imagesCount, optimistic: false };
         return { ...state, items: next };
       }
       return {
@@ -386,13 +391,14 @@ export function applyEvent(state: FeedState, event: SessionEvent): FeedState {
       const steerText = text(data.text);
       const imagesCount = number(data.imagesCount) || undefined;
       const optIndex = state.items.findIndex(
-        (item) => item.optimistic && item.kind === 'steer' && (item.text ?? '') === steerText
+        (item) => item.optimistic && item.kind === 'steer' && samePromptText(steerText, item.text)
       );
       if (optIndex !== -1) {
         const next = [...state.items];
         next[optIndex] = {
           ...next[optIndex],
           id: toolId(data) || next[optIndex].id,
+          text: steerText,
           imagesCount,
           report: subagentReport(data.report),
           route: 'pending',
