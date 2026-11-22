@@ -204,6 +204,17 @@ pub struct PromptImageDto {
     pub mime_type: String,
     #[serde(rename = "dataBase64")]
     pub data_base64: String,
+    /// The browser's file name, used only to name the copy saved under the Project.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// A non-image attachment: saved to the Project, never sent on the model wire.
+#[derive(Deserialize, ToSchema)]
+pub struct PromptFileDto {
+    pub name: String,
+    #[serde(rename = "dataBase64")]
+    pub data_base64: String,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -211,6 +222,8 @@ pub struct PromptRequest {
     pub text: String,
     #[serde(default)]
     pub images: Vec<PromptImageDto>,
+    #[serde(default)]
+    pub files: Vec<PromptFileDto>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -218,6 +231,8 @@ pub struct SteerRequest {
     pub text: String,
     #[serde(default)]
     pub images: Vec<PromptImageDto>,
+    #[serde(default)]
+    pub files: Vec<PromptFileDto>,
 }
 
 #[derive(Deserialize)]
@@ -606,6 +621,28 @@ async fn reject_one_shot(state: &AppState, id: &str) -> Result<(), (StatusCode, 
     }
 }
 
+/// Writes this prompt's attachments under the Session's Project and answers the Project-relative
+/// path of each non-image file. A Session whose Project is gone saves nothing.
+async fn save_attachments(
+    state: &AppState,
+    meta: &SessionMeta,
+    id: &str,
+    images: &[PromptImageDto],
+    files: &[PromptFileDto],
+) -> Result<Vec<String>, (StatusCode, String)> {
+    let Some(project) = state.projects.get(&meta.project_id).await else {
+        return Ok(Vec::new());
+    };
+    crate::attachments::save(&project.root, id, images, files).map_err(|error| {
+        let status = if error.kind() == std::io::ErrorKind::InvalidInput {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        (status, format!("Could not save the attachment: {error}"))
+    })
+}
+
 /// The prompt without the one-shot guard, for daemon-internal callers: spawn, recovery, nudge.
 pub(crate) async fn prompt_session_inner(
     State(state): State<AppState>,
@@ -624,9 +661,12 @@ pub(crate) async fn prompt_session_inner(
         let steer = Json(SteerRequest {
             text: payload.text,
             images: payload.images,
+            files: payload.files,
         });
         return steer_session_inner(State(state), Path(id), steer).await;
     }
+    let saved = save_attachments(&state, &meta, &id, &payload.images, &payload.files).await?;
+    let text = crate::attachments::with_saved_files(&payload.text, &saved);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -647,7 +687,7 @@ pub(crate) async fn prompt_session_inner(
         0,
         EventKind::Prompt,
         serde_json::json!({
-            "text": payload.text,
+            "text": text,
             "imagesCount": payload.images.len()
         }),
     );
@@ -672,11 +712,12 @@ pub(crate) async fn prompt_session_inner(
         .map(|image| crate::routes::PromptImageDto {
             mime_type: image.mime_type,
             data_base64: image.data_base64,
+            name: image.name,
         })
         .collect();
     state
         .driver
-        .prompt(&id, &payload.text, images)
+        .prompt(&id, &text, images)
         .await
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
 
@@ -712,6 +753,8 @@ pub(crate) async fn steer_session_inner(
         return Err((StatusCode::NOT_FOUND, "Session not found".into()));
     };
     crate::session_setup::validate_images(&state, &meta, &payload.images).await?;
+    let saved = save_attachments(&state, &meta, &id, &payload.images, &payload.files).await?;
+    let text = crate::attachments::with_saved_files(&payload.text, &saved);
 
     let log = state
         .get_event_log(&id)
@@ -728,7 +771,7 @@ pub(crate) async fn steer_session_inner(
         })
         .collect();
     let entry = queue
-        .enqueue_with_images(SteerKind::Steer, payload.text, images)
+        .enqueue_with_images(SteerKind::Steer, text, images)
         .await;
     let event = SessionEvent::steer_queued(&id, &entry);
     let appended = log
@@ -1193,6 +1236,7 @@ impl emberloop_core::steer::SteerWaker for DriverWaker<'_> {
             .map(|image| PromptImageDto {
                 mime_type: image.mime_type.clone(),
                 data_base64: image.data_base64.clone(),
+                name: None,
             })
             .collect();
         self.driver.wake(self.session_id, text, images).await

@@ -1987,6 +1987,22 @@
           }
         }
       },
+      "PromptFileDto": {
+        "type": "object",
+        "description": "A non-image attachment: saved to the Project, never sent on the model wire.",
+        "required": [
+          "name",
+          "dataBase64"
+        ],
+        "properties": {
+          "dataBase64": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "PromptImageDto": {
         "type": "object",
         "required": [
@@ -1999,6 +2015,13 @@
           },
           "mimeType": {
             "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The browser's file name, used only to name the copy saved under the Project."
           }
         }
       },
@@ -2008,6 +2031,12 @@
           "text"
         ],
         "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PromptFileDto"
+            }
+          },
           "images": {
             "type": "array",
             "items": {
@@ -2314,6 +2343,12 @@
           "text"
         ],
         "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PromptFileDto"
+            }
+          },
           "images": {
             "type": "array",
             "items": {

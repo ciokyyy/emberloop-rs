@@ -1,4 +1,5 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+pub mod attachments;
 pub mod design;
 pub mod driver;
 pub mod files;

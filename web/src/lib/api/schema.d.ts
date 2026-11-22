@@ -696,11 +696,19 @@ export interface components {
             id: string;
             overrideHash?: string | null;
         };
+        /** @description A non-image attachment: saved to the Project, never sent on the model wire. */
+        PromptFileDto: {
+            dataBase64: string;
+            name: string;
+        };
         PromptImageDto: {
             dataBase64: string;
             mimeType: string;
+            /** @description The browser's file name, used only to name the copy saved under the Project. */
+            name?: string | null;
         };
         PromptRequest: {
+            files?: components["schemas"]["PromptFileDto"][];
             images?: components["schemas"]["PromptImageDto"][];
             text: string;
         };
@@ -867,6 +875,7 @@ export interface components {
             todo_reminders_max: number;
         };
         SteerRequest: {
+            files?: components["schemas"]["PromptFileDto"][];
             images?: components["schemas"]["PromptImageDto"][];
             text: string;
         };

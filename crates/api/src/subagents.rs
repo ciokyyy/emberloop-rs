@@ -181,6 +181,7 @@ pub(crate) async fn prompt_child_raw(
         Json(routes::PromptRequest {
             text,
             images: Vec::new(),
+            files: Vec::new(),
         }),
     )
     .await?;

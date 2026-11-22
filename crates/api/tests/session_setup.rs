@@ -15,12 +15,14 @@ use tower::ServiceExt;
 struct Driver {
     configured: Mutex<Vec<String>>,
     images: Mutex<Vec<usize>>,
+    texts: Mutex<Vec<String>>,
     fail: bool,
 }
 #[async_trait]
 impl SessionDriver for Driver {
-    async fn prompt(&self, _: &str, _: &str, images: Vec<PromptImageDto>) -> Result<(), String> {
+    async fn prompt(&self, _: &str, text: &str, images: Vec<PromptImageDto>) -> Result<(), String> {
         self.images.lock().unwrap().push(images.len());
+        self.texts.lock().unwrap().push(text.to_string());
         Ok(())
     }
     async fn cancel(&self, _: &str) -> Result<(), String> {
@@ -339,4 +341,219 @@ async fn a_model_from_another_harness_drops_the_old_resume_token_and_the_same_ha
         let saved = state.sessions.get("s1").await.unwrap();
         assert_eq!(saved.resume_token.as_deref(), token, "{model}");
     }
+}
+
+async fn project_state(
+    dir: &std::path::Path,
+    driver: Arc<Driver>,
+) -> (AppState, std::path::PathBuf) {
+    let state = state(dir, driver).await;
+    let root = dir.join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    state
+        .projects
+        .insert(store::Project {
+            id: "p1".into(),
+            name: "project".into(),
+            root: root.clone(),
+        })
+        .await
+        .unwrap();
+    let mut meta = state.sessions.get("s1").await.unwrap();
+    meta.project_id = "p1".into();
+    state.sessions.save(&meta).await.unwrap();
+    (state, root)
+}
+
+fn encoded(bytes: &[u8]) -> String {
+    use ct_codecs::{Base64, Encoder};
+    Base64::encode_to_string(bytes).unwrap()
+}
+
+async fn last_prompt_text(state: &AppState) -> String {
+    let log = state.get_event_log("s1").await.unwrap();
+    let events = log.replay(None).await.unwrap();
+    events
+        .iter()
+        .rev()
+        .find(|event| event.kind == emberloop_core::events::EventKind::Prompt)
+        .unwrap()
+        .data["text"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_prompt_file_is_saved_under_the_project_and_named_in_the_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let driver = Arc::new(Driver::default());
+    let (state, root) = project_state(dir.path(), driver.clone()).await;
+    let app = build_router(state.clone());
+    let pdf = b"%PDF-1.7 notes".to_vec();
+    let response = app
+        .oneshot(req(
+            "POST",
+            "/api/sessions/s1/prompt",
+            serde_json::json!({
+                "text": "read this",
+                "images": [{"mimeType":"image/png","dataBase64":encoded(&[0,0,0]),"name":"shot.png"}],
+                "files": [{"name":"notes.pdf","dataBase64":encoded(&pdf)}]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let attachments = root.join(".emberloop/files/s1");
+    assert_eq!(std::fs::read(attachments.join("notes.pdf")).unwrap(), pdf);
+    assert_eq!(
+        std::fs::read(attachments.join("shot.png")).unwrap(),
+        vec![0, 0, 0]
+    );
+    let expected = "read this\nAttached file saved at .emberloop/files/s1/notes.pdf";
+    assert_eq!(driver.texts.lock().unwrap().as_slice(), [expected]);
+    assert_eq!(last_prompt_text(&state).await, expected);
+}
+
+#[tokio::test]
+async fn a_steer_file_is_saved_and_named_in_the_queued_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let driver = Arc::new(Driver::default());
+    let (state, root) = project_state(dir.path(), driver).await;
+    state.steers.queue("s1").set_turn_active(true).await;
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(req(
+            "POST",
+            "/api/sessions/s1/steer",
+            serde_json::json!({
+                "text": "and this",
+                "files": [{"name":"log.txt","dataBase64":encoded(b"line")}]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read(root.join(".emberloop/files/s1/log.txt")).unwrap(),
+        b"line"
+    );
+    let entries = state.steers.queue("s1").entries().await;
+    assert_eq!(
+        entries[0].text,
+        "and this\nAttached file saved at .emberloop/files/s1/log.txt"
+    );
+}
+
+#[tokio::test]
+async fn hostile_and_repeated_names_stay_inside_the_session_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let driver = Arc::new(Driver::default());
+    let (state, root) = project_state(dir.path(), driver).await;
+    let app = build_router(state);
+    let files: Vec<serde_json::Value> = ["../../etc/passwd", "notes.pdf", "notes.pdf", ".."]
+        .iter()
+        .map(|name| serde_json::json!({"name": name, "dataBase64": encoded(b"x")}))
+        .collect();
+    let response = app
+        .oneshot(req(
+            "POST",
+            "/api/sessions/s1/prompt",
+            serde_json::json!({"text":"", "files": files}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let attachments = root.join(".emberloop/files/s1");
+    let mut saved: Vec<String> = std::fs::read_dir(&attachments)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    saved.sort();
+    assert_eq!(saved, ["file", "notes-2.pdf", "notes.pdf", "passwd"]);
+}
+
+#[tokio::test]
+async fn the_project_gitignore_ignores_attachments() {
+    let dir = tempfile::tempdir().unwrap();
+    let driver = Arc::new(Driver::default());
+    let (state, root) = project_state(dir.path(), driver).await;
+    let app = build_router(state);
+    let body = serde_json::json!({
+        "text": "",
+        "files": [{"name":"a.txt", "dataBase64": encoded(b"a")}]
+    });
+    app.clone()
+        .oneshot(req("POST", "/api/sessions/s1/prompt", body.clone()))
+        .await
+        .unwrap();
+    let ignore = root.join(".emberloop/.gitignore");
+    assert_eq!(std::fs::read_to_string(&ignore).unwrap(), "files/\n");
+    std::fs::write(&ignore, "files/\n# mine\n").unwrap();
+    let response = app
+        .oneshot(req("POST", "/api/sessions/s1/prompt", body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read_to_string(&ignore).unwrap(),
+        "files/\n# mine\n"
+    );
+}
+
+#[tokio::test]
+async fn a_prompt_without_attachments_leaves_the_project_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let driver = Arc::new(Driver::default());
+    let (state, root) = project_state(dir.path(), driver).await;
+    let app = build_router(state);
+    let response = app
+        .oneshot(req(
+            "POST",
+            "/api/sessions/s1/prompt",
+            serde_json::json!({"text": "just text"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!root.join(".emberloop").exists());
+}
+
+#[tokio::test]
+async fn non_image_files_have_no_limit_while_images_keep_theirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let driver = Arc::new(Driver::default());
+    let (state, root) = project_state(dir.path(), driver).await;
+    let app = build_router(state);
+    let files: Vec<serde_json::Value> = (0..8)
+        .map(|index| serde_json::json!({"name": format!("f{index}.bin"), "dataBase64": encoded(b"x")}))
+        .collect();
+    let response = app
+        .clone()
+        .oneshot(req(
+            "POST",
+            "/api/sessions/s1/prompt",
+            serde_json::json!({"text":"", "files": files}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read_dir(root.join(".emberloop/files/s1"))
+            .unwrap()
+            .count(),
+        8
+    );
+    let images: Vec<serde_json::Value> = (0..6)
+        .map(|_| serde_json::json!({"mimeType":"image/png","dataBase64":encoded(&[0,0,0])}))
+        .collect();
+    let response = app
+        .oneshot(req(
+            "POST",
+            "/api/sessions/s1/prompt",
+            serde_json::json!({"text":"", "images": images}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
