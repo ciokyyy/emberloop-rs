@@ -141,6 +141,14 @@ export interface PromptText {
 export interface PromptImage {
   mimeType: string;
   dataBase64: string;
+  /** Names the daemon's saved copy of the same bytes. */
+  name?: string;
+}
+
+/** A non-image attachment: sent as bytes for the daemon to save, never put in the prompt. */
+export interface PromptFile {
+  name: string;
+  dataBase64: string;
 }
 
 export type SessionStatus = 'idle' | 'working' | 'failed' | 'paused';

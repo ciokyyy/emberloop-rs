@@ -9,6 +9,22 @@ describe('api client', () => {
     await expect(api.prompt('s1', 'hello', [])).resolves.toBeUndefined();
   });
 
+  it('sends prompt files and the image name in the body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await api.prompt(
+      's1',
+      'hi',
+      [{ mimeType: 'image/png', dataBase64: 'aW1n', name: 'a.png' }],
+      [{ name: 'notes.pdf', dataBase64: 'cGRm' }]
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      text: 'hi',
+      images: [{ mimeType: 'image/png', dataBase64: 'aW1n', name: 'a.png' }],
+      files: [{ name: 'notes.pdf', dataBase64: 'cGRm' }]
+    });
+  });
+
   it('reports an error without dumping a whole HTML page', async () => {
     vi.stubGlobal(
       'fetch',

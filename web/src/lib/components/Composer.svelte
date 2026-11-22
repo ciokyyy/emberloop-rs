@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
   import { expandSlash, resolveComposerAction, shouldSend, slashQuery } from '$lib/composer';
-  import { MAX_IMAGES, pickImages, type ImageAttachment, type RejectReason } from '$lib/images';
+  import { MAX_IMAGES, pickImages, splitAttachments, type ImageAttachment, type RejectReason } from '$lib/images';
   import { api } from '$lib/api';
   import { insertAt, MAX_AUDIO_BYTES, pickAudioType } from '$lib/voice';
   import { collapse, fadeAt, flip, flipAnimation, flipReady, rise, slideDown } from '$lib/motion';
@@ -53,6 +53,8 @@
     } catch { errors = ['Draft could not be saved in this browser.']; }
   });
   let attachments = $state<ImageAttachment<File>[]>([]);
+  /** Non-image files: no limit, no preview, saved by the daemon instead of sent to the model. */
+  let documents = $state<File[]>([]);
   let errors = $state<string[]>([]);
   let busy = $state(false);
   let dragging = $state(false);
@@ -123,7 +125,9 @@
     textarea?.setSelectionRange(name.length + 2, name.length + 2);
     cursor = name.length + 2;
   }
-  const canSend = $derived(!disabled && !busy && (!!text.trim() || attachments.length > 0));
+  const canSend = $derived(
+    !disabled && !busy && (!!text.trim() || attachments.length > 0 || documents.length > 0)
+  );
 
   $effect(() => {
     void text;
@@ -168,12 +172,17 @@
   });
 
   function addFiles(files: Iterable<File>) {
-    if (!imageInput) {
-      errors = ['This model does not support images. Choose an image-capable model.'];
-      return;
-    }
-    const result = pickImages(attachments, files);
-    errors = result.rejected.map(({ name, reason }) => `${name} ${reasonText(reason)}`);
+    const split = splitAttachments(files);
+    documents = [...documents, ...split.files];
+    // A text-only model takes the other files but refuses the images.
+    const images = imageInput ? split.images : [];
+    const result = pickImages(attachments, images);
+    errors = [
+      ...(imageInput || !split.images.length
+        ? []
+        : ['This model does not support images. Choose an image-capable model.']),
+      ...result.rejected.map(({ name, reason }) => `${name} ${reasonText(reason)}`)
+    ];
     attachments = [
       ...attachments,
       ...result.accepted.map(({ file }) => ({ file, url: URL.createObjectURL(file) }))
@@ -186,9 +195,14 @@
     attachments = attachments.filter((_, i) => i !== index);
   }
 
+  function removeDocument(index: number) {
+    documents = documents.filter((_, i) => i !== index);
+  }
+
   function clearAttachments() {
     for (const item of attachments) if (item.url) URL.revokeObjectURL(item.url);
     attachments = [];
+    documents = [];
   }
 
   async function submit() {
@@ -199,18 +213,20 @@
     }
     const draftText = text;
     const trimmed = expandSlash(text.trim(), known);
-    const files = attachments.map((item) => item.file);
+    const sent = [...attachments.map((item) => item.file), ...documents];
     // Clear optimistically right away so slow uploads never leave stale text or previews behind.
     text = '';
     clearAttachments();
     errors = [];
     try {
-      await onsubmit(trimmed, files);
+      await onsubmit(trimmed, sent);
     } catch (error) {
       errors = [error instanceof Error ? error.message : String(error)];
-      if (!text && attachments.length === 0) {
+      if (!text && attachments.length === 0 && documents.length === 0) {
         text = draftText;
-        attachments = files.map((file) => ({ file, url: URL.createObjectURL(file) }));
+        const split = splitAttachments(sent);
+        attachments = split.images.map((file) => ({ file, url: URL.createObjectURL(file) }));
+        documents = split.files;
       }
     }
   }
@@ -242,9 +258,7 @@
   }
 
   function onpaste(event: ClipboardEvent) {
-    const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
-      file.type.startsWith('image/')
-    );
+    const files = Array.from(event.clipboardData?.files ?? []);
     if (files.length) {
       event.preventDefault();
       addFiles(files);
@@ -399,6 +413,27 @@
       </div>
     {/if}
 
+    {#if documents.length}
+      <div class="mb-2 flex flex-wrap gap-2" transition:collapse>
+        {#each documents as file, index (file)}
+          <span
+            class="flex min-w-0 items-center gap-1 rounded-lg border border-border bg-surface-2 py-1 pl-2 pr-1 text-[12px]"
+            use:flipReady
+            animate:flip={flipAnimation()}
+            in:rise
+            out:fadeAt
+          >
+            <span class="max-w-[200px] truncate">{file.name}</span>
+            <button
+              class="grid h-5 w-5 shrink-0 place-items-center rounded-full text-[12px] leading-none hover:bg-surface-3"
+              aria-label={`Remove ${file.name}`}
+              onclick={() => removeDocument(index)}
+            >×</button>
+          </span>
+        {/each}
+      </div>
+    {/if}
+
     <div
       class={cn('rounded-2xl border border-input bg-surface-1 p-2', dragging && 'border-brand')}
       role="group"
@@ -453,7 +488,6 @@
         <input
           bind:this={picker}
           type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif"
           multiple
           hidden
           onchange={(event) => {
@@ -472,9 +506,9 @@
         <button
           type="button"
           class="icon-btn"
-          aria-label="Attach image"
-          title={imageInput ? "Attach image · 10 MB each · 5 per prompt" : "This model does not support images"}
-          disabled={disabled || !imageInput}
+          aria-label="Attach file"
+          title="Attach a file · images reach the model, other files are saved in the Project"
+          disabled={disabled}
           onclick={() => picker?.click()}
         ><Icon name="paperclip" size={16} /></button>
         {#if working}

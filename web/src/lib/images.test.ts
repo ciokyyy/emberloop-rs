@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_IMAGE_BYTES, MAX_IMAGES, pickImages, type FileLike } from './images';
+import { MAX_IMAGE_BYTES, MAX_IMAGES, pickImages, splitAttachments, type FileLike } from './images';
 
 const file = (name: string, type: string, size = 1024): FileLike => ({ name, type, size });
 
@@ -30,5 +30,17 @@ describe('image attachments', () => {
     expect(result.accepted).toHaveLength(1);
     expect(result.rejected).toEqual([{ name: '6.png', reason: 'limit' }]);
     expect(MAX_IMAGES).toBe(5);
+  });
+});
+
+describe('file attachments', () => {
+  it('splits images from every other file', () => {
+    const { images, files } = splitAttachments([
+      file('a.png', 'image/png'),
+      file('notes.pdf', 'application/pdf'),
+      file('data.bin', '')
+    ]);
+    expect(images.map((f) => f.name)).toEqual(['a.png']);
+    expect(files.map((f) => f.name)).toEqual(['notes.pdf', 'data.bin']);
   });
 });

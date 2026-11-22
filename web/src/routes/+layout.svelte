@@ -37,7 +37,7 @@
   import { applyEvent, applySnapshot, emptyFeedState, statusOf, type FeedState } from '$lib/feed';
   import { firstThinkingSentence } from '$lib/compactFeed';
   import { chosenWindow } from '$lib/contextMeter';
-  import { toPromptImage } from '$lib/images';
+  import { splitAttachments, toPromptFile, toPromptImage } from '$lib/images';
   import { modelIconId } from '$lib/brands';
   import { cachePath, designPath, newPath, newSessionProjects, sessionPath, skillPath, viewOf, viewPath, type Page, type View } from '$lib/route';
 
@@ -402,10 +402,12 @@
     const projectId = scope ?? projects[0]?.id;
     if (!projectId) throw new Error('Choose a Project first.');
     if (!draftModel) throw new Error('Choose a model first.');
-    const images = await Promise.all(files.map(toPromptImage));
+    const split = splitAttachments(files);
+    const images = await Promise.all(split.images.map(toPromptImage));
+    const documents = await Promise.all(split.files.map(toPromptFile));
     const created = await api.createSession(projectId, undefined, draftModel, thoughtLevel || undefined);
     sessions = [created, ...sessions];
-    await api.prompt(created.id, text, images);
+    await api.prompt(created.id, text, images, documents);
     // The draft's text is spent; the new Session keeps its own.
     try { localStorage.removeItem(`emberloop-rs:draft:draft:${projectId}`); } catch { /* no storage */ }
     await goto(sessionPath(projectId, created.id));
@@ -473,7 +475,8 @@
     if (!targetSession) throw new Error('Select a Session first.');
     const isSteer = working || inFlightSends > 0;
     const optId = `opt-${++optSeq}`;
-    const imagesCount = files.length || undefined;
+    const split = splitAttachments(files);
+    const imagesCount = split.images.length || undefined;
     feed = {
       ...feed,
       status: isSteer ? feed.status : 'working',
@@ -489,9 +492,10 @@
     const job = sendChain
       .catch(() => {})
       .then(async () => {
-        const images = await Promise.all(files.map(toPromptImage));
-        if (isSteer) await api.steer(targetSession, text, images);
-        else await api.prompt(targetSession, text, images);
+        const images = await Promise.all(split.images.map(toPromptImage));
+        const documents = await Promise.all(split.files.map(toPromptFile));
+        if (isSteer) await api.steer(targetSession, text, images, documents);
+        else await api.prompt(targetSession, text, images, documents);
       });
     sendChain = job;
     try {

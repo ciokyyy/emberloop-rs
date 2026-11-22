@@ -6,6 +6,7 @@ import type {
   Project,
   ProjectDesign,
   ProviderView,
+  PromptFile,
   PromptImage,
   PromptInfo,
   PromptText,
@@ -80,15 +81,15 @@ export const api = {
   deleteSession: (id: string) =>
     request<Session>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  prompt: (id: string, text: string, images: PromptImage[]) =>
+  prompt: (id: string, text: string, images: PromptImage[], files: PromptFile[] = []) =>
     request<void>(`/api/sessions/${encodeURIComponent(id)}/prompt`, {
       method: 'POST',
-      body: JSON.stringify({ text, images })
+      body: JSON.stringify({ text, images, files })
     }),
-  steer: (id: string, text: string, images: PromptImage[]) =>
+  steer: (id: string, text: string, images: PromptImage[], files: PromptFile[] = []) =>
     request<void>(`/api/sessions/${encodeURIComponent(id)}/steer`, {
       method: 'POST',
-      body: JSON.stringify({ text, images })
+      body: JSON.stringify({ text, images, files })
     }),
   cancel: (id: string) =>
     request<void>(`/api/sessions/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),

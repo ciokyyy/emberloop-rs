@@ -7,6 +7,7 @@ function setup(extra = {}) {
   return render(Composer, { onsubmit: vi.fn(), oncancel: vi.fn(), ...extra });
 }
 const image = () => new File(['pixels'], 'screen.png', { type: 'image/png' });
+const doc = () => new File(['pages'], 'notes.pdf', { type: 'application/pdf' });
 
 describe('Composer attachments', () => {
   it('sends an image-only prompt and clears its preview after success', async () => {
@@ -57,6 +58,34 @@ describe('Composer attachments', () => {
     await fireEvent.paste(screen.getByRole('textbox'), { clipboardData: { files: [image()] } });
     expect(screen.queryByAltText('screen.png')).toBeNull();
     expect(screen.getByText(/does not support images/i)).toBeTruthy();
+  });
+
+  it('attaches another file as a chip and sends it with the prompt', async () => {
+    const onsubmit = vi.fn();
+    const view = setup({ onsubmit });
+    await fireEvent.change(view.container.querySelector('input[type=file]')!, { target: { files: [doc()] } });
+    expect(screen.getByText('notes.pdf')).toBeTruthy();
+    expect(screen.queryByAltText('notes.pdf')).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(onsubmit).toHaveBeenCalledWith('', [expect.any(File)]));
+    await waitFor(() => expect(screen.queryByText('notes.pdf')).toBeNull());
+  });
+
+  it('accepts another file on a text-only model and still refuses images', async () => {
+    setup({ imageInput: false });
+    await fireEvent.paste(screen.getByRole('textbox'), { clipboardData: { files: [image(), doc()] } });
+    expect(screen.getByText('notes.pdf')).toBeTruthy();
+    expect(screen.queryByAltText('screen.png')).toBeNull();
+    expect(screen.getByText(/does not support images/i)).toBeTruthy();
+  });
+
+  it('keeps both kinds of attachment on failure', async () => {
+    const view = setup({ onsubmit: vi.fn().mockRejectedValue(new Error('Upload failed')) });
+    await fireEvent.change(view.container.querySelector('input[type=file]')!, { target: { files: [image(), doc()] } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText('Upload failed')).toBeTruthy();
+    expect(screen.getByAltText('screen.png')).toBeTruthy();
+    expect(screen.getByText('notes.pdf')).toBeTruthy();
   });
 });
 
