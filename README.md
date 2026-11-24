@@ -20,7 +20,7 @@
 
 ## 👋 Overview
 
-`emberloop-rs` is the Rust implementation of Emberloop. A single local daemon serves an embedded SvelteKit UI on loopback, runs coding-agent Sessions through pluggable harnesses, and proxies every model request so context compression, steering, tool policy, and usage metering happen in one place instead of in each harness.
+`emberloop-rs` is a local daemon written in Rust that serves an embedded SvelteKit UI on loopback, runs coding-agent Sessions through pluggable harnesses, and proxies every model request so context compression, steering, tool policy, and usage metering happen in one place instead of in each harness.
 
 Every capability is owned by one crate, so a behaviour is declared once and shared by every harness instead of being re-implemented per agent.
 
