@@ -9,7 +9,7 @@
 
 Filesystem persistence and storage layer:
 - `DataRoot`: manages layout `<data_root>/projects.json`, `<data_root>/blobs/<sha256>`, `<data_root>/models/catalogue.json`, and `<data_root>/sessions/<id>/{meta.json (carries `resumeToken`), events/NNNNNN.jsonl, events/index.json, events.zstd, splices.jsonl, images/, spill/, exec/}`
-- `ProjectsStore`: atomic JSON store for Projects (`{id, name, root, ...}`)
+- `ProjectsStore`: atomic JSON store for Projects (`{id, name, root, tools: [{name, url, enabled}]}`). `insert` and `update` validate tools (at most 32, lowercase names, unique, empty or http(s) url) and answer `ProjectStoreError::Invalid`; `update` treats `None` as keep and `Some(vec![])` as clear.
 - `SessionsStore`: atomic metadata store for Sessions (`{id, project_id, title, model, promptHashes, lastUsedAt, archivedAt, restoredAt, state, ...}`)
 - `EventLog`: segmented append-only log with a sidecar segment/turn index, bounded live ring and tail reads. `session_event_lines(root, session_id)` returns every event line of one Session from the live `events/*.jsonl` files in name order, or from `events.zstd` when the live files hold nothing; `crates/api` status and the digest read through it, so both see an archived Session the same way
 - `BlobStore`: content-addressed blobs, one file per sha256

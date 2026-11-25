@@ -1324,6 +1324,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectDto"];
                 };
             };
+            /** @description Invalid project tools */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Project not found */
             404: {
                 headers: {

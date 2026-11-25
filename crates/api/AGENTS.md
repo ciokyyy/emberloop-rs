@@ -25,7 +25,7 @@ releases immediately instead of waiting for the deadline.
 ## Purpose
 
 Exposes axum REST API, SSE event endpoints and the model catalogue with utoipa OpenAPI schema generator:
-- `/api/projects`: list, create, update, delete projects
+- `/api/projects`: list, create, update, delete projects. PATCH takes optional `name`, `root` and `tools` (`{name, url, enabled}`); an omitted `tools` keeps them, `[]` clears them, and an invalid list is 400 with the store's message (`project tools: ...`).
 - `/api/projects/clone`: add a Project by `git clone`. `project_clone.rs` takes the folder name from the repository URL, expands `~` with `$HOME`, refuses an existing folder, and runs `git clone --` with `GIT_TERMINAL_PROMPT=0`, a 120-second timeout and no stdin, so a private clone fails on the local git credentials instead of hanging on a prompt.
 - `/api/projects/:id/design` returns the private edit link for the project’s one live FigCraft document, or 503 when unavailable. `design.rs` keeps a project MCP client for atomic five-second `design.figcraft` snapshots. `/api/figcraft/live/` proxies WebSocket frames only to the loopback FigCraft server and rejects cross-origin or missing-Origin requests. FigCraft normalizes the server path with a trailing slash and sends file credentials in its binary Hello, not WebSocket query parameters. The publish key stays server-side.
 - `/api/sessions`: list, create, update, delete sessions. PATCH accepts `model` and `thoughtLevel` together; `session_setup.rs` validates catalogue efforts and idle state, waits for the driver acknowledgment, then persists settings. Unknown models/efforts are 400; busy/refused changes are 409 and keep metadata unchanged.

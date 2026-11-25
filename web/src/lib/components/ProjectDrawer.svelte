@@ -92,6 +92,6 @@
       {/each}
       <p class="px-3 pt-1 text-[11px] text-fg-3">Tool changes apply to new Sessions.</p>
     {/if}
-    {#if error}<p role="alert" class="px-3 pt-1 text-[11px] text-red-400">{error}</p>{/if}
+    {#if error}<p role="alert" class="px-3 pt-1 text-[11px] text-status-failed">{error}</p>{/if}
   </nav>
 </aside>

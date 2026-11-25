@@ -89,6 +89,7 @@ impl ProjectsStore {
     }
 
     pub async fn insert(&self, project: Project) -> Result<Project, ProjectStoreError> {
+        validate_tools(&project.tools)?;
         let mut map = self.projects.write().await;
         map.insert(project.id.clone(), project.clone());
         self.persist(&map).await?;
@@ -233,12 +234,13 @@ mod tests {
         let file = dir.path().join("projects.json");
         std::fs::write(
             &file,
-            r#"[{"id":"old","name":"Old","root":"/tmp/old","tools":[{"name":"solo"}]}]"#,
+            r#"[{"id":"old","name":"Old","root":"/tmp/old"},{"id":"legacy","name":"Legacy","root":"/tmp/legacy","tools":[{"name":"solo"}]}]"#,
         )
         .unwrap();
         let store = ProjectsStore::load(&file).await.unwrap();
+        assert!(store.get("old").await.unwrap().tools.is_empty());
         assert_eq!(
-            store.get("old").await.unwrap().tools,
+            store.get("legacy").await.unwrap().tools,
             vec![tool("solo", "", true)]
         );
 
@@ -264,8 +266,9 @@ mod tests {
             reloaded.get("p").await.unwrap().tools,
             vec![tool("docs", "", false)]
         );
+        assert!(reloaded.get("old").await.unwrap().tools.is_empty());
         assert_eq!(
-            reloaded.get("old").await.unwrap().tools,
+            reloaded.get("legacy").await.unwrap().tools,
             vec![tool("solo", "", true)]
         );
 

@@ -203,6 +203,9 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid project tools"
+          },
           "404": {
             "description": "Project not found"
           }

@@ -68,6 +68,7 @@ use crate::state::{AppState, Settings};
     components(
         schemas(
             ProjectDto,
+            ProjectToolDto,
             ProjectDesignDto,
             CreateProjectRequest,
             CloneProjectRequest,
@@ -385,6 +386,7 @@ pub async fn clone_project(
     request_body = UpdateProjectRequest,
     responses(
         (status = 200, description = "Project updated", body = ProjectDto),
+        (status = 400, description = "Invalid project tools"),
         (status = 404, description = "Project not found")
     )
 )]
