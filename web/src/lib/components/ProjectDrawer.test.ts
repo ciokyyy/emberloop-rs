@@ -81,3 +81,49 @@ it('lists Project tools, toggles them through PATCH and opens a link only when s
   );
   await vi.waitFor(() => expect(onupdate).toHaveBeenCalledWith(expect.objectContaining({ tools: toggled })));
 });
+
+it('turns the built-in FigCraft server on for a Project and off again', async () => {
+  const onupdate = vi.fn();
+  vi.mocked(api.updateProject).mockResolvedValue({
+    ...project,
+    tools: [{ name: 'figcraft', url: '', enabled: true }]
+  });
+  const { unmount } = render(ProjectDrawer, {
+    project,
+    open: true,
+    onclose: vi.fn(),
+    onupdate,
+    onopendesign: vi.fn()
+  });
+  const off = screen.getByRole('switch', { name: 'FigCraft enabled' });
+  expect(off.getAttribute('aria-checked')).toBe('false');
+
+  await fireEvent.click(off);
+  await vi.waitFor(() =>
+    expect(api.updateProject).toHaveBeenCalledWith('p1', {
+      tools: [{ name: 'figcraft', url: '', enabled: true }]
+    })
+  );
+  await vi.waitFor(() => expect(onupdate).toHaveBeenCalled());
+  unmount();
+
+  const enabled = { ...project, tools: [{ name: 'figcraft', url: '', enabled: true }] };
+  vi.mocked(api.updateProject).mockResolvedValue({
+    ...enabled,
+    tools: [{ name: 'figcraft', url: '', enabled: false }]
+  });
+  render(ProjectDrawer, {
+    project: enabled,
+    open: true,
+    onclose: vi.fn(),
+    onupdate: vi.fn(),
+    onopendesign: vi.fn()
+  });
+  expect(screen.getByRole('switch', { name: 'FigCraft enabled' }).getAttribute('aria-checked')).toBe('true');
+  await fireEvent.click(screen.getByRole('switch', { name: 'FigCraft enabled' }));
+  await vi.waitFor(() =>
+    expect(api.updateProject).toHaveBeenLastCalledWith('p1', {
+      tools: [{ name: 'figcraft', url: '', enabled: false }]
+    })
+  );
+});
