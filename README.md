@@ -76,7 +76,7 @@ Running coding agents directly against providers fragments critical infrastructu
 ### 🔧 MCP Tool Server & Python REPL (`crates/tools`)
 
 - **Anchored file editing & project search** — Serves line-numbered `read` (range paging, `:raw`, images, `ctx:` handles, `el://skills/<name>`, `el://docs/<topic>`), hashline `edit` (including atomic multi-file patches), `write`, and project-jailed `grep` and `find`
-- **Shell, background jobs & stateful Python `execute` REPL** — Runs `bash` (with automatic `rtk` output compression when installed, sourced `$EMBERLOOP_ENV_FILE`, and browser discovery for `agent-browser`/`obscura`), `background` (`list`, `read`, `wait`, `stop`), and `execute` (persistent Python REPL bridging `tools.*`, `tools.parallel`, `tools.save`/`run`, `tools.store`/`load`, `tools.rerun`, plus configured `mcp.json` servers such as `codebase-memory-mcp` and `figcraft`)
+- **Shell, background jobs & stateful Python `execute` REPL** — Runs `bash` (with automatic `rtk` output compression when installed, sourced `$EMBERLOOP_ENV_FILE`, and browser discovery for `agent-browser`/`obscura`), `background` (`list`, `read`, `wait`, `stop`), and `execute` (persistent Python REPL bridging `tools.*`, `tools.parallel`, `tools.save`/`run`, `tools.store`/`load`, `tools.rerun`, plus configured `mcp.json` servers over stdio or Streamable HTTP, such as `codebase-memory-mcp` and `figcraft`)
 - **Search & call recovery** — Provides BM25 `ctx_search` over spilled output, `websearch` (Brave, Exa, DeepSeek), BM25 `skill_search`, and `retry_call` to re-run failed tool calls with targeted patches
 
 ### 🤖 Pluggable Harnesses & Providers (`crates/harness*`, `crates/core`)
@@ -211,7 +211,7 @@ flowchart LR
   TB --> FS["read / edit (hashline) / write / grep / find"]
   TB --> SH["bash (rtk + ENV) / background"]
   TB --> PY["execute Python REPL<br/>tools.* / parallel / save / store / rerun"]
-  PY -->|mcp.json stdio| EX["codebase-memory-mcp & figcraft"]
+  PY -->|mcp.json stdio or http| EX["codebase-memory-mcp & figcraft"]
   TB -->|output over cap| SP[("spill/: ctx handle")]
   SP --> CX["ctx_search (BM25) & read ctx:..."]
 
@@ -410,7 +410,18 @@ Operator configuration lives under `--data-root` and `--config-root`, never in t
 
 - **`<data-root>/settings.json`** — `default_model`, `title_generation`, `title_model`, `spec_reviewer` / `standards_reviewer` / `subagent_tiers` / `goldfish_tiers` fallback ladders, `ponytail_default_level` (`full`), `proxy_compression` (`true`), `max_context_limit` (`20`), `emergency_threshold_percent` (`25`), `preserve_recent_messages` (`4`), `min_pressure_benefit_tokens` (`0` = `max(5000, window / 100)`), `protected_tools`, `tier2_trigger` (`1000`), `tier3_trigger` (`2000`), and `ctx_spill_enabled` (`false`)
 - **`<config-root>/keys.json` & `tool-keys.json`** — Provider API keys and tool keys (`BRAVE_API_KEY`, `EXA_API_KEY`, `JINA_API_KEY`) saved with `0600` permissions
-- **`<config-root>/mcp.json`** — Extra stdio MCP servers bridged into Python `execute` as `tools.<server>.<tool>(...)` (`codebase-memory-mcp` as `graph` and `figcraft` auto-register when absent)
+- **`<config-root>/mcp.json`** — Extra MCP servers bridged into Python `execute` as `tools.<server>.<tool>(...)` (`codebase-memory-mcp` as `graph` and `figcraft` auto-register when absent). Each entry gives exactly one of `command` (stdio) or `url` (Streamable HTTP), plus optional `include`/`exclude`/`enabled`/`summary`/`project`; a `url` entry may not carry `args` or `setup`, and its `headers` are sent on every request:
+
+  ```json
+  {
+    "mcpServers": {
+      "jobs": {
+        "url": "https://box.tailnet.ts.net/mcp",
+        "headers": { "Authorization": "Bearer <token>" }
+      }
+    }
+  }
+  ```
 - **`<config-root>/env`** — Shell file sourced before every `bash` and `execute` call (`$EMBERLOOP_ENV_FILE`) so tool paths and env updates apply without restarting the daemon
 - **`<config-root>/prompts/<id>.md`** — File overrides for any prompt id in `crates/prompts` (Session-pinned at launch so active Sessions stay cache-consistent)
 - **Skills & personas discovery** — Skills resolve from `<project>/.agents/skills` then `~/.agents/skills`; goldfish personas (`*.md`) resolve in order: `<project>/.agents/agents/*.md`, `<project>/.agents/skills/*/agents/*.md`, `<global-skills>/../agents/*.md`, `<global-skills>/*/agents/*.md`

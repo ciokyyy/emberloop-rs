@@ -294,19 +294,16 @@ async fn a_killed_server_is_started_again_for_the_next_call() {
 }
 
 #[tokio::test]
-async fn url_servers_are_refused_and_unknown_servers_stay_unknown() {
+async fn entries_without_a_command_or_url_are_refused_and_unknown_servers_stay_unknown() {
     let fixture = setup();
-    let toolbox = toolbox_with(
-        &fixture,
-        json!({ "web": { "url": "https://example.com/mcp" } }),
-    );
+    let toolbox = toolbox_with(&fixture, json!({ "web": {} }));
 
     let err = toolbox
         .call("web.search", &json!({}))
         .await
         .unwrap_err()
         .to_string();
-    assert!(err.contains("stdio"), "got {err}");
+    assert_eq!(err, "mcp server \"web\": give a command or a url");
     assert!(toolbox.mcp_tools().await.expect("tools").is_empty());
 
     let unknown = toolbox.call("nosuch.tool", &json!({})).await.unwrap_err();

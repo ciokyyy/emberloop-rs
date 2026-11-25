@@ -26,6 +26,8 @@ libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+axum = { workspace = true }
+rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
 
 [lints]
 workspace = true

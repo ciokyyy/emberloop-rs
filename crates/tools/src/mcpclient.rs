@@ -1,17 +1,20 @@
-//! MCP client: one stdio child process per server in `<config root>/mcp.json`.
-//! Its tools reach the model only through `execute`; the harness tool list is
-//! fixed, so a server is never visible as a tool of its own.
+//! MCP client: one server per entry in `<config root>/mcp.json`, either a stdio
+//! child process or a Streamable HTTP endpoint. Its tools reach the model only
+//! through `execute`; the harness tool list is fixed, so a server is never
+//! visible as a tool of its own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::{RoleClient, RunningService};
-use rmcp::transport::TokioChildProcess;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use rmcp::ServiceExt;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -25,12 +28,23 @@ mod design;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// A url server that failed to connect is left alone this long, so a model that
+/// keeps asking for its tools does not handshake on every request.
+const FAILURE_BACKOFF: Duration = Duration::from_secs(30);
 
 fn yes() -> bool {
     true
 }
 
-/// One `mcpServers` entry. `url` is parsed only so it can be refused by name.
+/// How an entry reaches its server.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum Transport {
+    #[default]
+    Http,
+}
+
+/// One `mcpServers` entry: a command or a url, never both.
 #[derive(Clone, Debug, Deserialize)]
 struct Entry {
     command: Option<String>,
@@ -38,6 +52,9 @@ struct Entry {
     args: Vec<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
+    /// Sent with every HTTP request; a bearer token belongs here too.
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
     /// Tool names to expose; empty means every tool the server lists.
     #[serde(default)]
     include: Vec<String>,
@@ -56,6 +73,12 @@ struct Entry {
     #[serde(default)]
     setup: Vec<Vec<String>>,
     #[serde(default)]
+    transport: Transport,
+    /// Parsed here; the Project gating filter reads it in ticket 03.
+    #[serde(default)]
+    #[allow(dead_code)]
+    gated: bool,
+    #[serde(default)]
     url: Option<String>,
 }
 
@@ -64,6 +87,38 @@ struct Server {
     entry: Entry,
     /// Why this server cannot be used; it still answers with the reason.
     error: Option<String>,
+    /// When this url server last failed to connect and why.
+    failed: std::sync::Mutex<Option<(Instant, String)>>,
+}
+
+impl Server {
+    fn recent_failure(&self) -> Option<String> {
+        self.entry.url.as_ref()?;
+        let failed = self
+            .failed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        failed
+            .as_ref()
+            .and_then(|(at, error)| (*at + FAILURE_BACKOFF > Instant::now()).then(|| error.clone()))
+    }
+
+    fn remember_failure(&self, error: &str) {
+        if self.entry.url.is_none() {
+            return;
+        }
+        *self
+            .failed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some((Instant::now(), error.to_string()));
+    }
+
+    fn clear_failure(&self) {
+        *self
+            .failed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+    }
 }
 
 struct Connected {
@@ -143,6 +198,7 @@ impl McpRegistry {
                 name: figcraft::SERVER.to_string(),
                 entry,
                 error: None,
+                failed: std::sync::Mutex::new(None),
             }));
         }
         registry.locks = registry
@@ -176,16 +232,12 @@ impl McpRegistry {
             if !entry.enabled {
                 continue;
             }
-            let error = match &entry.command {
-                Some(command) if !command.trim().is_empty() && entry.url.is_none() => None,
-                _ => Some(format!(
-                    "mcp server {name:?}: only stdio servers are supported, so give a command and not a url"
-                )),
-            };
+            let error = entry_error(name, &entry);
             self.servers.push(Arc::new(Server {
                 name: name.clone(),
                 entry,
                 error,
+                failed: std::sync::Mutex::new(None),
             }));
         }
         self.servers
@@ -497,7 +549,19 @@ async fn connect_server(
     if let Some(ready) = ready(&connected, &server.name).await {
         return Ok(ready);
     }
-    let ready = Arc::new(connect(&root, &server).await?);
+    if let Some(error) = server.recent_failure() {
+        return Err(ToolError::msg(error));
+    }
+    let ready = match connect(&root, &server).await {
+        Ok(ready) => {
+            server.clear_failure();
+            Arc::new(ready)
+        }
+        Err(error) => {
+            server.remember_failure(&error.to_string());
+            return Err(error);
+        }
+    };
     if server.name == figcraft::SERVER {
         design::connect_design(&root, &server, &ready).await?;
     }
@@ -598,6 +662,41 @@ async fn run_setup(root: &Path, server: &Server) {
 }
 
 async fn connect(root: &Path, server: &Server) -> ToolResult<Connected> {
+    match (&server.entry.url, server.entry.transport) {
+        (Some(url), Transport::Http) => connect_http(server, url).await,
+        (None, _) => connect_stdio(root, server).await,
+    }
+}
+
+/// Why `entry` cannot be used, or `None`. No header value ever reaches the text.
+fn entry_error(name: &str, entry: &Entry) -> Option<String> {
+    let command = entry
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|command| !command.is_empty());
+    let refuse = |why: &str| Some(format!("mcp server {name:?}: {why}"));
+    match (command.is_some(), entry.url.is_some()) {
+        (true, false) => None,
+        (true, true) => refuse("give a command or a url, not both"),
+        (false, true) => {
+            if !entry.args.is_empty() || !entry.setup.is_empty() {
+                return refuse("url entries cannot have args or setup");
+            }
+            let url = entry.url.as_deref().unwrap_or_default();
+            let valid = reqwest::Url::parse(url)
+                .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some());
+            if valid {
+                None
+            } else {
+                refuse("url must be an http(s) url such as https://host/mcp")
+            }
+        }
+        (false, false) => refuse("give a command or a url"),
+    }
+}
+
+async fn connect_stdio(root: &Path, server: &Server) -> ToolResult<Connected> {
     run_setup(root, server).await;
     let mut command =
         tokio::process::Command::new(server.entry.command.clone().unwrap_or_default());
@@ -621,7 +720,15 @@ async fn connect(root: &Path, server: &Server) -> ToolResult<Connected> {
             ))
         })?
         .map_err(|error| ToolError::msg(format!("mcp server {:?}: {error}", server.name)))?;
-    let service = Arc::new(service);
+    connected(server, Arc::new(service), group).await
+}
+
+/// List the tools a freshly connected service exposes.
+async fn connected(
+    server: &Server,
+    service: Arc<RunningService<RoleClient, ()>>,
+    group: Option<u32>,
+) -> ToolResult<Connected> {
     let listed = tokio::time::timeout(CONNECT_TIMEOUT, service.list_all_tools())
         .await
         .map_err(|_| {
@@ -736,4 +843,312 @@ fn signature(call_name: &str, tool: &Tool) -> String {
         .map(|param| format!("{param}="))
         .collect();
     format!("{call_name}({})", params.join(", "))
+}
+
+async fn connect_http(server: &Server, url: &str) -> ToolResult<Connected> {
+    let transport = StreamableHttpClientTransport::from_config(http_config(server, url)?);
+    let service = tokio::time::timeout(CONNECT_TIMEOUT, ().serve(transport))
+        .await
+        .map_err(|_| {
+            ToolError::msg(format!(
+                "mcp server {:?}: cannot connect to {url}: timed out after {}s",
+                server.name,
+                CONNECT_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(|error| {
+            ToolError::msg(format!(
+                "mcp server {:?}: cannot connect to {url}: {error}",
+                server.name
+            ))
+        })?;
+    connected(server, Arc::new(service), None).await
+}
+
+fn http_config(server: &Server, url: &str) -> ToolResult<StreamableHttpClientTransportConfig> {
+    let mut config = StreamableHttpClientTransportConfig::with_uri(url);
+    let mut headers = HashMap::new();
+    for (name, value) in &server.entry.headers {
+        let parsed = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+            ToolError::msg(format!(
+                "mcp server {:?}: header name {name:?} is invalid",
+                server.name
+            ))
+        })?;
+        let value = HeaderValue::from_str(value).map_err(|_| {
+            ToolError::msg(format!(
+                "mcp server {:?}: header {name:?} has a value that is not a valid HTTP header",
+                server.name
+            ))
+        })?;
+        if parsed == AUTHORIZATION {
+            if let Some(token) = value
+                .to_str()
+                .ok()
+                .and_then(|value| value.strip_prefix("Bearer "))
+            {
+                config = config.auth_header(token);
+                continue;
+            }
+        }
+        headers.insert(parsed, value);
+    }
+    Ok(config.custom_headers(headers))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use rmcp::handler::server::ServerHandler;
+    use rmcp::model::{
+        CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, ListToolsResult,
+        PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    };
+    use rmcp::service::{RequestContext, RoleServer};
+    use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+    use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct Echo;
+
+    impl ServerHandler for Echo {
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn list_tools(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, ErrorData> {
+            Ok(ListToolsResult::with_all_items(vec![Tool::new(
+                "echo",
+                "Echo back.",
+                Arc::new(Map::new()),
+            )]))
+        }
+
+        async fn call_tool(
+            &self,
+            _request: CallToolRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text("pong")]).into())
+        }
+    }
+
+    type Seen = Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
+    /// An in-process Streamable HTTP MCP server, and the headers it received.
+    struct Http {
+        url: String,
+        sessions: Arc<LocalSessionManager>,
+        headers: Seen,
+    }
+
+    async fn http_server() -> Http {
+        let sessions = Arc::new(LocalSessionManager::default());
+        let headers = Seen::default();
+        let service = StreamableHttpService::new(
+            || Ok(Echo),
+            Arc::clone(&sessions),
+            StreamableHttpServerConfig::default(),
+        );
+        let router = axum::Router::new().nest_service("/mcp", service).layer(
+            axum::middleware::from_fn_with_state(Arc::clone(&headers), capture_headers),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        Http {
+            url: format!("http://{address}/mcp"),
+            sessions,
+            headers,
+        }
+    }
+
+    async fn capture_headers(
+        axum::extract::State(seen): axum::extract::State<Seen>,
+        request: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> axum::response::Response {
+        for name in ["x-api-key", "authorization"] {
+            if let Some(value) = request
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+            {
+                seen.lock()
+                    .expect("headers")
+                    .push((name.to_string(), value.to_string()));
+            }
+        }
+        next.run(request).await
+    }
+
+    struct Fixture {
+        _dir: TempDir,
+        root: PathBuf,
+        file: PathBuf,
+    }
+
+    fn fixture(servers: Value) -> Fixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("project");
+        fs::create_dir(&root).expect("root");
+        let file = dir.path().join("mcp.json");
+        fs::write(&file, json!({ "mcpServers": servers }).to_string()).expect("config");
+        Fixture {
+            _dir: dir,
+            root,
+            file,
+        }
+    }
+
+    fn registry(fixture: &Fixture) -> McpRegistry {
+        McpRegistry::load_with(&fixture.root, Some(&fixture.file), &[])
+    }
+
+    #[tokio::test]
+    async fn an_http_server_answers_a_call_with_its_headers() {
+        let server = http_server().await;
+        let fixture = fixture(json!({"jobs": {
+            "url": server.url,
+            "headers": {"x-api-key": "secret", "authorization": "Bearer tok"},
+        }}));
+        let registry = registry(&fixture);
+
+        let tools = registry.tools().await.expect("tools");
+        let names: Vec<&str> = tools.iter().map(|tool| tool.call_name.as_str()).collect();
+        assert_eq!(names, vec!["jobs.echo"]);
+        let answer = registry.call("jobs.echo", &json!({})).await.expect("call");
+        assert_eq!(answer, "pong");
+
+        let seen = server.headers.lock().expect("headers").clone();
+        assert!(
+            seen.contains(&("x-api-key".to_string(), "secret".to_string())),
+            "{seen:?}"
+        );
+        assert!(
+            seen.contains(&("authorization".to_string(), "Bearer tok".to_string())),
+            "{seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_needs_exactly_one_of_command_and_url() {
+        let cases = [
+            (
+                json!({"jobs": {"command": "x", "url": "https://example.com/mcp"}}),
+                "mcp server \"jobs\": give a command or a url, not both",
+            ),
+            (
+                json!({"jobs": {}}),
+                "mcp server \"jobs\": give a command or a url",
+            ),
+            (
+                json!({"jobs": {"url": "https://example.com/mcp", "args": ["-x"]}}),
+                "mcp server \"jobs\": url entries cannot have args or setup",
+            ),
+            (
+                json!({"jobs": {"url": "https://example.com/mcp", "setup": [["a"]]}}),
+                "mcp server \"jobs\": url entries cannot have args or setup",
+            ),
+            (
+                json!({"jobs": {"url": "ftp://example.com/mcp"}}),
+                "mcp server \"jobs\": url must be an http(s) url such as https://host/mcp",
+            ),
+            (
+                json!({"jobs": {"url": "not a url"}}),
+                "mcp server \"jobs\": url must be an http(s) url such as https://host/mcp",
+            ),
+        ];
+        for (servers, expected) in cases {
+            let fixture = fixture(servers.clone());
+            let registry = registry(&fixture);
+            let error = registry
+                .call("jobs.list", &json!({}))
+                .await
+                .expect_err("refused");
+            assert_eq!(error.to_string(), expected, "{servers}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_transport_is_a_load_error() {
+        let fixture = fixture(json!({
+            "jobs": {"url": "https://example.com/mcp", "transport": "websocket"},
+        }));
+        let registry = registry(&fixture);
+        let error = registry.tools().await.expect_err("refused");
+        let text = error.to_string();
+        assert!(text.contains("server \"jobs\""), "{text}");
+        assert!(text.contains("unknown variant"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_http_server_is_not_retried_for_thirty_seconds() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&accepts);
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                drop(socket);
+            }
+        });
+        let url = format!("http://{address}/mcp");
+        let fixture = fixture(json!({
+            "jobs": {"url": url, "headers": {"authorization": "Bearer topsecret"}},
+        }));
+        let registry = registry(&fixture);
+
+        let error = registry
+            .call("jobs.list", &json!({}))
+            .await
+            .expect_err("cannot connect");
+        let text = error.to_string();
+        assert!(text.contains(&format!("cannot connect to {url}")), "{text}");
+        assert!(!text.contains("topsecret"), "header value leaked: {text}");
+        let dialed = accepts.load(Ordering::SeqCst);
+        assert!(dialed >= 1, "the client dialed the endpoint");
+
+        let _ = registry.tools().await;
+        let _ = registry.tools().await;
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            dialed,
+            "a failed url server is not dialed again within 30s"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_http_session_reconnects_for_the_next_call() {
+        let server = http_server().await;
+        let fixture = fixture(json!({"jobs": {"url": server.url}}));
+        let registry = registry(&fixture);
+        let first = registry.call("jobs.echo", &json!({})).await.expect("first");
+        assert_eq!(first, "pong");
+
+        server.sessions.sessions.write().await.clear();
+        let after = registry
+            .call("jobs.echo", &json!({}))
+            .await
+            .expect("a fresh session answers");
+        assert_eq!(after, "pong");
+    }
 }
