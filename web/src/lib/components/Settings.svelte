@@ -179,6 +179,20 @@
         </div>
       </section>
 
+      <section class="flex flex-col gap-2" aria-labelledby="g-access">
+        <h3 id="g-access" class="px-1 text-[14px] font-semibold text-fg-1">Remote access</h3>
+        <div class="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface-1">
+          <label class="flex flex-col gap-1 px-3.5 py-2 text-[13px] text-fg-2">
+            Base URL
+            <input class="field" value={settings.base_url} placeholder="https://box.ts.net"
+              onchange={(event) => change({ base_url: (event.currentTarget as HTMLInputElement).value })} />
+            <span class="text-[12px] text-fg-3">
+              The address this browser uses to reach the daemon, for share links. Leave empty to use this page's address.
+            </span>
+          </label>
+        </div>
+      </section>
+
       <section class="flex flex-col gap-2" aria-labelledby="g-titles">
         <h3 id="g-titles" class="px-1 text-[14px] font-semibold text-fg-1">Session titles</h3>
         <div class="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface-1">

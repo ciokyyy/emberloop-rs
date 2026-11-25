@@ -753,6 +753,11 @@ export interface components {
         };
         Settings: {
             /**
+             * @description Origin a browser reaches the daemon at; empty means unset.
+             * @default
+             */
+            base_url: string;
+            /**
              * @description Whether oversized tool output spills to `ctx:` handles and CCR replacement runs.
              * @default false
              */
@@ -2338,7 +2343,7 @@ export interface operations {
                     "application/json": components["schemas"]["Settings"];
                 };
             };
-            /** @description Invalid title model */
+            /** @description Invalid settings */
             400: {
                 headers: {
                     [name: string]: unknown;

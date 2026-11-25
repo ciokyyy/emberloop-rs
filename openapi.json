@@ -1250,7 +1250,7 @@
             }
           },
           "400": {
-            "description": "Invalid title model"
+            "description": "Invalid settings"
           }
         }
       }
@@ -2209,6 +2209,11 @@
       "Settings": {
         "type": "object",
         "properties": {
+          "base_url": {
+            "type": "string",
+            "description": "Origin a browser reaches the daemon at; empty means unset.",
+            "default": ""
+          },
           "ctx_spill_enabled": {
             "type": "boolean",
             "description": "Whether oversized tool output spills to `ctx:` handles and CCR replacement runs.",

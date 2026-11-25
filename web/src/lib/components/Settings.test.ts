@@ -23,7 +23,7 @@ const saved: SettingsData = {
   todo_reminders_max: 3, todo_auto_expand: true, todo_hide_when_done: true,
   max_context_limit: 75, min_pressure_benefit_tokens: 0, emergency_threshold_percent: 95,
   preserve_recent_messages: 4, protected_tools: [], inject_tool: true, inject_nudge: true,
-  tier2_trigger: 1000, tier3_trigger: 2000
+  tier2_trigger: 1000, tier3_trigger: 2000, base_url: ''
 };
 const models: Model[] = [
   { id: 'model', provider: 'pi', label: 'Model', kind: 'chat', efforts: ['low', 'high'],
@@ -125,4 +125,16 @@ it('adds, reorders, and removes fallback ladder rungs without mutating saved set
   }));
   expect(saved.spec_reviewer).toEqual([{ model: 'model', reasoning_effort: null }]);
   expect(saved.subagent_tiers.mid).toEqual([{ model: 'model', reasoning_effort: null }]);
+});
+
+it('saves the base URL used for share links', async () => {
+  const onsave = vi.fn();
+  const view = render(Settings, { settings: saved, models, onsave });
+
+  await fireEvent.change(view.getByPlaceholderText('https://box.ts.net'), {
+    target: { value: 'https://box.ts.net' }
+  });
+  await fireEvent.click(view.getByRole('button', { name: 'Save' }));
+
+  expect(onsave).toHaveBeenCalledWith(expect.objectContaining({ base_url: 'https://box.ts.net' }));
 });

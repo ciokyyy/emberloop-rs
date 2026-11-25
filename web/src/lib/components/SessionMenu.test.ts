@@ -34,3 +34,13 @@ it('opens the menu on a right click without a hold', async () => {
   await fireEvent.contextMenu(container.querySelector('div.min-w-0')!);
   expect(screen.getByText('Copy link')).toBeTruthy();
 });
+
+it('builds the share link on the configured base URL', async () => {
+  const writeText = clipboard();
+  const { container } = render(SessionMenu, { session, project, baseUrl: 'https://box.ts.net' });
+
+  await fireEvent.contextMenu(container.querySelector('div.min-w-0')!);
+  await fireEvent.click(screen.getByText('Copy link'));
+
+  expect(writeText).toHaveBeenCalledWith('https://box.ts.net/p/p1/s/s1');
+});

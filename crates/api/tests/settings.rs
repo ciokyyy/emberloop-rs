@@ -285,3 +285,74 @@ async fn legacy_single_object_settings_deserialize_as_one_rung_ladders() {
         api::state::FallbackLadder::single("claude-opus-5-5", Some("high".into()))
     );
 }
+
+fn put(settings: &Settings) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri("/api/settings")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(settings).unwrap()))
+        .unwrap()
+}
+
+#[test]
+fn base_url_normalises_to_an_origin_and_rejects_everything_else() {
+    assert_eq!(
+        api::state::normalize_base_url("HTTPS://Box.ts.net:443/").unwrap(),
+        "https://box.ts.net"
+    );
+    assert_eq!(
+        api::state::normalize_base_url("http://100.64.0.7:8443").unwrap(),
+        "http://100.64.0.7:8443"
+    );
+    for bad in [
+        "https://box.ts.net/ember",
+        "box.ts.net",
+        "https://box.ts.net?x=1",
+        "https://box.ts.net#top",
+        "https://user:pass@box.ts.net",
+    ] {
+        assert_eq!(
+            api::state::normalize_base_url(bad).unwrap_err(),
+            "base_url must be an http(s) origin like https://host[:port]",
+            "{bad}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn settings_put_rejects_a_bad_base_url_and_persists_a_good_one() {
+    let dir = tempdir().unwrap();
+    let root = DataRoot::new(dir.path());
+    let app = build_router(state(&root).await);
+    let bad = Settings {
+        base_url: "https://box.ts.net/ember".into(),
+        ..Default::default()
+    };
+    let response = app.clone().oneshot(put(&bad)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let good = Settings {
+        base_url: "HTTPS://Box.ts.net:443/".into(),
+        ..Default::default()
+    };
+    let response = app.oneshot(put(&good)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let restarted = build_router(state(&root).await);
+    let response = restarted
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["base_url"], "https://box.ts.net");
+}

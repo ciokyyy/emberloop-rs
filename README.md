@@ -384,6 +384,7 @@ On success it binds `127.0.0.1:3000` quietly; open <http://127.0.0.1:3000> in yo
 | `--port` | `3000` | HTTP + SSE listening port |
 | `--host` | `127.0.0.1` | Bind address (non-loopback requires `--allow-remote`) |
 | `--allow-remote` | `false` | Allow binding a non-loopback `--host` |
+| `--base-url` | none (`EMBERLOOP_BASE_URL`) | Origin a browser reaches the daemon at, for share links and the design view; saved into `settings.json` once |
 | `--data-root` | `~/.local/share/emberloop-rs` | Projects, Sessions, `settings.json`, models, releases, transcripts |
 | `--config-root` | `~/.config/emberloop-rs` | Provider keys, `tool-keys.json`, `mcp.json`, runtime `env`, prompt overrides |
 | `--upstream` | none | Upstream HTTP proxy for outbound provider requests |
@@ -408,7 +409,8 @@ emberloop-daemon update [--check] [--rollback] [--manifest <URL>] [--file <PATH>
 
 Operator configuration lives under `--data-root` and `--config-root`, never in this repository.
 
-- **`<data-root>/settings.json`** — `default_model`, `title_generation`, `title_model`, `spec_reviewer` / `standards_reviewer` / `subagent_tiers` / `goldfish_tiers` fallback ladders, `ponytail_default_level` (`full`), `proxy_compression` (`true`), `max_context_limit` (`20`), `emergency_threshold_percent` (`25`), `preserve_recent_messages` (`4`), `min_pressure_benefit_tokens` (`0` = `max(5000, window / 100)`), `protected_tools`, `tier2_trigger` (`1000`), `tier3_trigger` (`2000`), and `ctx_spill_enabled` (`false`)
+- **`<data-root>/settings.json`** — `default_model`, `title_generation`, `title_model`, `spec_reviewer` / `standards_reviewer` / `subagent_tiers` / `goldfish_tiers` fallback ladders, `ponytail_default_level` (`full`), `proxy_compression` (`true`), `max_context_limit` (`20`), `emergency_threshold_percent` (`25`), `preserve_recent_messages` (`4`), `min_pressure_benefit_tokens` (`0` = `max(5000, window / 100)`), `protected_tools`, `tier2_trigger` (`1000`), `tier3_trigger` (`2000`), `ctx_spill_enabled` (`false`), and `base_url` (empty means unset)
+- **`base_url`** — The origin this browser uses to reach the daemon (`https://box.tailnet.ts.net`), for share links and the design view's WebSocket origin. `--base-url` or `EMBERLOOP_BASE_URL` fills it once when `settings.json` holds none; the Settings screen edits it later, and a stored value always wins. Use a tailnet-only address: a public address, such as a Tailscale Funnel, lets anyone who reaches it drive the design view's loopback FigCraft server.
 - **`<config-root>/keys.json` & `tool-keys.json`** — Provider API keys and tool keys (`BRAVE_API_KEY`, `EXA_API_KEY`, `JINA_API_KEY`) saved with `0600` permissions
 - **`<config-root>/mcp.json`** — Extra MCP servers bridged into Python `execute` as `tools.<server>.<tool>(...)` (`codebase-memory-mcp` as `graph` and `figcraft` auto-register when absent). Each entry gives exactly one of `command` (stdio) or `url` (Streamable HTTP), plus optional `include`/`exclude`/`enabled`/`summary`/`project`/`transport`; a `url` entry may not carry `args` or `setup`, and its `headers` are sent on every request. An entry without `gated` is global; `"gated": true` hides it unless the Session's Project lists an enabled tool with the server's name, so a Craft app stays out of every other Project:
 
@@ -432,6 +434,7 @@ Environment variables:
 - `EMBERLOOP_AGY_BIN`, `EMBERLOOP_PI_BIN`, `EMBERLOOP_CLAUDE_BIN` — Override harness executable paths
 - `EMBERLOOP_HOME`, `EMBERLOOP_LAUNCHER`, `EMBERLOOP_UPDATE_URL` — Override release directory, launcher symlink, and update manifest URL
 - `EMBERLOOP_PROXY_DUMP` — Directory path to dump incoming, processed, and wire payloads for proxy debugging
+- `EMBERLOOP_BASE_URL` — Same as `--base-url`; seeds `settings.json` when it holds no `base_url`
 
 ---
 

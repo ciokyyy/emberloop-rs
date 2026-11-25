@@ -907,13 +907,18 @@ pub async fn get_settings(State(state): State<AppState>) -> Json<Settings> {
     request_body = Settings,
     responses(
         (status = 200, description = "Settings updated", body = Settings),
-        (status = 400, description = "Invalid title model")
+        (status = 400, description = "Invalid settings")
     )
 )]
 pub async fn update_settings(
     State(state): State<AppState>,
     Json(payload): Json<Settings>,
 ) -> Result<Json<Settings>, (StatusCode, String)> {
+    let mut payload = payload;
+    if !payload.base_url.is_empty() {
+        payload.base_url = crate::state::normalize_base_url(&payload.base_url)
+            .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    }
     if payload.title_model.len() > 256
         || payload.title_model.chars().any(char::is_whitespace)
         || !payload

@@ -7,10 +7,12 @@
   let {
     session,
     project,
+    baseUrl = '',
     children
   }: {
     session: Session | null;
     project: Project | null;
+    baseUrl?: string;
     children?: import('svelte').Snippet;
   } = $props();
 
@@ -19,7 +21,7 @@
 
   const link = $derived(
     session && project
-      ? `${window.location.origin}/p/${project.id}/s/${session.id}`
+      ? `${baseUrl || window.location.origin}/p/${project.id}/s/${session.id}`
       : window.location.href
   );
   // A paste-ready block: the title, where the Project lives, and the link the app itself cannot

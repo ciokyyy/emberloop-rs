@@ -1,6 +1,8 @@
 //! Durable project designs shared by FigCraft Web and agent MCP clients.
+use crate::state::AppState;
 use axum::{
     extract::ws::{Message, WebSocketUpgrade},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::Response,
 };
@@ -76,10 +78,15 @@ async fn snapshot(client: &McpRegistry, root: &Path) -> ToolResult<()> {
 
 // Only same-origin browser clients may reach the private loopback collaboration server.
 pub(crate) async fn live(
+    State(state): State<AppState>,
     ws: WebSocketUpgrade,
     headers: HeaderMap,
 ) -> Result<Response, (StatusCode, &'static str)> {
-    if !same_origin(&headers) {
+    let base_url = state.settings.read().await.base_url.clone();
+    if !same_origin(
+        &headers,
+        (!base_url.is_empty()).then_some(base_url.as_str()),
+    ) {
         return Err((StatusCode::FORBIDDEN, "same-origin connection required"));
     }
     // FigCraft authenticates with a binary Hello, not WebSocket query parameters.
@@ -114,18 +121,22 @@ pub(crate) async fn live(
     }))
 }
 
-fn same_origin(headers: &HeaderMap) -> bool {
+fn same_origin(headers: &HeaderMap, base_url: Option<&str>) -> bool {
     let origin = headers.get("origin").and_then(|s| s.to_str().ok());
     let host = headers.get("host").and_then(|s| s.to_str().ok());
-    match (origin, host) {
-        (Some(origin), Some(host)) => {
-            origin
-                .strip_prefix("http://")
-                .or_else(|| origin.strip_prefix("https://"))
-                == Some(host)
-        }
-        _ => false,
+    let Some(origin) = origin else {
+        return false;
+    };
+    if base_url == Some(origin) {
+        return true;
     }
+    let Some(host) = host else {
+        return false;
+    };
+    origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+        == Some(host)
 }
 
 fn to_server(message: Message) -> tokio_tungstenite::tungstenite::Message {
@@ -158,10 +169,24 @@ mod tests {
     fn private_collaboration_rejects_cross_origin_and_missing_origin() {
         let mut headers = HeaderMap::new();
         headers.insert("host", "localhost:3000".parse().unwrap());
-        assert!(!same_origin(&headers));
+        assert!(!same_origin(&headers, None));
         headers.insert("origin", "https://attacker.example".parse().unwrap());
-        assert!(!same_origin(&headers));
+        assert!(!same_origin(&headers, None));
         headers.insert("origin", "http://localhost:3000".parse().unwrap());
-        assert!(same_origin(&headers));
+        assert!(same_origin(&headers, None));
+    }
+
+    #[test]
+    fn a_configured_base_url_is_the_one_extra_origin_allowed() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "127.0.0.1:3000".parse().unwrap());
+        headers.insert("origin", "https://box.ts.net".parse().unwrap());
+        assert!(!same_origin(&headers, None));
+        assert!(same_origin(&headers, Some("https://box.ts.net")));
+        assert!(!same_origin(&headers, Some("https://other.ts.net")));
+        let mut local = HeaderMap::new();
+        local.insert("host", "127.0.0.1:3000".parse().unwrap());
+        local.insert("origin", "http://127.0.0.1:3000".parse().unwrap());
+        assert!(same_origin(&local, Some("https://box.ts.net")));
     }
 }

@@ -272,6 +272,8 @@ pub struct Config {
     pub allow_remote: bool,
     /// Idle time before a Session's harness and tool server are closed.
     pub idle_timeout: std::time::Duration,
+    /// `--base-url` value, saved to settings.json once when it holds none.
+    pub base_url: Option<String>,
 }
 
 impl Default for Config {
@@ -285,6 +287,7 @@ impl Default for Config {
             upstream: None,
             allow_remote: false,
             idle_timeout: idle::DEFAULT_IDLE_TIMEOUT,
+            base_url: None,
         }
     }
 }
@@ -319,8 +322,30 @@ impl Config {
         if let Some(minutes) = cli.idle_timeout_minutes {
             config.idle_timeout = std::time::Duration::from_secs(minutes * 60);
         }
+        config.base_url = cli.base_url.clone();
         config
     }
+}
+
+/// Save `--base-url` once, when settings hold none; a stored value always wins.
+async fn seed_base_url(config: &Config, state: &api::AppState) -> anyhow::Result<()> {
+    let Some(flag) = config.base_url.as_deref() else {
+        return Ok(());
+    };
+    let flag = api::state::normalize_base_url(flag).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let mut settings = state.settings.write().await;
+    if settings.base_url.is_empty() {
+        settings.base_url = flag;
+        api::state::save_settings(state.data_root.root(), &settings)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+    } else if settings.base_url != flag {
+        tracing::warn!(
+            base_url = %settings.base_url,
+            ignored = %flag,
+            "settings.json already holds base_url; ignoring --base-url"
+        );
+    }
+    Ok(())
 }
 
 pub fn default_data_root() -> PathBuf {
@@ -384,6 +409,9 @@ pub struct Cli {
     pub upstream: Option<String>,
     #[arg(long)]
     pub allow_remote: bool,
+    /// Address a browser reaches the daemon at, for share links and the design view.
+    #[arg(long, env = "EMBERLOOP_BASE_URL")]
+    pub base_url: Option<String>,
     /// Minutes a Session may sit idle before its harness is closed; it resumes on its next message.
     #[arg(long)]
     pub idle_timeout_minutes: Option<u64>,
@@ -522,6 +550,7 @@ impl Daemon {
         .with_global_skills(config.global_skills.clone())
         .with_groq_keys(keys_file.clone(), api::transcribe::GROQ_URL)
         .with_binaries(Arc::new(binaries::BinariesChecker::new(&config.data_root)));
+        seed_base_url(&config, &app_state).await?;
 
         let updated = announce_update(&app_state, &events, &data_root).await;
         let _ = codegraph::ensure(&config.config_root);

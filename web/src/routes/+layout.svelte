@@ -75,7 +75,8 @@
     inject_tool: true,
     inject_nudge: true,
     tier2_trigger: 1000,
-    tier3_trigger: 2000
+    tier3_trigger: 2000,
+    base_url: ''
   });
   // The window of events in hand: the tail on open, one page older per click. `feed` is folded from
   // it, so a page prepended at the front rebuilds through the same reducer as the live tail.
@@ -601,7 +602,7 @@
   <main class="flex min-w-0 flex-1 flex-col">
     <header class="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
       <button class="btn {view === 'design' ? '' : 'md:hidden'}" aria-label="Open sessions" onclick={() => (drawer = true)}><Menu size={16} /></button>
-      <SessionMenu session={current} project={projectOf}>
+      <SessionMenu session={current} project={projectOf} baseUrl={settings.base_url}>
         <h1 class="truncate text-[14px] font-semibold tracking-[-0.01em] text-fg-1">
           {view === 'new'
             ? 'New session'

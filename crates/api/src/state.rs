@@ -49,6 +49,8 @@ pub struct Settings {
     pub tier3_trigger: u32,
     /// Whether oversized tool output spills to `ctx:` handles and CCR replacement runs.
     pub ctx_spill_enabled: bool,
+    /// Origin a browser reaches the daemon at; empty means unset.
+    pub base_url: String,
 }
 
 impl Default for Settings {
@@ -77,8 +79,26 @@ impl Default for Settings {
             tier2_trigger: 1000,
             tier3_trigger: 2000,
             ctx_spill_enabled: false,
+            base_url: String::new(),
         }
     }
+}
+
+/// Accepts only a bare http(s) origin; empty is the caller's "unset".
+pub fn normalize_base_url(value: &str) -> Result<String, String> {
+    let invalid = || "base_url must be an http(s) origin like https://host[:port]".to_string();
+    let url = reqwest::Url::parse(value).map_err(|_| invalid())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !matches!(url.path(), "" | "/")
+    {
+        return Err(invalid());
+    }
+    Ok(url.origin().ascii_serialization())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

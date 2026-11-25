@@ -89,6 +89,7 @@ async fn a_claude_turn_searches_a_skill_and_writes_one_through_the_daemon() {
         global_skills: global.clone(),
         upstream: None,
         allow_remote: false,
+        base_url: None,
     };
     let daemon = Daemon::open(config).await.unwrap();
     let project_id = post(

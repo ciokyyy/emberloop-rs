@@ -30,6 +30,7 @@ async fn harness(upstream: Option<String>) -> Harness {
         upstream,
         allow_remote: false,
         idle_timeout: emberloop_daemon::idle::DEFAULT_IDLE_TIMEOUT,
+        base_url: None,
     };
     let daemon = Daemon::open(config).await.unwrap();
     Harness { _dir: dir, daemon }
@@ -574,6 +575,7 @@ async fn pi_sessions_and_catalogue_run_on_the_pi_harness_without_an_agy_account(
         upstream: None,
         allow_remote: false,
         idle_timeout: emberloop_daemon::idle::DEFAULT_IDLE_TIMEOUT,
+        base_url: None,
     };
     let daemon = Daemon::open(config).await.unwrap();
     let app = daemon.router();
@@ -748,4 +750,36 @@ done
     }
     assert!(received(&requester).contains("Continue where you left off."));
     assert!(received("idle-reviewer").is_empty());
+}
+
+#[tokio::test]
+async fn the_base_url_flag_seeds_a_setting_once_and_a_stored_value_wins() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        port: 0,
+        host: "127.0.0.1".to_string(),
+        data_root: dir.path().join("data"),
+        config_root: dir.path().join("config"),
+        global_skills: dir.path().join("home/.agents/skills"),
+        upstream: None,
+        allow_remote: false,
+        idle_timeout: emberloop_daemon::idle::DEFAULT_IDLE_TIMEOUT,
+        base_url: Some("HTTPS://Box.ts.net:443/".into()),
+    };
+    let daemon = Daemon::open(config.clone()).await.unwrap();
+    assert_eq!(
+        daemon.app_state.settings.read().await.base_url,
+        "https://box.ts.net"
+    );
+
+    let restarted = Daemon::open(Config {
+        base_url: Some("https://other.ts.net".into()),
+        ..config
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        restarted.app_state.settings.read().await.base_url,
+        "https://box.ts.net"
+    );
 }

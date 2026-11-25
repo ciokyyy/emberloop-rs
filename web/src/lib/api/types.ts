@@ -129,6 +129,7 @@ export interface Settings {
   inject_nudge: boolean;
   tier2_trigger: number;
   tier3_trigger: number;
+  base_url: string;
 }
 
 export interface PromptInfo {
