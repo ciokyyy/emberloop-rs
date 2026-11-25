@@ -1,0 +1,18 @@
+# app<TAB>cli binary<TAB>web bundle URL; an empty URL means the app ships no web asset.
+anicraft	anicraft-cli	
+cadcraft	cadcraft-cli	https://github.com/storytold/cadcraft/releases/download/v0.20.1/cadcraft-web-0.20.1.zip
+craftanything	craft-anything-cli	https://github.com/storytold/craftanything/releases/download/v0.6.1/craft-anything-web-0.6.1.zip
+deckcraft	deckcraft-cli	https://github.com/storytold/deckcraft/releases/download/v0.19.1/deckcraft-web-0.19.1.zip
+designcraft	designcraft-cli	https://github.com/storytold/designcraft/releases/download/v0.21.1/designcraft-web-0.21.1.zip
+effectcraft	effectcraft-cli	https://github.com/storytold/effectcraft/releases/download/v0.25.1/effectcraft-web-0.25.1.zip
+figcraft	figcraft-cli	https://github.com/storytold/figcraft/releases/download/v0.18.1/figcraft-web-0.18.1.zip
+filmcraft	filmcraft-cli	https://github.com/storytold/filmcraft/releases/download/v0.20.1/filmcraft-web-0.20.1.zip
+gridcraft	gridcraft-cli	https://github.com/storytold/gridcraft/releases/download/v0.19.1/gridcraft-web-0.19.1.zip
+lightcraft	lightcraft-cli	https://github.com/storytold/lightcraft/releases/download/v0.21.1/lightcraft-web-0.21.1.zip
+materialcraft	materialcraft-cli	https://github.com/storytold/materialcraft/releases/download/v0.4.1/materialcraft-web-0.4.1.zip
+pdfcraft	pdfcraft-cli	https://github.com/storytold/pdfcraft/releases/download/v0.22.0/pdfcraft-web-0.22.0.zip
+photocraft	photocraft-cli	https://github.com/storytold/photocraft/releases/download/v0.23.1/photocraft-web-0.23.1.zip
+soundcraft	soundcraft-cli	https://github.com/storytold/soundcraft/releases/download/v0.20.1/soundcraft-web-0.20.1.zip
+texturecraft	texturecraft-cli	https://github.com/storytold/texturecraft/releases/download/v0.6.1/texturecraft-web-0.6.1.zip
+vectorcraft	vectorcraft-cli	https://github.com/storytold/vectorcraft/releases/download/v0.24.1/vectorcraft-web-0.24.1.zip
+wordcraft	wordcraft-cli	https://github.com/storytold/wordcraft/releases/download/v0.19.1/wordcraft-web-0.19.1.zip

@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# Check each Craft app: its MCP CLI lists a tool and its web bundle loads in a browser.
+# Usage: scripts/verify-craft [app...]; --selftest checks the script itself.
+# Reads scripts/verify-craft.tsv and prints a markdown table; exits 1 on any failure.
+set -uo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+table="$here/verify-craft.tsv"
+if [ $# -eq 0 ]; then
+  want=()
+else
+  want=("$@")
+fi
+
+tmp=$(mktemp -d)
+server=
+cleanup() {
+  if [ -n "$server" ]; then kill "$server" 2>/dev/null; fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+# Ask `<cli> mcp` for its tools; prints "<pass|fail> <reason>".
+mcp() {
+  local cli=$1
+  command -v "$cli" >/dev/null 2>&1 || { echo 'fail no-cli'; return; }
+  timeout 20 python3 - "$cli" <<'PY'
+import json, queue, subprocess, sys, threading, time
+
+child = subprocess.Popen(
+    [sys.argv[1], "mcp"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    text=True,
+)
+lines = queue.Queue()
+
+
+def pump():
+    for line in child.stdout:
+        lines.put(line)
+
+
+threading.Thread(target=pump, daemon=True).start()
+deadline = time.monotonic() + 20
+
+
+def send(message):
+    child.stdin.write(json.dumps(message) + "\n")
+    child.stdin.flush()
+
+
+def read(wanted):
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return None
+        try:
+            line = lines.get(timeout=left)
+        except queue.Empty:
+            return None
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if message.get("id") == wanted:
+            return message
+
+
+try:
+    send({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "verify-craft", "version": "0"},
+        },
+    })
+    if read(1) is None:
+        print("fail no-initialize")
+    else:
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        reply = read(2) or {}
+        tools = (reply.get("result") or {}).get("tools") or []
+        count = len(tools)
+        print(f"pass {count} tool{'' if count == 1 else 's'}" if count else "fail no-tools")
+finally:
+    child.kill()
+PY
+}
+
+# Download, unzip and serve the bundle; prints "<pass|fail|skip> <reason>".
+web() {
+  local url=$1
+  if [ -z "$url" ]; then echo 'fail no-web'; return; fi
+  local zip="$tmp/bundle.zip" dir="$tmp/web" error
+  rm -rf "$dir" "$zip"
+  mkdir -p "$dir"
+  if ! error=$(curl --fail --location --silent --show-error --max-time 120 -o "$zip" "$url" 2>&1); then
+    echo "skip $(printf '%s' "$error" | tr '\n' ' ' | cut -c1-80)"
+    return
+  fi
+  unzip -q -o "$zip" -d "$dir" 2>/dev/null || { echo 'fail bad-zip'; return; }
+  local index site wasm
+  index=$(find "$dir" -name index.html -print -quit)
+  [ -n "$index" ] || { echo 'fail no-index'; return; }
+  site=$(dirname "$index")
+  wasm=$(find "$site" -name '*.wasm' -print -quit)
+  [ -n "$wasm" ] || { echo 'fail no-wasm'; return; }
+  # \0asm; the content type is not asserted, stock http.server serves octet-stream.
+  [ "$(od -An -tx1 -N4 "$wasm" | tr -d ' ')" = 0061736d ] || { echo 'fail wasm-magic'; return; }
+  local port
+  port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  python3 -m http.server "$port" --bind 127.0.0.1 --directory "$site" >/dev/null 2>&1 &
+  server=$!
+  local code=
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/index.html")
+    [ "$code" = 200 ] && break
+    sleep 0.2
+  done
+  kill "$server" 2>/dev/null
+  server=
+  [ "$code" = 200 ] || { echo "fail index-$code"; return; }
+  echo 'pass wasm-ok'
+}
+
+# Print the table for the named apps (all when none); non-zero on a failure or an unknown name.
+verify() {
+  local table=$1
+  shift
+  local want=("$@") rows=0 failures=0 matched=() app cli url mcp_state mcp_reason web_state web_reason state name seen found
+  printf '| App | MCP | Web | Reason |\n| --- | --- | --- | --- |\n'
+  while IFS=$'\t' read -r app cli url; do
+    case "$app" in ''|'#'*) continue ;; esac
+    if [ ${#want[@]} -gt 0 ]; then
+      local match=0
+      for name in "${want[@]}"; do [ "$name" = "$app" ] && match=1; done
+      [ "$match" = 1 ] || continue
+      matched+=("$app")
+    fi
+    rows=$((rows + 1))
+    read -r mcp_state mcp_reason <<<"$(mcp "$cli")"
+    read -r web_state web_reason <<<"$(web "$url")"
+    [ -n "$mcp_state" ] || mcp_state=fail
+    [ -n "$web_state" ] || web_state=fail
+    for state in "$mcp_state" "$web_state"; do
+      [ "$state" = fail ] && failures=$((failures + 1))
+    done
+    printf '| %s | %s | %s | %s, %s |\n' "$app" "$mcp_state" "$web_state" "$mcp_reason" "$web_reason"
+  done <"$table"
+  if [ "$rows" -eq 0 ]; then
+    echo "no rows for: ${want[*]}" >&2
+    return 1
+  fi
+  local unknown=
+  for name in "${want[@]}"; do
+    found=0
+    for seen in "${matched[@]}"; do [ "$seen" = "$name" ] && found=1; done
+    [ "$found" = 1 ] || unknown="$unknown $name"
+  done
+  [ -z "$unknown" ] || echo "unknown app:$unknown" >&2
+  [ -z "$unknown" ] && [ "$failures" -eq 0 ]
+}
+
+# Fixtures: a fake CLI answering MCP and two bundles served over loopback.
+selftest() {
+  local root="$tmp/selftest" port output status
+  mkdir -p "$root/cli" "$root/served" "$root/web/good" "$root/web/bad"
+  cat >"$root/cli/testcraft-cli" <<'PY'
+#!/usr/bin/env python3
+import json, sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("id") is None:
+        continue
+    if message["method"] == "initialize":
+        result = {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "testcraft", "version": "0"},
+        }
+    else:
+        result = {"tools": [{"name": "ping", "inputSchema": {"type": "object"}}]}
+    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+PY
+  chmod +x "$root/cli/testcraft-cli"
+  printf '<html></html>\n' >"$root/web/good/index.html"
+  printf '\0asm\1\0\0\0' >"$root/web/good/app.wasm"
+  cp "$root/web/good/index.html" "$root/web/bad/index.html"
+  printf 'junk' >"$root/web/bad/app.wasm"
+  python3 -m zipfile -c "$root/served/good.zip" "$root/web/good"
+  python3 -m zipfile -c "$root/served/bad.zip" "$root/web/bad"
+  port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  python3 -m http.server "$port" --bind 127.0.0.1 --directory "$root/served" >/dev/null 2>&1 &
+  server=$!
+  printf 'passcraft\ttestcraft-cli\thttp://127.0.0.1:%s/good.zip\nfailcraft\ttestcraft-cli\thttp://127.0.0.1:%s/bad.zip\nskipcraft\ttestcraft-cli\thttp://127.0.0.1:9/missing.zip\n' \
+    "$port" "$port" >"$root/table.tsv"
+  output=$(PATH="$root/cli:$PATH" verify "$root/table.tsv")
+  status=$?
+  printf '%s\n' "$output"
+  [ "$status" -ne 0 ] || { echo 'selftest: a failing row must exit non-zero' >&2; return 1; }
+  printf '%s\n' "$output" | grep -Fq '| passcraft | pass | pass | 1 tool, wasm-ok |' \
+    || { echo 'selftest: pass row' >&2; return 1; }
+  printf '%s\n' "$output" | grep -Fq '| failcraft | pass | fail | 1 tool, wasm-magic |' \
+    || { echo 'selftest: wasm magic row' >&2; return 1; }
+  printf '%s\n' "$output" | grep -Fq '| skipcraft | pass | skip | 1 tool, curl' \
+    || { echo 'selftest: download skip row' >&2; return 1; }
+  echo 'verify-craft selftest passed'
+}
+
+case "${1:-}" in
+  --selftest) selftest ;;
+  *) verify "$table" "$@" ;;
+esac
