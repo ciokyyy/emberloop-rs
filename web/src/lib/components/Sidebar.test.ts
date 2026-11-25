@@ -20,7 +20,7 @@ const base = {
 it('colors by harness, not the Claude model name served by Antigravity', () => {
   render(Sidebar, {
     ...base,
-    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }],
     projectId: 'p',
     sessions: [{ id: 's', projectId: 'p', title: 'Test', model: 'claude-sonnet', createdAt: 0, updatedAt: 0 }],
     selectedId: 's'
@@ -31,7 +31,7 @@ it('colors by harness, not the Claude model name served by Antigravity', () => {
 it('gives pi-rs its own color, away from Claude clay', () => {
   render(Sidebar, {
     ...base,
-    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }],
     projectId: 'p',
     sessions: [{ id: 's', projectId: 'p', title: 'Test', model: 'openai/gpt-5', createdAt: 0, updatedAt: 0 }],
     selectedId: 's'
@@ -42,7 +42,7 @@ it('gives pi-rs its own color, away from Claude clay', () => {
 it('colors the draft row by the model picked before the Session exists', () => {
   render(Sidebar, {
     ...base,
-    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }],
     projectId: 'p',
     draftModel: 'openai/gpt-5',
     sessions: [], selectedId: null
@@ -54,8 +54,8 @@ it('names the Project in the header select instead of a brand heading', () => {
   render(Sidebar, {
     ...base,
     projects: [
-      { id: 'p', name: 'Pi', root: '/p' },
-      { id: 'q', name: 'Other', root: '/q' }
+      { id: 'p', name: 'Pi', root: '/p', tools: [] },
+      { id: 'q', name: 'Other', root: '/q', tools: [] }
     ],
     projectId: 'p',
     sessions: [], selectedId: null
@@ -69,9 +69,9 @@ it('groups sessions by project, omitting projects with no sessions', () => {
   render(Sidebar, {
     ...base,
     projects: [
-      { id: 'p', name: 'Pi Project', root: '/p' },
-      { id: 'q', name: 'Other Project', root: '/q' },
-      { id: 'empty', name: 'Empty Project', root: '/empty' }
+      { id: 'p', name: 'Pi Project', root: '/p', tools: [] },
+      { id: 'q', name: 'Other Project', root: '/q', tools: [] },
+      { id: 'empty', name: 'Empty Project', root: '/empty', tools: [] }
     ],
     projectId: 'p',
     sessions: [
@@ -93,8 +93,8 @@ it('bands: working first, then the last 10 minutes, then the current Project', (
   render(Sidebar, {
     ...base,
     projects: [
-      { id: 'p', name: 'Pi', root: '/p' },
-      { id: 'q', name: 'Other', root: '/q' }
+      { id: 'p', name: 'Pi', root: '/p', tools: [] },
+      { id: 'q', name: 'Other', root: '/q', tools: [] }
     ],
     projectId: 'p',
     statuses: { running: 'working' },
@@ -118,7 +118,7 @@ it('renames on double-click, commits the title on Enter', async () => {
   render(Sidebar, {
     ...base,
     onrename,
-    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }],
     projectId: 'p',
     sessions: [{ id: 's', projectId: 'p', title: 'Old', model: 'x', createdAt: 0, updatedAt: 0 }],
     selectedId: null
@@ -135,7 +135,7 @@ it('asks before deleting: Delete key opens the dialog, confirm deletes', async (
   render(Sidebar, {
     ...base,
     ondelete,
-    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }],
     projectId: 'p',
     sessions: [{ id: 's', projectId: 'p', title: 'Gone', model: 'x', createdAt: 0, updatedAt: 0 }],
     selectedId: null
@@ -149,7 +149,7 @@ it('asks before deleting: Delete key opens the dialog, confirm deletes', async (
 it('shows active working sessions across projects at the top with a working dot', () => {
   render(Sidebar, {
     ...base,
-    projects: [{ id: 'p', name: 'Pi', root: '/p' }, { id: 'q', name: 'Other', root: '/q' }],
+    projects: [{ id: 'p', name: 'Pi', root: '/p', tools: [] }, { id: 'q', name: 'Other', root: '/q', tools: [] }],
     projectId: 'p',
     statuses: { b: 'working' },
     sessions: [
@@ -166,7 +166,7 @@ it('shows active working sessions across projects at the top with a working dot'
 it("keeps reviewer children after their parent and opens their own Session", async () => {
   const session = { projectId: "p", model: "gemini", createdAt: 1, updatedAt: 1 };
   const onselect = vi.fn();
-  const view = render(Sidebar, { ...base, onselect, projects: [{ id: "p", name: "P", root: "/p" }], projectId: "p", selectedId: "main",
+  const view = render(Sidebar, { ...base, onselect, projects: [{ id: "p", name: "P", root: "/p", tools: [] }], projectId: "p", selectedId: "main",
     sessions: [
       { ...session, id: "child", title: "Spec reviewer", parentId: "main", reviewerRole: "spec", updatedAt: 9 },
       { ...session, id: "w1", title: "Worker", parentId: "main", reviewerRole: "worker", updatedAt: 8 },
@@ -191,7 +191,7 @@ it('opens the More menu with Status and Settings, and closes on Escape', async (
     ...base,
     onstatus,
     onsettings,
-    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }],
     projectId: 'p',
     sessions: [],
     selectedId: null
@@ -219,7 +219,7 @@ it('keeps a working subagent with its parent and siblings, foldable and remember
   const session = { projectId: 'p', model: 'gemini', createdAt: 1, updatedAt: 1 };
   const props = {
     ...base,
-    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }],
     projectId: 'p',
     statuses: { kid: 'working' as const },
     selectedId: null,
@@ -252,7 +252,7 @@ it('bands a family by its freshest member, not its parent, so it never splits', 
   const session = { projectId: 'p', model: 'x', createdAt: 1, updatedAt: 1 };
   const view = render(Sidebar, {
     ...base,
-    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }],
     projectId: 'p',
     sessions: [
       { ...session, id: 'stale', title: 'Stale parent' },
@@ -272,7 +272,7 @@ it('marks a goldfish row with a badge and leaves other subagents unmarked', () =
   const session = { projectId: 'p', model: 'gemini', createdAt: 1, updatedAt: now };
   const view = render(Sidebar, {
     ...base,
-    projects: [{ id: 'p', name: 'P', root: '/p' }],
+    projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }],
     projectId: 'p',
     selectedId: null,
     sessions: [

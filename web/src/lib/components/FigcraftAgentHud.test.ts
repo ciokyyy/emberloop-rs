@@ -4,7 +4,7 @@ import FigcraftAgentHud from './FigcraftAgentHud.svelte';
 
 it('keeps the agent prompt collapsed behind a toggleable pill', async () => {
   render(FigcraftAgentHud, {
-    project: { id: 'p1', name: 'Design', root: '/project' },
+    project: { id: 'p1', name: 'Design', root: '/project', tools: [] },
     sessions: [{ id: 's1', projectId: 'p1', title: 'Designer', model: 'test', createdAt: 1, updatedAt: 1 }],
     currentSessionId: 's1',
     onsendprompt: vi.fn()
@@ -20,7 +20,7 @@ it('keeps the agent prompt collapsed behind a toggleable pill', async () => {
 
 it('keeps failed prompts and shows the error without leaving the editor', async () => {
   render(FigcraftAgentHud, {
-    project: { id: 'p1', name: 'Design', root: '/project' },
+    project: { id: 'p1', name: 'Design', root: '/project', tools: [] },
     sessions: [{ id: 's1', projectId: 'p1', title: 'Designer', model: 'test', createdAt: 1, updatedAt: 1 }],
     currentSessionId: 's1',
     onsendprompt: vi.fn().mockRejectedValue(new Error('Agent unavailable'))
@@ -40,7 +40,7 @@ it('drags the pill and clamps it back inside a resized viewport', async () => {
   } as DOMRect);
   Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true });
   render(FigcraftAgentHud, {
-    project: { id: 'p1', name: 'Design', root: '/project' },
+    project: { id: 'p1', name: 'Design', root: '/project', tools: [] },
     sessions: [{ id: 's1', projectId: 'p1', title: 'Designer', model: 'test', createdAt: 1, updatedAt: 1 }],
     currentSessionId: 's1',
     onsendprompt: vi.fn()
@@ -64,7 +64,7 @@ it('leaves the full-width phone sheet flush with the viewport edges', async () =
   } as DOMRect);
   Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true });
   render(FigcraftAgentHud, {
-    project: { id: 'p1', name: 'Design', root: '/project' },
+    project: { id: 'p1', name: 'Design', root: '/project', tools: [] },
     sessions: [{ id: 's1', projectId: 'p1', title: 'Designer', model: 'test', createdAt: 1, updatedAt: 1 }],
     currentSessionId: 's1',
     onsendprompt: vi.fn()

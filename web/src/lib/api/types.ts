@@ -38,10 +38,17 @@ export interface SkillHistory {
   usage: { time: number; name: string; op: string; result: string }[];
 }
 
+export interface ProjectTool {
+  name: string;
+  url: string;
+  enabled: boolean;
+}
+
 export interface Project {
   id: string;
   name: string;
   root: string;
+  tools: ProjectTool[];
 }
 
 

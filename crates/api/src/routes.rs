@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::{Project, SessionMeta};
+use store::{Project, ProjectTool, SessionMeta};
 use utoipa::{OpenApi, ToSchema};
 
 use crate::models::ModelEntry;
@@ -129,6 +129,55 @@ pub struct ProjectDto {
     pub id: String,
     pub name: String,
     pub root: String,
+    pub tools: Vec<ProjectToolDto>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ProjectToolDto {
+    pub name: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+}
+
+fn enabled_by_default() -> bool {
+    true
+}
+
+impl From<ProjectTool> for ProjectToolDto {
+    fn from(tool: ProjectTool) -> Self {
+        Self {
+            name: tool.name,
+            url: tool.url,
+            enabled: tool.enabled,
+        }
+    }
+}
+
+impl From<ProjectToolDto> for ProjectTool {
+    fn from(tool: ProjectToolDto) -> Self {
+        Self {
+            name: tool.name,
+            url: tool.url,
+            enabled: tool.enabled,
+        }
+    }
+}
+
+impl From<Project> for ProjectDto {
+    fn from(project: Project) -> Self {
+        Self {
+            id: project.id,
+            name: project.name,
+            root: project.root.to_string_lossy().to_string(),
+            tools: project
+                .tools
+                .into_iter()
+                .map(ProjectToolDto::from)
+                .collect(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -159,6 +208,7 @@ pub struct CloneProjectRequest {
 pub struct UpdateProjectRequest {
     pub name: Option<String>,
     pub root: Option<String>,
+    pub tools: Option<Vec<ProjectToolDto>>,
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -254,11 +304,7 @@ pub async fn list_projects(State(state): State<AppState>) -> Json<Vec<ProjectDto
         .into_iter()
         .map(|p| {
             let _ = tools::figcraft::ensure_design_file(&p.root);
-            ProjectDto {
-                id: p.id,
-                name: p.name,
-                root: p.root.to_string_lossy().to_string(),
-            }
+            ProjectDto::from(p)
         })
         .collect();
     Json(dtos)
@@ -281,6 +327,7 @@ pub async fn create_project(
         id: generate_id("proj"),
         name: payload.name,
         root: PathBuf::from(payload.root),
+        tools: Vec::new(),
     };
     let saved = state
         .projects
@@ -288,14 +335,7 @@ pub async fn create_project(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let _ = tools::figcraft::ensure_design_file(&saved.root);
-    Ok((
-        StatusCode::CREATED,
-        Json(ProjectDto {
-            id: saved.id,
-            name: saved.name,
-            root: saved.root.to_string_lossy().to_string(),
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(ProjectDto::from(saved))))
 }
 
 #[utoipa::path(
@@ -328,6 +368,7 @@ pub async fn clone_project(
         id: generate_id("proj"),
         name,
         root: target,
+        tools: Vec::new(),
     };
     let saved = state
         .projects
@@ -335,14 +376,7 @@ pub async fn clone_project(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let _ = tools::figcraft::ensure_design_file(&saved.root);
-    Ok((
-        StatusCode::CREATED,
-        Json(ProjectDto {
-            id: saved.id,
-            name: saved.name,
-            root: saved.root.to_string_lossy().to_string(),
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(ProjectDto::from(saved))))
 }
 
 #[utoipa::path(
@@ -359,21 +393,24 @@ pub async fn update_project(
     Path(id): Path<String>,
     Json(payload): Json<UpdateProjectRequest>,
 ) -> Result<Json<ProjectDto>, (StatusCode, String)> {
-    let root = payload.root.map(PathBuf::from);
+    let UpdateProjectRequest { name, root, tools } = payload;
+    let root = root.map(PathBuf::from);
+    let tools = tools.map(|tools| tools.into_iter().map(ProjectTool::from).collect());
     let previous = state.projects.get(&id).await;
     let updated = state
         .projects
-        .update(&id, payload.name, root)
+        .update(&id, name, root, tools)
         .await
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+        .map_err(|error| match error {
+            store::projects::ProjectStoreError::Invalid(message) => {
+                (StatusCode::BAD_REQUEST, message)
+            }
+            other => (StatusCode::NOT_FOUND, other.to_string()),
+        })?;
     if let Some(previous) = previous.filter(|project| project.root != updated.root) {
         state.designs.remove(&previous.root).await;
     }
-    Ok(Json(ProjectDto {
-        id: updated.id,
-        name: updated.name,
-        root: updated.root.to_string_lossy().to_string(),
-    }))
+    Ok(Json(ProjectDto::from(updated)))
 }
 
 #[utoipa::path(
@@ -394,11 +431,7 @@ pub async fn delete_project(
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
     state.designs.remove(&deleted.root).await;
-    Ok(Json(ProjectDto {
-        id: deleted.id,
-        name: deleted.name,
-        root: deleted.root.to_string_lossy().to_string(),
-    }))
+    Ok(Json(ProjectDto::from(deleted)))
 }
 
 #[utoipa::path(
@@ -1618,6 +1651,7 @@ mod prompt_routes_tests {
                 id: "proj_1".into(),
                 name: "demo".into(),
                 root: dir.path().to_path_buf(),
+                tools: Vec::new(),
             })
             .await
             .unwrap();

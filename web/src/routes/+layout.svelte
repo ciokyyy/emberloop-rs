@@ -779,6 +779,9 @@
     project={activeProject}
     open={projectDrawerOpen}
     onclose={() => (projectDrawerOpen = false)}
+    onupdate={(project) => {
+      projects = projects.map((existing) => (existing.id === project.id ? project : existing));
+    }}
     onopendesign={() => {
       // The design canvas owns its own window: the installed app has no URL bar to come back with.
       window.open(designPath(activeProject.id, selected ?? designSession), '_blank', 'noopener');

@@ -4,6 +4,7 @@ import type {
   LoginView,
   Model,
   Project,
+  ProjectTool,
   ProjectDesign,
   ProviderView,
   PromptFile,
@@ -49,7 +50,7 @@ export const api = {
     request<Project>('/api/projects', { method: 'POST', body: JSON.stringify({ name, root }) }),
   cloneProject: (repo: string, location: string) =>
     request<Project>('/api/projects/clone', { method: 'POST', body: JSON.stringify({ repo, location }) }),
-  updateProject: (id: string, patch: { name?: string; root?: string }) =>
+  updateProject: (id: string, patch: { name?: string; root?: string; tools?: ProjectTool[] }) =>
     request<Project>(`/api/projects/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch)

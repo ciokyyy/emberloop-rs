@@ -17,7 +17,7 @@ describe('NewSessionDialog', () => {
 
 it('includes reasoning effort in the new Session and updates its choices per model', async () => {
   const oncreate = vi.fn();
-  render(NewSessionDialog, { ...props, open: true, projects: [{ id: 'p', name: 'P', root: '/p' }], models: [
+  render(NewSessionDialog, { ...props, open: true, projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }], models: [
     { id: 'a', label: 'A', provider: 'pi', kind: 'chat', efforts: ['high'], image_input: true, context_window: 1000, source: 'pi', stale: false, updated_at: 0 },
     { id: 'b', label: 'B', provider: 'pi', kind: 'chat', efforts: ['max'], image_input: false, context_window: 1000, source: 'pi', stale: false, updated_at: 0 }
   ], oncreate });
@@ -31,7 +31,7 @@ it('includes reasoning effort in the new Session and updates its choices per mod
 
 it('uses the configured default instead of the first model', async () => {
   const oncreate = vi.fn();
-  render(NewSessionDialog, { ...props, open: true, projects: [{ id: 'p', name: 'P', root: '/p' }], defaultModel: 'b', models: [
+  render(NewSessionDialog, { ...props, open: true, projects: [{ id: 'p', name: 'P', root: '/p', tools: [] }], defaultModel: 'b', models: [
     { id: 'a', label: 'A', provider: 'pi', source: 'pi', kind: 'chat', efforts: [], image_input: false, context_window: 1000, stale: false, updated_at: 0 },
     { id: 'b', label: 'B', provider: 'pi', source: 'pi', kind: 'chat', efforts: ['max'], image_input: false, context_window: 1000, stale: false, updated_at: 0 }
   ], oncreate });

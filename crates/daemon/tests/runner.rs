@@ -186,6 +186,7 @@ async fn runner_with_stream(
             id: "proj_1".into(),
             name: "demo".into(),
             root: dir.path().to_path_buf(),
+            tools: Vec::new(),
         })
         .await
         .unwrap();

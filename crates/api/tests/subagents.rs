@@ -90,6 +90,7 @@ async fn setup(path: &std::path::Path) -> (AppState, Arc<Driver>) {
             id: "p".into(),
             name: "Project".into(),
             root: path.into(),
+            tools: Vec::new(),
         })
         .await
         .unwrap();
@@ -826,6 +827,7 @@ async fn setup_with_sources(
             id: "p".into(),
             name: "Project".into(),
             root: path.into(),
+            tools: Vec::new(),
         })
         .await
         .unwrap();

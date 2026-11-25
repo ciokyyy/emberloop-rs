@@ -46,6 +46,7 @@ async fn system_status_returns_host_memory_disk_and_runtime_rows() {
             id: "p1".into(),
             name: "demo".into(),
             root: dir.path().to_path_buf(),
+            tools: Vec::new(),
         })
         .await
         .unwrap();
@@ -95,6 +96,7 @@ async fn token_status_aggregates_active_archived_latency_and_tool_sinks() {
             id: "p-ember".into(),
             name: "ember".into(),
             root: dir.path().to_path_buf(),
+            tools: Vec::new(),
         })
         .await
         .unwrap();

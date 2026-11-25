@@ -56,7 +56,7 @@ describe('NewSessionDialog model picker', () => {
     const oncreate = vi.fn();
     const { getByLabelText, getByRole } = render(NewSessionDialog, {
       open: true,
-      projects: [{ id: 'proj_1', name: 'Demo', root: '/tmp/demo' }],
+      projects: [{ id: 'proj_1', name: 'Demo', root: '/tmp/demo', tools: [] }],
       models,
       oncreate
     });

@@ -233,6 +233,7 @@ async fn new_sessions_use_the_default_model_and_reject_unknown_defaults() {
             id: "p1".into(),
             name: "project".into(),
             root: dir.path().to_path_buf(),
+            tools: Vec::new(),
         })
         .await
         .unwrap();
@@ -356,6 +357,7 @@ async fn project_state(
             id: "p1".into(),
             name: "project".into(),
             root: root.clone(),
+            tools: Vec::new(),
         })
         .await
         .unwrap();

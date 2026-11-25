@@ -14,5 +14,5 @@ pub use blobs::{BlobError, BlobRef, BlobStore};
 pub use coalesce::{CoalescedWriter, EventCoalescer};
 pub use data_root::DataRoot;
 pub use event_log::{session_event_lines, EventLog};
-pub use projects::{Project, ProjectsStore};
+pub use projects::{Project, ProjectTool, ProjectsStore};
 pub use sessions::{SessionMeta, SessionState, SessionsStore};

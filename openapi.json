@@ -1938,7 +1938,8 @@
         "required": [
           "id",
           "name",
-          "root"
+          "root",
+          "tools"
         ],
         "properties": {
           "id": {
@@ -1948,6 +1949,29 @@
             "type": "string"
           },
           "root": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectToolDto"
+            }
+          }
+        }
+      },
+      "ProjectToolDto": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
             "type": "string"
           }
         }
@@ -2943,6 +2967,15 @@
               "string",
               "null"
             ]
+          },
+          "tools": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ProjectToolDto"
+            }
           }
         }
       },

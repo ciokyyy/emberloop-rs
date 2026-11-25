@@ -347,6 +347,7 @@ async fn fixture_config(
             id: "proj_1".into(),
             name: "demo".into(),
             root: dir.path().to_path_buf(),
+            tools: Vec::new(),
         })
         .await
         .unwrap();
@@ -512,7 +513,7 @@ async fn injects_tools_prompts_and_meters_usage() {
         .as_str()
         .unwrap();
     assert!(system.contains("Ponytail"));
-    assert!(system.contains("CAVEMAN MODE ACTIVE — level: ultra"));
+    assert!(system.contains("# Voice"));
     assert!(system.contains("el://skills/ember-flow/SKILL.md"));
     assert!(system.contains("demo"));
 
@@ -532,7 +533,7 @@ async fn injects_tools_prompts_and_meters_usage() {
     assert!(!meta.prompt_hashes.is_empty());
     assert!(meta.prompt_hashes.contains_key(prompts::POLICY));
     assert!(meta.prompt_hashes.contains_key(prompts::PONYTAIL));
-    assert!(meta.prompt_hashes.contains_key(prompts::CAVEMAN));
+    assert!(meta.prompt_hashes.contains_key(prompts::VOICE));
 }
 
 #[tokio::test]
@@ -2667,34 +2668,6 @@ fn nudge_parts(body: &Value) -> Vec<Value> {
         .collect()
 }
 
-fn nudge_turn_follows_tool_result(body: &Value) -> bool {
-    let contents = body["contents"].as_array().expect("contents");
-    let result = contents
-        .iter()
-        .position(|turn| {
-            turn["parts"]
-                .as_array()
-                .is_some_and(|parts| parts.iter().any(|p| p.get("functionResponse").is_some()))
-        })
-        .expect("tool result turn");
-    contents[result + 1]["parts"]
-        .as_array()
-        .is_some_and(|parts| {
-            parts.iter().any(|p| {
-                p["text"]
-                    .as_str()
-                    .is_some_and(|t| t.starts_with("This is an efficiency nudge"))
-            })
-        })
-}
-
-/// A fake whose every call answers plain text, so no proxy tool round runs and each client request is one upstream call.
-fn text_only_fake() -> FakeUpstream {
-    let fake = FakeUpstream::new();
-    fake.calls.store(1, Ordering::SeqCst);
-    fake
-}
-
 fn nudge_text(body: &Value) -> Option<String> {
     nudge_parts(body)
         .first()
@@ -2705,8 +2678,15 @@ fn splices_file_text(fixture: &Fixture) -> String {
     std::fs::read_to_string(fixture.data_root.session_splices_file("ses_1")).unwrap_or_default()
 }
 
+/// A fake whose every call answers plain text, so no proxy tool round runs and each client request is one upstream call.
+fn text_only_fake() -> FakeUpstream {
+    let fake = FakeUpstream::new();
+    fake.calls.store(1, Ordering::SeqCst);
+    fake
+}
+
 #[tokio::test]
-async fn a_first_nudge_is_transient_and_rides_the_tool_result_turn() {
+async fn the_nudge_is_the_last_turn_and_stays_transient() {
     let fixture = fixture_with(text_only_fake()).await;
     let (status, _) = send(
         &fixture.state,
@@ -2722,9 +2702,10 @@ async fn a_first_nudge_is_transient_and_rides_the_tool_result_turn() {
         1,
         "one nudge on the request where the gate fires"
     );
+    let last = first["contents"].as_array().and_then(|turns| turns.last());
     assert!(
-        nudge_turn_follows_tool_result(&first),
-        "the nudge is a user turn right after the tool result"
+        last.is_some_and(is_nudge_turn),
+        "the nudge is the last turn of the outgoing contents"
     );
     assert!(
         !splices_file_text(&fixture).contains("nudge"),
@@ -2745,6 +2726,48 @@ async fn a_first_nudge_is_transient_and_rides_the_tool_result_turn() {
         "a transient nudge is absent from the next request"
     );
     assert!(!splices_file_text(&fixture).contains("nudge"));
+}
+
+/// The nudge appends: a request whose newest turn is a user prompt keeps every turn where the
+/// harness put it, which is the prefix the provider cache hashes.
+#[tokio::test]
+async fn a_nudge_after_a_later_user_prompt_moves_no_turn() {
+    let fixture = fixture().await;
+    let runtime = fixture.state.runtime("ses_1").await.unwrap();
+    runtime.last_input_tokens.store(200_000, Ordering::Relaxed);
+    let turns = heavy_conversation().as_array().expect("contents").clone();
+    let mut contents = std::borrow::Cow::Borrowed(turns.as_slice());
+    let settings = api::state::Settings {
+        preserve_recent_messages: 1,
+        ..api::state::Settings::default()
+    };
+    let (report, _) = inject_nudge(&runtime, &mut contents, 1_000_000, &settings).unwrap();
+    assert!(
+        report.is_some(),
+        "the first nudge fires on a heavy conversation"
+    );
+    assert_eq!(
+        &contents[..turns.len()],
+        turns.as_slice(),
+        "the nudge moves no turn the harness sent"
+    );
+    assert_eq!(
+        contents
+            .iter()
+            .filter(|turn| turn["_nudge"] == Value::Bool(true))
+            .count(),
+        1,
+        "one nudge turn"
+    );
+    assert_eq!(
+        contents.len(),
+        turns.len() + 1,
+        "the nudge adds exactly one turn"
+    );
+    assert!(
+        contents.last().is_some_and(turnkeys::is_transient),
+        "the nudge is the last turn"
+    );
 }
 
 #[tokio::test]
@@ -3521,7 +3544,7 @@ async fn switches_skip_nudge_and_tool_injection() {
 }
 
 /// The opencode chat wire is what the phone Session runs on, so the nudge and the proxy tools
-/// must reach it too: a user message after the tool result, carrying no marker key.
+/// must reach it too: a user message appended last, carrying no marker key.
 #[tokio::test]
 async fn a_chat_wire_nudge_arrives_as_a_user_message_and_the_tools_are_offered() {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -3579,9 +3602,9 @@ async fn a_chat_wire_nudge_arrives_as_a_user_message_and_the_tools_are_offered()
         .expect("the nudge reached the chat wire");
     assert_eq!(messages[nudge]["role"], "user");
     assert_eq!(
-        messages[nudge - 1]["role"],
-        "tool",
-        "the nudge rides right after the tool result"
+        nudge,
+        messages.len() - 1,
+        "the nudge is appended as the last message"
     );
     assert!(
         !seen[0].2.contains("_nudge"),
@@ -5080,7 +5103,7 @@ async fn a_goldfish_request_carries_the_persona_policy_and_the_exact_tool_allowl
     for absent in [
         "HARNESS-SYSTEM-MARKER",
         "lazy senior developer",
-        "CAVEMAN MODE",
+        "# Voice",
         "el://skills/ember-flow",
         "hashline",
         "execute",
@@ -5416,4 +5439,31 @@ fn replace_sse_data_keeps_event_lines_and_writes_a_multiline_payload_once() {
     assert!(text.starts_with("event: content_block_start\n"), "{text}");
     assert!(text.contains("\"a\":1"), "{text}");
     assert!(text.ends_with("\n\n"), "{text}");
+}
+
+#[test]
+fn dump_numbers_are_counted_per_session() {
+    assert_eq!(
+        (next_dump_seq("ses_one"), next_dump_seq("ses_one")),
+        (Some(0), Some(1))
+    );
+    assert_eq!(
+        (next_dump_seq("ses_two"), next_dump_seq("ses_two")),
+        (Some(0), Some(1))
+    );
+}
+
+#[test]
+fn a_dump_holds_the_body_it_was_given_twice_over() {
+    let dir = tempdir().unwrap();
+    let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]});
+    dump_request_to(dir.path(), "ses_dump", "wire", &body);
+    for name in ["ses_dump.wire.json", "ses_dump.wire.000.json"] {
+        let text = std::fs::read_to_string(dir.path().join(name)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            body,
+            "{name}"
+        );
+    }
 }

@@ -687,6 +687,12 @@ export interface components {
             id: string;
             name: string;
             root: string;
+            tools: components["schemas"]["ProjectToolDto"][];
+        };
+        ProjectToolDto: {
+            enabled?: boolean;
+            name: string;
+            url?: string;
         };
         PromptDto: {
             activeHash: string;
@@ -1060,6 +1066,7 @@ export interface components {
         UpdateProjectRequest: {
             name?: string | null;
             root?: string | null;
+            tools?: components["schemas"]["ProjectToolDto"][] | null;
         };
         UpdatePromptRequest: {
             text: string;
