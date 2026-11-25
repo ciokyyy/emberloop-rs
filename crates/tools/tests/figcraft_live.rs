@@ -59,9 +59,9 @@ async fn clients_share_one_project_document_and_rejoin_after_server_restart() {
         .to_string(),
     )
     .unwrap();
-    let first = McpRegistry::load(&project, Some(&config));
+    let first = McpRegistry::load(&project, Some(&config), None);
     let link = first.figcraft_link().await.unwrap();
-    let second = McpRegistry::load(&project, Some(&config));
+    let second = McpRegistry::load(&project, Some(&config), None);
     assert_eq!(second.figcraft_link().await.unwrap(), link);
     first
         .call(
@@ -81,7 +81,7 @@ async fn clients_share_one_project_document_and_rejoin_after_server_restart() {
     contains(&first, "Second client edit").await;
     let other = dir.path().join("other-project");
     std::fs::create_dir(&other).unwrap();
-    let isolated = McpRegistry::load(&other, Some(&config));
+    let isolated = McpRegistry::load(&other, Some(&config), None);
     assert_ne!(isolated.figcraft_link().await.unwrap(), link);
     assert!(!isolated
         .call("figcraft.inspect_document", &json!({}))
@@ -92,7 +92,7 @@ async fn clients_share_one_project_document_and_rejoin_after_server_restart() {
     child.kill().await.unwrap();
     child.wait().await.unwrap();
     let mut restarted = server(&data).await;
-    let restored = McpRegistry::load(&project, Some(&config));
+    let restored = McpRegistry::load(&project, Some(&config), None);
     assert_eq!(restored.figcraft_link().await.unwrap(), link);
     contains(&restored, "Shared upstream frame").await;
     contains(&restored, "Second client edit").await;

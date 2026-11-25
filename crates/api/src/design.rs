@@ -42,7 +42,7 @@ impl Designs {
         let client = if let Some(client) = clients.get(&root) {
             Arc::clone(client)
         } else {
-            let client = Arc::new(McpRegistry::load(&root, Some(config)));
+            let client = Arc::new(McpRegistry::load(&root, Some(config), None));
             client.figcraft_link().await?;
             clients.insert(root.to_owned(), Arc::clone(&client));
             let backup = Arc::downgrade(&client);

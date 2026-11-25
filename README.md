@@ -410,14 +410,15 @@ Operator configuration lives under `--data-root` and `--config-root`, never in t
 
 - **`<data-root>/settings.json`** — `default_model`, `title_generation`, `title_model`, `spec_reviewer` / `standards_reviewer` / `subagent_tiers` / `goldfish_tiers` fallback ladders, `ponytail_default_level` (`full`), `proxy_compression` (`true`), `max_context_limit` (`20`), `emergency_threshold_percent` (`25`), `preserve_recent_messages` (`4`), `min_pressure_benefit_tokens` (`0` = `max(5000, window / 100)`), `protected_tools`, `tier2_trigger` (`1000`), `tier3_trigger` (`2000`), and `ctx_spill_enabled` (`false`)
 - **`<config-root>/keys.json` & `tool-keys.json`** — Provider API keys and tool keys (`BRAVE_API_KEY`, `EXA_API_KEY`, `JINA_API_KEY`) saved with `0600` permissions
-- **`<config-root>/mcp.json`** — Extra MCP servers bridged into Python `execute` as `tools.<server>.<tool>(...)` (`codebase-memory-mcp` as `graph` and `figcraft` auto-register when absent). Each entry gives exactly one of `command` (stdio) or `url` (Streamable HTTP), plus optional `include`/`exclude`/`enabled`/`summary`/`project`; a `url` entry may not carry `args` or `setup`, and its `headers` are sent on every request:
+- **`<config-root>/mcp.json`** — Extra MCP servers bridged into Python `execute` as `tools.<server>.<tool>(...)` (`codebase-memory-mcp` as `graph` and `figcraft` auto-register when absent). Each entry gives exactly one of `command` (stdio) or `url` (Streamable HTTP), plus optional `include`/`exclude`/`enabled`/`summary`/`project`/`transport`; a `url` entry may not carry `args` or `setup`, and its `headers` are sent on every request. An entry without `gated` is global; `"gated": true` hides it unless the Session's Project lists an enabled tool with the server's name, so a Craft app stays out of every other Project:
 
   ```json
   {
     "mcpServers": {
       "jobs": {
         "url": "https://box.tailnet.ts.net/mcp",
-        "headers": { "Authorization": "Bearer <token>" }
+        "headers": { "Authorization": "Bearer <token>" },
+        "gated": true
       }
     }
   }

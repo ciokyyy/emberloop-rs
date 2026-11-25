@@ -69,6 +69,7 @@ pub fn default_entry() -> Value {
         "command": "figcraft-cli",
         "args": ["mcp"],
         "enabled": true,
+        "gated": true,
         "summary": SUMMARY
     })
 }
@@ -100,5 +101,6 @@ mod tests {
         assert_eq!(entry["command"], "figcraft-cli");
         assert_eq!(entry["args"][0], "mcp");
         assert_eq!(entry["enabled"], true);
+        assert_eq!(entry["gated"], true);
     }
 }

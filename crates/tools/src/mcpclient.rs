@@ -74,9 +74,8 @@ struct Entry {
     setup: Vec<Vec<String>>,
     #[serde(default)]
     transport: Transport,
-    /// Parsed here; the Project gating filter reads it in ticket 03.
+    /// Hidden from a harness Session unless that Session's Project lists the tool.
     #[serde(default)]
-    #[allow(dead_code)]
     gated: bool,
     #[serde(default)]
     url: Option<String>,
@@ -174,12 +173,18 @@ pub struct McpRegistry {
 }
 
 impl McpRegistry {
-    pub fn load(root: &Path, file: Option<&Path>) -> Self {
-        Self::load_with(root, file, &graph::default_bin_dirs())
+    pub fn load(root: &Path, file: Option<&Path>, project_tools: Option<&[String]>) -> Self {
+        Self::load_with(root, file, &graph::default_bin_dirs(), project_tools)
     }
 
     /// `bin_dirs` is searched for a native codebase-memory-mcp that replaces the npx fallback.
-    pub fn load_with(root: &Path, file: Option<&Path>, bin_dirs: &[PathBuf]) -> Self {
+    /// `project_tools` is the Session Project's enabled tool names; `None` disables gating.
+    pub fn load_with(
+        root: &Path,
+        file: Option<&Path>,
+        bin_dirs: &[PathBuf],
+        project_tools: Option<&[String]>,
+    ) -> Self {
         let mut registry = Self {
             root: root.to_path_buf(),
             servers: Vec::new(),
@@ -190,7 +195,7 @@ impl McpRegistry {
             pending: std::sync::Mutex::new(Vec::new()),
         };
         if let Some(file) = file {
-            if let Err(error) = registry.read(file, bin_dirs) {
+            if let Err(error) = registry.read(file, bin_dirs, project_tools) {
                 registry.error = Some(error);
             }
         } else if let Ok(entry) = serde_json::from_value::<Entry>(figcraft::default_entry()) {
@@ -209,7 +214,12 @@ impl McpRegistry {
         registry
     }
 
-    fn read(&mut self, file: &Path, bin_dirs: &[PathBuf]) -> Result<(), String> {
+    fn read(
+        &mut self,
+        file: &Path,
+        bin_dirs: &[PathBuf],
+        project_tools: Option<&[String]>,
+    ) -> Result<(), String> {
         let raw = std::fs::read_to_string(file)
             .map_err(|error| format!("{}: {error}", file.display()))?;
         let parsed: Value =
@@ -230,6 +240,9 @@ impl McpRegistry {
                 }
             }
             if !entry.enabled {
+                continue;
+            }
+            if entry.gated && project_tools.is_some_and(|names| !names.iter().any(|n| n == name)) {
                 continue;
             }
             let error = entry_error(name, &entry);
@@ -1017,7 +1030,28 @@ mod tests {
     }
 
     fn registry(fixture: &Fixture) -> McpRegistry {
-        McpRegistry::load_with(&fixture.root, Some(&fixture.file), &[])
+        McpRegistry::load_with(&fixture.root, Some(&fixture.file), &[], None)
+    }
+
+    #[test]
+    fn a_gated_entry_needs_the_project_tool_name() {
+        let fixture = fixture(json!({
+            "photocraft": {"command": "figcraft-cli", "gated": true},
+            "open": {"command": "figcraft-cli"},
+        }));
+        let names = |project_tools: Option<&[String]>| {
+            McpRegistry::load_with(&fixture.root, Some(&fixture.file), &[], project_tools)
+                .servers
+                .iter()
+                .map(|server| server.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(Some(&[])), vec!["open"]);
+        assert_eq!(
+            names(Some(&["photocraft".to_string()])),
+            vec!["open", "photocraft"]
+        );
+        assert_eq!(names(None), vec!["open", "photocraft"]);
     }
 
     #[tokio::test]

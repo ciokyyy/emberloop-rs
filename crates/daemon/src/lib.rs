@@ -24,7 +24,7 @@ use harness_pi::PiHarness;
 use prompts::{PromptStore, PromptWatcher};
 use proxy::{ProxyConfig, ProxyState};
 use rust_embed::RustEmbed;
-use store::{DataRoot, ProjectsStore, SessionsStore};
+use store::{DataRoot, Project, ProjectsStore, SessionsStore};
 use tools::{McpServer, ToolConfig, Toolbox};
 
 pub mod binaries;
@@ -402,6 +402,9 @@ pub enum Command {
         /// Global skills root, readable beyond the project root; omit for none.
         #[arg(long)]
         global_skills: Option<PathBuf>,
+        /// Comma-separated names of the Project's enabled tools; empty hides every gated server.
+        #[arg(long)]
+        project_tools: Option<String>,
     },
     /// Write LLM-free facts about recent Sessions, for the retro skill.
     Digest {
@@ -668,6 +671,14 @@ impl Daemon {
             env_file: Some(self.config.config_root.join("env")),
             tool_keys_file: Some(self.config.config_root.join("tool-keys.json")),
             mcp_file: Some(self.config.config_root.join("mcp.json")),
+            project_tools: Some(
+                project
+                    .tools
+                    .iter()
+                    .filter(|tool| tool.enabled)
+                    .map(|tool| tool.name.clone())
+                    .collect(),
+            ),
             global_skills: Some(self.config.global_skills.clone()),
             prompts_dir: Some(self.config.config_root.join("prompts")),
             session_url: Some(format!(
@@ -712,18 +723,13 @@ impl Daemon {
         );
         let spill = self.data_root.session_spill_dir(session_id);
         let mcp_command = daemon_exe().map(|exe| {
-            vec![
-                exe.display().to_string(),
-                "--config-root".to_string(),
-                self.config.config_root.display().to_string(),
-                "mcp".to_string(),
-                "--root".to_string(),
-                project.root.display().to_string(),
-                "--spill".to_string(),
-                spill.display().to_string(),
-                "--global-skills".to_string(),
-                self.config.global_skills.display().to_string(),
-            ]
+            mcp_argv(
+                &exe,
+                Some(&self.config.config_root),
+                Some(&self.config.global_skills),
+                &project,
+                &spill,
+            )
         });
         Ok(Some(HarnessWiring {
             proxy_url,
@@ -826,6 +832,42 @@ pub fn daemon_exe() -> Option<PathBuf> {
     std::env::current_exe().ok().map(strip_deleted)
 }
 
+/// The argv that runs this Session's `emberloop-daemon mcp` tool process.
+pub(crate) fn mcp_argv(
+    exe: &std::path::Path,
+    config_root: Option<&std::path::Path>,
+    global_skills: Option<&std::path::Path>,
+    project: &Project,
+    spill: &std::path::Path,
+) -> Vec<String> {
+    let mut argv = vec![exe.display().to_string()];
+    if let Some(config_root) = config_root {
+        argv.push("--config-root".to_string());
+        argv.push(config_root.display().to_string());
+    }
+    argv.extend([
+        "mcp".to_string(),
+        "--root".to_string(),
+        project.root.display().to_string(),
+        "--spill".to_string(),
+        spill.display().to_string(),
+    ]);
+    if let Some(global) = global_skills {
+        argv.push("--global-skills".to_string());
+        argv.push(global.display().to_string());
+    }
+    argv.extend([
+        "--project-tools".to_string(),
+        project
+            .tools
+            .iter()
+            .filter(|tool| tool.enabled)
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>()
+            .join(","),
+    ]);
+    argv
+}
 fn strip_deleted(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy();
     match text.strip_suffix(" (deleted)") {
@@ -885,9 +927,23 @@ pub async fn run_mcp(
     spill: PathBuf,
     config_root: PathBuf,
     global_skills: Option<PathBuf>,
+    project_tools: Option<String>,
 ) -> anyhow::Result<()> {
+    let project_tools = project_tools.map(|list| {
+        list.split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect()
+    });
     let descriptions = tool_descriptions(&PromptStore::new(config_root.join("prompts")));
-    let toolbox = Toolbox::new(mcp_tool_config(root, spill, &config_root, global_skills))?;
+    let toolbox = Toolbox::new(mcp_tool_config(
+        root,
+        spill,
+        &config_root,
+        global_skills,
+        project_tools,
+    ))?;
     toolbox.flush_notices().await?;
     Arc::new(McpServer::new(Arc::new(toolbox)).with_descriptions(descriptions))
         .serve_stdio()
@@ -902,13 +958,15 @@ pub fn mcp_tool_config(
     spill: PathBuf,
     config_root: &std::path::Path,
     global_skills: Option<PathBuf>,
+    project_tools: Option<Vec<String>>,
 ) -> ToolConfig {
     ToolConfig {
         env_file: Some(config_root.join("env")),
         tool_keys_file: Some(config_root.join("tool-keys.json")),
         mcp_file: Some(config_root.join("mcp.json")),
-        global_skills,
         prompts_dir: Some(config_root.join("prompts")),
+        project_tools,
+        global_skills,
         session_url: std::env::var("EMBERLOOP_SESSION_URL").ok(),
         reviewer: std::env::var("EMBERLOOP_REVIEWER").as_deref() == Ok("1"),
         subagent_role: std::env::var("EMBERLOOP_SUBAGENT_ROLE")
@@ -1226,6 +1284,47 @@ mod exe_tests {
         );
         let live = PathBuf::from("/work/target/debug/emberloop-daemon");
         assert_eq!(strip_deleted(live.clone()), live);
+    }
+
+    #[test]
+    fn the_mcp_argv_names_the_projects_enabled_tools() {
+        let project = Project {
+            id: "p".into(),
+            name: "P".into(),
+            root: PathBuf::from("/work/p"),
+            tools: vec![
+                store::ProjectTool {
+                    name: "photocraft".into(),
+                    url: String::new(),
+                    enabled: true,
+                },
+                store::ProjectTool {
+                    name: "docs".into(),
+                    url: String::new(),
+                    enabled: false,
+                },
+            ],
+        };
+        let argv = mcp_argv(
+            std::path::Path::new("/bin/emberloop-daemon"),
+            None,
+            None,
+            &project,
+            std::path::Path::new("/data/spill"),
+        );
+        assert_eq!(
+            argv,
+            [
+                "/bin/emberloop-daemon",
+                "mcp",
+                "--root",
+                "/work/p",
+                "--spill",
+                "/data/spill",
+                "--project-tools",
+                "photocraft",
+            ]
+        );
     }
 
     #[tokio::test]

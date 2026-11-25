@@ -18,8 +18,16 @@ async fn main() -> anyhow::Result<()> {
             root,
             spill,
             global_skills,
+            project_tools,
         }) => {
-            emberloop_daemon::run_mcp(root, spill, config.config_root.clone(), global_skills).await
+            emberloop_daemon::run_mcp(
+                root,
+                spill,
+                config.config_root.clone(),
+                global_skills,
+                project_tools,
+            )
+            .await
         }
         Some(Command::Digest {
             since,

@@ -7,10 +7,11 @@ use axum::extract::State;
 use axum::http::{Method, Request, StatusCode};
 use axum::routing::any;
 use axum::{Json, Router};
-use emberloop_daemon::{Config, Daemon};
+use emberloop_daemon::{mcp_tool_config, Config, Daemon};
 use serde_json::{json, Value};
-use store::{ProjectsStore, SessionsStore};
+use store::{ProjectTool, ProjectsStore, SessionsStore};
 use tempfile::TempDir;
+use tools::Toolbox;
 use tower::ServiceExt;
 
 struct Harness {
@@ -402,7 +403,28 @@ async fn harness_wiring_carries_a_signed_proxy_url_and_mcp_command() {
     let env = harness(None).await;
     let root = env._dir.path().join("project");
     std::fs::create_dir_all(&root).unwrap();
-    let (_, session_id) = project_and_session(&env.daemon, &root).await;
+    let (project_id, session_id) = project_and_session(&env.daemon, &root).await;
+    env.daemon
+        .projects
+        .update(
+            &project_id,
+            None,
+            None,
+            Some(vec![
+                ProjectTool {
+                    name: "photocraft".to_string(),
+                    url: String::new(),
+                    enabled: true,
+                },
+                ProjectTool {
+                    name: "docs".to_string(),
+                    url: String::new(),
+                    enabled: false,
+                },
+            ]),
+        )
+        .await
+        .unwrap();
     let wiring = env
         .daemon
         .harness_wiring(&session_id)
@@ -419,6 +441,82 @@ async fn harness_wiring_carries_a_signed_proxy_url_and_mcp_command() {
     assert!(command.iter().any(|arg| arg == "--root"));
     assert!(command.iter().any(|arg| arg == "--spill"));
     assert!(command.iter().any(|arg| arg == "--global-skills"));
+    let tools = command
+        .iter()
+        .position(|arg| arg == "--project-tools")
+        .expect("--project-tools");
+    assert_eq!(command[tools + 1], "photocraft", "disabled tools stay out");
+}
+
+const FAKE_MCP: &str = r#"
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("method") == "initialize":
+        result = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "fake", "version": "0"}}
+    elif message.get("method") == "tools/list":
+        result = {"tools": [{"name": "ping", "description": "Ping.", "inputSchema": {"type": "object"}}]}
+    else:
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+"#;
+
+async fn mcp_names(
+    root: &Path,
+    config_root: &Path,
+    project_tools: Option<Vec<String>>,
+) -> Vec<String> {
+    let toolbox = Toolbox::new(mcp_tool_config(
+        root.to_path_buf(),
+        root.join("spill"),
+        config_root,
+        None,
+        project_tools,
+    ))
+    .unwrap();
+    let mut names: Vec<String> = toolbox
+        .mcp_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.call_name)
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn gated_mcp_servers_follow_the_project_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    let config_root = dir.path().join("config");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&config_root).unwrap();
+    let script = dir.path().join("fake-mcp.py");
+    std::fs::write(&script, FAKE_MCP).unwrap();
+    let server = json!({"command": "python3", "args": [script.display().to_string()]});
+    let mut gated = server.clone();
+    gated["gated"] = json!(true);
+    let mut off = server.clone();
+    off["enabled"] = json!(false);
+    std::fs::write(
+        config_root.join("mcp.json"),
+        json!({"mcpServers": {"photocraft": gated, "open": server, "off": off}}).to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        mcp_names(&root, &config_root, Some(vec![])).await,
+        vec!["open.ping"]
+    );
+    assert_eq!(
+        mcp_names(&root, &config_root, Some(vec!["photocraft".to_string()])).await,
+        vec!["open.ping", "photocraft.ping"]
+    );
+    assert_eq!(
+        mcp_names(&root, &config_root, None).await,
+        vec!["open.ping", "photocraft.ping"]
+    );
 }
 
 #[tokio::test]

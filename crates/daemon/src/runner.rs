@@ -17,7 +17,7 @@ use prompts::PromptStore;
 use proxy::ProxyState;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
-use store::{DataRoot, EventLog, ProjectsStore, SessionMeta, SessionsStore};
+use store::{DataRoot, EventLog, Project, ProjectsStore, SessionMeta, SessionsStore};
 use tokio::sync::{Mutex, RwLock};
 
 /// How often the idle watcher checks the Sessions.
@@ -356,31 +356,21 @@ impl SessionRunner {
     fn wiring(
         &self,
         session_id: &str,
-        root: &std::path::Path,
+        project: &Project,
         meta: &SessionMeta,
         image_input: bool,
         ctx_spill_enabled: bool,
     ) -> HarnessWiring {
         let spill = self.data_root.session_spill_dir(session_id);
+        // The Session's HOME is a harness pi-home, so name the daemon's real config root.
         let mcp_command = crate::daemon_exe().map(|exe| {
-            // The Session's HOME is a harness pi-home, so name the daemon's real config root.
-            let mut argv = vec![exe.display().to_string()];
-            if let Some(config_root) = &self.config_root {
-                argv.push("--config-root".to_string());
-                argv.push(config_root.display().to_string());
-            }
-            argv.extend([
-                "mcp".to_string(),
-                "--root".to_string(),
-                root.display().to_string(),
-                "--spill".to_string(),
-                spill.display().to_string(),
-            ]);
-            if let Some(global) = &self.global_skills {
-                argv.push("--global-skills".to_string());
-                argv.push(global.display().to_string());
-            }
-            argv
+            crate::mcp_argv(
+                &exe,
+                self.config_root.as_deref(),
+                self.global_skills.as_deref(),
+                project,
+                &spill,
+            )
         });
         HarnessWiring {
             proxy_url: format!(
@@ -495,13 +485,7 @@ impl SessionRunner {
             None => true,
         };
         let ctx_spill_enabled = self.settings.read().await.ctx_spill_enabled;
-        let wiring = self.wiring(
-            session_id,
-            &project.root,
-            &meta,
-            image_input,
-            ctx_spill_enabled,
-        );
+        let wiring = self.wiring(session_id, &project, &meta, image_input, ctx_spill_enabled);
         self.freeze_catalog(session_id, &project.root);
         let session = Arc::<dyn HarnessSession>::from(
             self.harness

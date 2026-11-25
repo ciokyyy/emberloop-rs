@@ -23,6 +23,7 @@ async fn mcp_reads_global_skills_only_when_given_the_global_root() {
         base.join("spill"),
         &config_root,
         Some(global.clone()),
+        None,
     ))
     .unwrap();
     let read = with_root.call("read", &args).await.unwrap();
@@ -32,6 +33,7 @@ async fn mcp_reads_global_skills_only_when_given_the_global_root() {
         project,
         base.join("spill"),
         &config_root,
+        None,
         None,
     ))
     .unwrap();

@@ -85,8 +85,10 @@ pub struct ToolConfig {
     pub env_file: Option<PathBuf>,
     /// The JSON file Settings writes tool keys into; the tools read it on every call.
     pub tool_keys_file: Option<PathBuf>,
-    /// `<config root>/mcp.json`: the stdio MCP servers `execute` can reach.
+    /// `<config root>/mcp.json`: the MCP servers `execute` can reach.
     pub mcp_file: Option<PathBuf>,
+    /// This Project's enabled tool names; `None` lets every server through, gated or not.
+    pub project_tools: Option<Vec<String>>,
     /// The global skills root (`~/.agents/skills`), readable beyond the project root.
     pub global_skills: Option<PathBuf>,
     /// `<config root>/prompts`: the prompt overrides `el://docs` lists.
@@ -121,6 +123,7 @@ impl ToolConfig {
             env_file: default_env_file(),
             tool_keys_file: None,
             mcp_file: None,
+            project_tools: None,
             global_skills: None,
             prompts_dir: None,
             session_url: None,
@@ -206,6 +209,7 @@ impl Toolbox {
             &config.root,
             config.mcp_file.as_deref(),
             &config.bin_dirs,
+            config.project_tools.as_deref(),
         ));
         Ok(Self {
             background,
