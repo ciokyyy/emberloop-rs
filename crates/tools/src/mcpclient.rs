@@ -1,7 +1,7 @@
 //! MCP client: one server per entry in `<config root>/mcp.json`, either a stdio
-//! child process or a Streamable HTTP endpoint. Its tools reach the model only
-//! through `execute`; the harness tool list is fixed, so a server is never
-//! visible as a tool of its own.
+//! child process, a Streamable HTTP endpoint or a legacy HTTP+SSE one. Its tools
+//! reach the model only through `execute`; the harness tool list is fixed, so a
+//! server is never visible as a tool of its own.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -25,6 +25,7 @@ use crate::graph;
 use crate::{ToolError, ToolResult};
 
 mod design;
+mod sse;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -42,6 +43,8 @@ fn yes() -> bool {
 enum Transport {
     #[default]
     Http,
+    /// The 2024 HTTP+SSE protocol: one GET event stream and POSTed messages.
+    Sse,
 }
 
 /// One `mcpServers` entry: a command or a url, never both.
@@ -677,6 +680,7 @@ async fn run_setup(root: &Path, server: &Server) {
 async fn connect(root: &Path, server: &Server) -> ToolResult<Connected> {
     match (&server.entry.url, server.entry.transport) {
         (Some(url), Transport::Http) => connect_http(server, url).await,
+        (Some(url), Transport::Sse) => connect_sse(server, url).await,
         (None, _) => connect_stdio(root, server).await,
     }
 }
@@ -862,39 +866,42 @@ async fn connect_http(server: &Server, url: &str) -> ToolResult<Connected> {
     let transport = StreamableHttpClientTransport::from_config(http_config(server, url)?);
     let service = tokio::time::timeout(CONNECT_TIMEOUT, ().serve(transport))
         .await
-        .map_err(|_| {
-            ToolError::msg(format!(
-                "mcp server {:?}: cannot connect to {url}: timed out after {}s",
-                server.name,
-                CONNECT_TIMEOUT.as_secs()
-            ))
-        })?
-        .map_err(|error| {
-            ToolError::msg(format!(
-                "mcp server {:?}: cannot connect to {url}: {error}",
-                server.name
-            ))
-        })?;
+        .map_err(|_| connect_timed_out(server, url))?
+        .map_err(|error| connect_failed(server, url, error))?;
     connected(server, Arc::new(service), None).await
+}
+
+async fn connect_sse(server: &Server, url: &str) -> ToolResult<Connected> {
+    let transport = tokio::time::timeout(CONNECT_TIMEOUT, sse::connect(server, url))
+        .await
+        .map_err(|_| connect_timed_out(server, url))??;
+    let service = tokio::time::timeout(CONNECT_TIMEOUT, ().serve(transport))
+        .await
+        .map_err(|_| connect_timed_out(server, url))?
+        .map_err(|error| connect_failed(server, url, error))?;
+    connected(server, Arc::new(service), None).await
+}
+
+fn connect_timed_out(server: &Server, url: &str) -> ToolError {
+    ToolError::msg(format!(
+        "mcp server {:?}: cannot connect to {url}: timed out after {}s",
+        server.name,
+        CONNECT_TIMEOUT.as_secs()
+    ))
+}
+
+fn connect_failed(server: &Server, url: &str, error: impl std::fmt::Display) -> ToolError {
+    ToolError::msg(format!(
+        "mcp server {:?}: cannot connect to {url}: {error}",
+        server.name
+    ))
 }
 
 fn http_config(server: &Server, url: &str) -> ToolResult<StreamableHttpClientTransportConfig> {
     let mut config = StreamableHttpClientTransportConfig::with_uri(url);
     let mut headers = HashMap::new();
-    for (name, value) in &server.entry.headers {
-        let parsed = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
-            ToolError::msg(format!(
-                "mcp server {:?}: header name {name:?} is invalid",
-                server.name
-            ))
-        })?;
-        let value = HeaderValue::from_str(value).map_err(|_| {
-            ToolError::msg(format!(
-                "mcp server {:?}: header {name:?} has a value that is not a valid HTTP header",
-                server.name
-            ))
-        })?;
-        if parsed == AUTHORIZATION {
+    for (name, value) in header_pairs(server)? {
+        if name == AUTHORIZATION {
             if let Some(token) = value
                 .to_str()
                 .ok()
@@ -904,9 +911,33 @@ fn http_config(server: &Server, url: &str) -> ToolResult<StreamableHttpClientTra
                 continue;
             }
         }
-        headers.insert(parsed, value);
+        headers.insert(name, value);
     }
     Ok(config.custom_headers(headers))
+}
+
+/// Parse the entry's headers; an error names the header and never its value.
+fn header_pairs(server: &Server) -> ToolResult<Vec<(HeaderName, HeaderValue)>> {
+    server
+        .entry
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            let parsed = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                ToolError::msg(format!(
+                    "mcp server {:?}: header name {name:?} is invalid",
+                    server.name
+                ))
+            })?;
+            let value = HeaderValue::from_str(value).map_err(|_| {
+                ToolError::msg(format!(
+                    "mcp server {:?}: header {name:?} has a value that is not a valid HTTP header",
+                    server.name
+                ))
+            })?;
+            Ok((parsed, value))
+        })
+        .collect()
 }
 
 #[cfg(test)]
