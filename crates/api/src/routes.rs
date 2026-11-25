@@ -43,6 +43,7 @@ use crate::state::{AppState, Settings};
         get_prompt,
         list_models,
         refresh_models,
+        list_craft,
         crate::providers::list_providers,
         crate::providers::provider_usage,
         crate::usage::session_usage_handler,
@@ -73,6 +74,7 @@ use crate::state::{AppState, Settings};
             CreateProjectRequest,
             CloneProjectRequest,
             UpdateProjectRequest,
+            CraftAppDto,
             SessionDto,
             CreateSessionRequest,
             UpdateSessionRequest,
@@ -1184,6 +1186,41 @@ pub async fn refresh_models(
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
 }
 
+/// One Craft app the Project drawer can switch on for a Project.
+#[derive(Serialize, ToSchema)]
+pub struct CraftAppDto {
+    /// `mcp.json` key and the name a Project tool entry carries.
+    pub name: String,
+    /// Display name in the drawer.
+    pub label: String,
+    pub summary: String,
+    /// Whether the app's CLI is on the daemon's `PATH`.
+    pub installed: bool,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/craft",
+    responses(
+        (status = 200, description = "Craft apps with a working MCP server and a web bundle", body = Vec<CraftAppDto>)
+    )
+)]
+pub async fn list_craft() -> Json<Vec<CraftAppDto>> {
+    let mut apps = vec![CraftAppDto {
+        name: tools::figcraft::SERVER.to_string(),
+        label: "FigCraft".to_string(),
+        summary: tools::figcraft::SUMMARY.to_string(),
+        installed: tools::craft::installed(tools::figcraft::CLI),
+    }];
+    apps.extend(tools::craft::APPS.iter().map(|app| CraftAppDto {
+        name: app.name.to_string(),
+        label: app.label.to_string(),
+        summary: app.summary.to_string(),
+        installed: tools::craft::installed(app.cli),
+    }));
+    Json(apps)
+}
+
 pub fn build_router(state: AppState) -> Router {
     let providers = crate::providers::router();
     Router::new()
@@ -1241,6 +1278,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/tool-keys/{name}", axum::routing::put(set_tool_key))
         .route("/api/models", get(list_models))
         .route("/api/models/refresh", post(refresh_models))
+        .route("/api/craft", get(list_craft))
         .route("/api/prompts", get(list_prompts))
         .route(
             "/api/prompts/{id}",

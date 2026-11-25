@@ -11,6 +11,7 @@ import type {
   PromptImage,
   PromptInfo,
   PromptText,
+  CraftApp,
   Session,
   SessionEvent,
   Settings,
@@ -113,6 +114,8 @@ export const api = {
     }),
 
   getSettings: () => request<Settings>('/api/settings'),
+  /** The Craft apps the Project drawer can switch on, with whether each CLI is installed. */
+  listCraft: () => request<CraftApp[]>('/api/craft'),
   updateSettings: (settings: Settings) =>
     request<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }),
 

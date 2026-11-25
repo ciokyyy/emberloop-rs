@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { PenTool, ArrowUpRight, X } from '@lucide/svelte';
   import { api } from '$lib/api';
   import { fadeAt } from '$lib/motion';
-  import type { Project } from '../api/types';
+  import type { CraftApp, Project } from '../api/types';
   import Switch from './ui/switch.svelte';
 
   let { project, open, onclose, onupdate, onopendesign }: {
@@ -15,12 +16,23 @@
 
   let busy = $state(false);
   let error = $state('');
+  let craft = $state<CraftApp[]>([]);
 
-  // FigCraft is a built-in gated server: an enabled Project entry is the whole switch.
-  const figcraftOn = $derived(
-    project.tools.some((tool) => tool.name === 'figcraft' && tool.enabled)
+  onMount(async () => {
+    try {
+      craft = await api.listCraft();
+    } catch (problem) {
+      // Keep the built-in FigCraft row reachable when the list fails.
+      craft = [{ name: 'figcraft', label: 'FigCraft', summary: '', installed: true }];
+      error = problem instanceof Error ? problem.message : String(problem);
+    }
+  });
+
+  // A Craft app is on when the Project lists it as an enabled tool; every other server keeps its own row.
+  const customTools = $derived(
+    project.tools.filter((tool) => !craft.some((app) => app.name === tool.name))
   );
-  const otherTools = $derived(project.tools.filter((tool) => tool.name !== 'figcraft'));
+  const entry = (name: string) => project.tools.find((tool) => tool.name === name);
 
   async function save(tools: Project['tools']) {
     if (busy) return;
@@ -43,15 +55,13 @@
     );
   }
 
-  function toggleFigcraft() {
-    const entry = project.tools.find((tool) => tool.name === 'figcraft');
-    void save(
-      entry
-        ? project.tools.map((tool) =>
-            tool.name === 'figcraft' ? { ...tool, enabled: !tool.enabled } : tool
-          )
-        : [...project.tools, { name: 'figcraft', url: '', enabled: true }]
-    );
+  function toggleCraft(name: string) {
+    const tool = entry(name);
+    if (tool) {
+      toggle(tool);
+      return;
+    }
+    void save([...project.tools, { name, url: '', enabled: true }]);
   }
 </script>
 
@@ -79,28 +89,46 @@
   </header>
   <nav class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
     <p class="px-3 pt-3 pb-1 text-[11px] font-medium text-fg-3">Tools</p>
-    <div class="flex w-full min-w-0 items-center gap-2 rounded-[10px] px-2 py-1.5 hover:bg-surface-3">
-      <PenTool class="size-4 shrink-0 text-fg-2" />
-      <span class="min-w-0 flex-1 truncate text-[13px] text-fg-1">FigCraft</span>
-      <button
-        type="button"
-        class="icon-btn shrink-0 text-fg-2 hover:text-fg-1"
-        aria-label="Open FigCraft"
-        title="Open FigCraft"
-        onclick={() => { onclose(); onopendesign(); }}
-      >
-        <ArrowUpRight class="size-4" />
-      </button>
-      <Switch
-        label="FigCraft enabled"
-        checked={figcraftOn}
-        disabled={busy}
-        onchange={toggleFigcraft}
-      />
-    </div>
-    {#if otherTools.length}
+    {#each craft as app (app.name)}
+      <div class="flex w-full min-w-0 items-center gap-2 rounded-[10px] px-2 py-1.5 hover:bg-surface-3">
+        <PenTool class="size-4 shrink-0 text-fg-2" />
+        <span class="min-w-0 flex-1 truncate text-[13px] text-fg-1" title={app.summary}>{app.label}</span>
+        {#if !app.installed}
+          <span class="shrink-0 text-[10px] text-fg-3">not installed</span>
+        {/if}
+        {#if entry(app.name)?.url}
+          <a
+            class="icon-btn shrink-0 text-fg-2 hover:text-fg-1"
+            href={entry(app.name)?.url}
+            target="_blank"
+            rel="noopener"
+            aria-label={`Open ${app.label}`}
+          >
+            <ArrowUpRight class="size-4" />
+          </a>
+        {/if}
+        {#if app.name === 'figcraft'}
+          <button
+            type="button"
+            class="icon-btn shrink-0 text-fg-2 hover:text-fg-1"
+            aria-label="Open FigCraft"
+            title="Open FigCraft"
+            onclick={() => { onclose(); onopendesign(); }}
+          >
+            <ArrowUpRight class="size-4" />
+          </button>
+        {/if}
+        <Switch
+          label={`${app.label} enabled`}
+          checked={entry(app.name)?.enabled ?? false}
+          disabled={busy}
+          onchange={() => toggleCraft(app.name)}
+        />
+      </div>
+    {/each}
+    {#if customTools.length}
       <p class="px-3 pt-3 pb-1 text-[11px] font-medium text-fg-3">MCP tools</p>
-      {#each otherTools as tool (tool.name)}
+      {#each customTools as tool (tool.name)}
         <div class="flex w-full min-w-0 items-center gap-2 rounded-[10px] px-2 py-1.5 hover:bg-surface-3">
           <span class="min-w-0 flex-1 truncate text-[13px] text-fg-1">{tool.name}</span>
           {#if tool.url}

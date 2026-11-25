@@ -10,6 +10,27 @@
     "version": "0.0.40"
   },
   "paths": {
+    "/api/craft": {
+      "get": {
+        "tags": [],
+        "operationId": "list_craft",
+        "responses": {
+          "200": {
+            "description": "Craft apps with a working MCP server and a web bundle",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CraftAppDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/models": {
       "get": {
         "tags": [],
@@ -1545,6 +1566,33 @@
           "percent": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "CraftAppDto": {
+        "type": "object",
+        "description": "One Craft app the Project drawer can switch on for a Project.",
+        "required": [
+          "name",
+          "label",
+          "summary",
+          "installed"
+        ],
+        "properties": {
+          "installed": {
+            "type": "boolean",
+            "description": "Whether the app's CLI is on the daemon's `PATH`."
+          },
+          "label": {
+            "type": "string",
+            "description": "Display name in the drawer."
+          },
+          "name": {
+            "type": "string",
+            "description": "`mcp.json` key and the name a Project tool entry carries."
+          },
+          "summary": {
+            "type": "string"
           }
         }
       },

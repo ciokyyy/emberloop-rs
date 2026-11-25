@@ -15,7 +15,8 @@ pub const DESIGN_FILE: &str = "design.figcraft";
 
 /// Human-readable summary for `tools.servers()` and MCP registration.
 pub const SUMMARY: &str = "FigCraft interface design tool: create, inspect, modify Figma-grade vector frames, pages, components and design tokens in design.figcraft";
-
+/// The app's CLI, which serves MCP on its `mcp` subcommand.
+pub const CLI: &str = "figcraft-cli";
 /// Minimal valid zip package containing an initial empty FigCraft document.
 pub const STARTER_BYTES: &[u8] = &[
     80, 75, 3, 4, 20, 0, 0, 0, 8, 0, 0, 0, 33, 0, 28, 75, 255, 12, 22, 1, 0, 0, 231, 1, 0, 0, 13,
@@ -66,7 +67,7 @@ pub fn ensure_design_file(project_root: &Path) -> std::io::Result<PathBuf> {
 /// Returns the default MCP config entry for figcraft.
 pub fn default_entry() -> Value {
     json!({
-        "command": "figcraft-cli",
+        "command": CLI,
         "args": ["mcp"],
         "enabled": true,
         "gated": true,

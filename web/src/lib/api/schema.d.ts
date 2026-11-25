@@ -4,6 +4,22 @@
  */
 
 export interface paths {
+    "/api/craft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_craft"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/models": {
         parameters: {
             query?: never;
@@ -570,6 +586,16 @@ export interface components {
             loadAvg5: number;
             /** Format: double */
             percent: number;
+        };
+        /** @description One Craft app the Project drawer can switch on for a Project. */
+        CraftAppDto: {
+            /** @description Whether the app's CLI is on the daemon's `PATH`. */
+            installed: boolean;
+            /** @description Display name in the drawer. */
+            label: string;
+            /** @description `mcp.json` key and the name a Project tool entry carries. */
+            name: string;
+            summary: string;
         };
         CreateProjectRequest: {
             name: string;
@@ -1140,6 +1166,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_craft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Craft apps with a working MCP server and a web bundle */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CraftAppDto"][];
+                };
+            };
+        };
+    };
     list_models: {
         parameters: {
             query?: never;

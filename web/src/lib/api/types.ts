@@ -44,6 +44,15 @@ export interface ProjectTool {
   enabled: boolean;
 }
 
+/** One Craft app the Project drawer can switch on for a Project. */
+export interface CraftApp {
+  name: string;
+  label: string;
+  summary: string;
+  /** Whether the app's CLI is on the daemon's `PATH`. */
+  installed: boolean;
+}
+
 export interface Project {
   id: string;
   name: string;

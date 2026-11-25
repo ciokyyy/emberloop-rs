@@ -1,9 +1,9 @@
-//! The `figcraft` MCP server entry in `<config root>/mcp.json`.
+//! The Craft MCP entries in `<config root>/mcp.json`.
 
 use serde_json::Value;
 use std::path::Path;
 
-/// Write the `figcraft` entry into `<config root>/mcp.json` when absent.
+/// Write the Craft entries into `<config root>/mcp.json` when absent; figcraft also gets its live-server env.
 pub fn ensure(config_root: &Path) -> bool {
     let file = config_root.join("mcp.json");
     let Some(mut config) = read(&file) else {
@@ -62,7 +62,14 @@ fn insert(config: &mut Value, config_root: &Path) -> Option<bool> {
         "FIGCRAFT_SERVER_DATA".into(),
         serde_json::json!(config_root.join("figcraft/server")),
     );
-    Some(*entry != before)
+    let mut changed = *entry != before;
+    for app in tools::craft::APPS {
+        if !servers.contains_key(app.name) {
+            servers.insert(app.name.to_string(), tools::craft::default_entry(app));
+            changed = true;
+        }
+    }
+    Some(changed)
 }
 
 fn enabled(config: &Value) -> bool {
@@ -116,4 +123,36 @@ pub async fn start(config_root: &Path) -> anyhow::Result<tokio::process::Child> 
         readiness.tick().await;
     }
     anyhow::bail!("FigCraft server did not become ready")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn ensure_adds_every_craft_entry_once_and_keeps_an_existing_one() {
+        let dir = tempdir().unwrap();
+        let config_root = dir.path();
+        let file = config_root.join("mcp.json");
+        std::fs::write(&file, r#"{"mcpServers":{"graph":{"command":"npx"}}}"#).unwrap();
+
+        assert!(ensure(config_root));
+        let config: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let servers = config["mcpServers"].as_object().unwrap();
+        assert!(servers.contains_key("graph"), "an existing server is kept");
+        assert_eq!(config["mcpServers"]["figcraft"]["gated"], true);
+        for app in tools::craft::APPS {
+            assert_eq!(servers[app.name]["gated"], true, "{}", app.name);
+            assert_eq!(servers[app.name]["command"], app.cli, "{}", app.name);
+        }
+
+        let first = std::fs::read_to_string(&file).unwrap();
+        assert!(ensure(config_root));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            first,
+            "a second run writes nothing"
+        );
+    }
 }

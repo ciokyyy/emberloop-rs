@@ -3,6 +3,7 @@ pub mod background;
 pub mod bash;
 mod bm25;
 pub mod browser;
+pub mod craft;
 pub mod ctxsearch;
 pub mod docs;
 pub mod edit;
