@@ -1576,6 +1576,7 @@
           "name",
           "label",
           "summary",
+          "url",
           "installed"
         ],
         "properties": {
@@ -1593,6 +1594,10 @@
           },
           "summary": {
             "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "description": "The app's page on getartcraft.com, opened from the drawer."
           }
         }
       },

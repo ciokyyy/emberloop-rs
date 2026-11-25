@@ -38,8 +38,11 @@ async fn craft_lists_figcraft_first_then_every_verified_app() {
     assert_eq!(apps.len(), tools::craft::APPS.len() + 1);
     assert_eq!(apps[0]["name"], "figcraft");
     assert!(apps.iter().any(|app| app["name"] == "photocraft"));
-    assert!(apps.iter().all(
-        |app| app["label"].as_str().is_some_and(|label| !label.is_empty())
+    assert!(apps.iter().all(|app| {
+        app["label"].as_str().is_some_and(|label| !label.is_empty())
             && app["installed"].is_boolean()
-    ));
+            && app["url"]
+                .as_str()
+                .is_some_and(|url| url.starts_with("https://getartcraft.com/apps/"))
+    }));
 }

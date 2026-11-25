@@ -1,6 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { PenTool, ArrowUpRight, X } from '@lucide/svelte';
+  import {
+    Aperture,
+    ArrowUpRight,
+    AudioLines,
+    FileText,
+    FileType,
+    Grid3x3,
+    Image,
+    LayoutTemplate,
+    Palette,
+    PenTool,
+    Plug,
+    Presentation,
+    Ruler,
+    Shapes,
+    Sparkles,
+    Spline,
+    Table,
+    X,
+  } from '@lucide/svelte';
   import { api } from '$lib/api';
   import { fadeAt } from '$lib/motion';
   import type { CraftApp, Project } from '../api/types';
@@ -23,12 +42,34 @@
       craft = await api.listCraft();
     } catch (problem) {
       // Keep the built-in FigCraft row reachable when the list fails.
-      craft = [{ name: 'figcraft', label: 'FigCraft', summary: '', installed: true }];
+      craft = [{ name: 'figcraft', label: 'FigCraft', summary: '', url: '', installed: true }];
       error = problem instanceof Error ? problem.message : String(problem);
     }
   });
 
-  // A Craft app is on when the Project lists it as an enabled tool; every other server keeps its own row.
+  // Each Craft app gets its own mark; every other server keeps a generic one.
+  const marks: Record<string, typeof PenTool> = {
+    figcraft: PenTool,
+    cadcraft: Ruler,
+    craftanything: Shapes,
+    deckcraft: Presentation,
+    designcraft: LayoutTemplate,
+    effectcraft: Sparkles,
+    gridcraft: Table,
+    lightcraft: Aperture,
+    materialcraft: Palette,
+    pdfcraft: FileText,
+    photocraft: Image,
+    soundcraft: AudioLines,
+    texturecraft: Grid3x3,
+    vectorcraft: Spline,
+    wordcraft: FileType,
+  };
+  const mark = (name: string) => marks[name] ?? Plug;
+
+  // FigCraft runs inside Emberloop, so it sits apart from the apps that only bring an MCP server.
+  const builtin = $derived(craft.filter((app) => app.name === 'figcraft'));
+  const apps = $derived(craft.filter((app) => app.name !== 'figcraft'));
   const customTools = $derived(
     project.tools.filter((tool) => !craft.some((app) => app.name === tool.name))
   );
@@ -88,35 +129,42 @@
     </button>
   </header>
   <nav class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-    <p class="px-3 pt-3 pb-1 text-[11px] font-medium text-fg-3">Tools</p>
-    {#each craft as app (app.name)}
-      <div class="flex w-full min-w-0 items-center gap-2 rounded-[10px] px-2 py-1.5 hover:bg-surface-3">
-        <PenTool class="size-4 shrink-0 text-fg-2" />
-        <span class="min-w-0 flex-1 truncate text-[13px] text-fg-1" title={app.summary}>{app.label}</span>
+    {#snippet craftRow(app: CraftApp)}
+      {@const Mark = mark(app.name)}
+      <div class="group flex w-full min-w-0 items-center gap-2 rounded-[10px] px-2 py-1.5 hover:bg-surface-3">
+        <span
+          class="grid size-7 shrink-0 place-items-center rounded-lg border border-border bg-surface-1 text-fg-2 group-hover:text-fg-1"
+        >
+          <Mark class="size-4" />
+        </span>
+        <span class="min-w-0 flex-1">
+          <span class="block truncate text-[13px] text-fg-1">{app.label}</span>
+          <span class="block truncate text-[10px] text-fg-3">{app.summary}</span>
+        </span>
         {#if !app.installed}
-          <span class="shrink-0 text-[10px] text-fg-3">not installed</span>
-        {/if}
-        {#if entry(app.name)?.url}
-          <a
-            class="icon-btn shrink-0 text-fg-2 hover:text-fg-1"
-            href={entry(app.name)?.url}
-            target="_blank"
-            rel="noopener"
-            aria-label={`Open ${app.label}`}
-          >
-            <ArrowUpRight class="size-4" />
-          </a>
+          <span class="shrink-0 rounded-full border border-border px-1.5 py-px text-[10px] text-fg-3">not installed</span>
         {/if}
         {#if app.name === 'figcraft'}
           <button
             type="button"
             class="icon-btn shrink-0 text-fg-2 hover:text-fg-1"
             aria-label="Open FigCraft"
-            title="Open FigCraft"
+            title="Open the design view"
             onclick={() => { onclose(); onopendesign(); }}
           >
             <ArrowUpRight class="size-4" />
           </button>
+        {:else if app.url}
+          <a
+            class="icon-btn shrink-0 text-fg-2 hover:text-fg-1"
+            href={app.url}
+            target="_blank"
+            rel="noopener"
+            aria-label={`Open ${app.label}`}
+            title={`Open ${app.label} on getartcraft.com`}
+          >
+            <ArrowUpRight class="size-4" />
+          </a>
         {/if}
         <Switch
           label={`${app.label} enabled`}
@@ -125,12 +173,32 @@
           onchange={() => toggleCraft(app.name)}
         />
       </div>
-    {/each}
+    {/snippet}
+    {#if builtin.length}
+      <p class="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-[0.08em] text-fg-3 uppercase">Built-in</p>
+      {#each builtin as app (app.name)}
+        {@render craftRow(app)}
+      {/each}
+    {/if}
+    {#if apps.length}
+      <p class="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-[0.08em] text-fg-3 uppercase">Craft apps</p>
+      {#each apps as app (app.name)}
+        {@render craftRow(app)}
+      {/each}
+    {/if}
     {#if customTools.length}
-      <p class="px-3 pt-3 pb-1 text-[11px] font-medium text-fg-3">MCP tools</p>
+      <p class="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-[0.08em] text-fg-3 uppercase">MCP tools</p>
       {#each customTools as tool (tool.name)}
-        <div class="flex w-full min-w-0 items-center gap-2 rounded-[10px] px-2 py-1.5 hover:bg-surface-3">
-          <span class="min-w-0 flex-1 truncate text-[13px] text-fg-1">{tool.name}</span>
+        <div class="group flex w-full min-w-0 items-center gap-2 rounded-[10px] px-2 py-1.5 hover:bg-surface-3">
+          <span
+            class="grid size-7 shrink-0 place-items-center rounded-lg border border-border bg-surface-1 text-fg-2 group-hover:text-fg-1"
+          >
+            <Plug class="size-4" />
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-[13px] text-fg-1">{tool.name}</span>
+            <span class="block truncate text-[10px] text-fg-3">{tool.url || 'no page'}</span>
+          </span>
           {#if tool.url}
             <a
               class="icon-btn shrink-0 text-fg-2 hover:text-fg-1"
@@ -151,7 +219,7 @@
         </div>
       {/each}
     {/if}
-    <p class="px-3 pt-1 text-[11px] text-fg-3">Tool changes apply to new Sessions.</p>
+    <p class="px-3 pt-3 text-[11px] text-fg-3">Tool changes apply to new Sessions.</p>
     {#if error}<p role="alert" class="px-3 pt-1 text-[11px] text-status-failed">{error}</p>{/if}
   </nav>
 </aside>

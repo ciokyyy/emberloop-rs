@@ -5,8 +5,20 @@ import ProjectDrawer from './ProjectDrawer.svelte';
 
 vi.mock('$lib/api', () => ({ api: { updateProject: vi.fn(), listCraft: vi.fn() } }));
 
-const figcraft = { name: 'figcraft', label: 'FigCraft', summary: 'FigCraft design tool.', installed: true };
-const photocraft = { name: 'photocraft', label: 'PhotoCraft', summary: 'PhotoCraft photo editor.', installed: false };
+const figcraft = {
+  name: 'figcraft',
+  label: 'FigCraft',
+  summary: 'FigCraft design tool.',
+  url: 'https://getartcraft.com/apps/figcraft',
+  installed: true
+};
+const photocraft = {
+  name: 'photocraft',
+  label: 'PhotoCraft',
+  summary: 'PhotoCraft photo editor.',
+  url: 'https://getartcraft.com/apps/photocraft',
+  installed: false
+};
 
 beforeEach(() => {
   vi.mocked(api.listCraft).mockResolvedValue([figcraft]);
@@ -152,7 +164,14 @@ it('lists every Craft app the daemon reports and switches one on through PATCH',
   });
 
   expect(await screen.findByText('PhotoCraft')).toBeTruthy();
+  expect(screen.getByText('Built-in')).toBeTruthy();
+  expect(screen.getByText('Craft apps')).toBeTruthy();
   expect(screen.getByText('not installed')).toBeTruthy();
+  const page = screen.getByRole('link', { name: 'Open PhotoCraft' }) as HTMLAnchorElement;
+  expect(page.href).toBe('https://getartcraft.com/apps/photocraft');
+  expect(page.rel).toBe('noopener');
+  const design = screen.getByRole('button', { name: 'Open FigCraft' });
+  expect(design.getAttribute('title')).toBe('Open the design view');
   await fireEvent.click(screen.getByRole('switch', { name: 'PhotoCraft enabled' }));
   await vi.waitFor(() =>
     expect(api.updateProject).toHaveBeenCalledWith('p1', {

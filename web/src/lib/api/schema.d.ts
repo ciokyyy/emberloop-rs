@@ -596,6 +596,8 @@ export interface components {
             /** @description `mcp.json` key and the name a Project tool entry carries. */
             name: string;
             summary: string;
+            /** @description The app's page on getartcraft.com, opened from the drawer. */
+            url: string;
         };
         CreateProjectRequest: {
             name: string;

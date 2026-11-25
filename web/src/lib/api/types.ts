@@ -49,6 +49,8 @@ export interface CraftApp {
   name: string;
   label: string;
   summary: string;
+  /** The app's page on getartcraft.com, opened from the drawer. */
+  url: string;
   /** Whether the app's CLI is on the daemon's `PATH`. */
   installed: boolean;
 }

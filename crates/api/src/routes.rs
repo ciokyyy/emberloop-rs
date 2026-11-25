@@ -1194,6 +1194,8 @@ pub struct CraftAppDto {
     /// Display name in the drawer.
     pub label: String,
     pub summary: String,
+    /// The app's page on getartcraft.com, opened from the drawer.
+    pub url: String,
     /// Whether the app's CLI is on the daemon's `PATH`.
     pub installed: bool,
 }
@@ -1210,12 +1212,14 @@ pub async fn list_craft() -> Json<Vec<CraftAppDto>> {
         name: tools::figcraft::SERVER.to_string(),
         label: "FigCraft".to_string(),
         summary: tools::figcraft::SUMMARY.to_string(),
+        url: "https://getartcraft.com/apps/figcraft".to_string(),
         installed: tools::craft::installed(tools::figcraft::CLI),
     }];
     apps.extend(tools::craft::APPS.iter().map(|app| CraftAppDto {
         name: app.name.to_string(),
         label: app.label.to_string(),
         summary: app.summary.to_string(),
+        url: app.url.to_string(),
         installed: tools::craft::installed(app.cli),
     }));
     Json(apps)

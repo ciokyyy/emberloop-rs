@@ -5,12 +5,13 @@
 
 use serde_json::{json, Value};
 
-/// One Craft app: its `mcp.json` key, display label, CLI and server summary.
+/// One Craft app: its `mcp.json` key, display label, CLI, server summary and web page.
 pub struct Craft {
     pub name: &'static str,
     pub label: &'static str,
     pub cli: &'static str,
     pub summary: &'static str,
+    pub url: &'static str,
 }
 
 /// Every verified Craft app except `figcraft`, which the daemon configures itself.
@@ -20,84 +21,98 @@ pub const APPS: &[Craft] = &[
         label: "CADCraft",
         cli: "cadcraft-cli",
         summary: "CADCraft computer-aided design and drafting app: models and drawings.",
+        url: "https://getartcraft.com/apps/cadcraft",
     },
     Craft {
         name: "craftanything",
         label: "Craft Anything",
         cli: "craft-anything-cli",
         summary: "Craft Anything: understand how any software works, and craft your own.",
+        url: "https://getartcraft.com/apps/craft-anything",
     },
     Craft {
         name: "deckcraft",
         label: "DeckCraft",
         cli: "deckcraft-cli",
         summary: "DeckCraft presentation app: slides and slide shows.",
+        url: "https://getartcraft.com/apps/deckcraft",
     },
     Craft {
         name: "designcraft",
         label: "DesignCraft",
         cli: "designcraft-cli",
         summary: "DesignCraft page and layout design editor.",
+        url: "https://getartcraft.com/apps/designcraft",
     },
     Craft {
         name: "effectcraft",
         label: "EffectCraft",
         cli: "effectcraft-cli",
         summary: "EffectCraft motion graphics and compositing tool.",
+        url: "https://getartcraft.com/apps/effectcraft",
     },
     Craft {
         name: "gridcraft",
         label: "GridCraft",
         cli: "gridcraft-cli",
         summary: "GridCraft spreadsheet app: sheets, formulas and cells.",
+        url: "https://getartcraft.com/apps/gridcraft",
     },
     Craft {
         name: "lightcraft",
         label: "LightCraft",
         cli: "lightcraft-cli",
         summary: "LightCraft non-destructive photo editor.",
+        url: "https://getartcraft.com/apps/lightcraft",
     },
     Craft {
         name: "materialcraft",
         label: "MaterialCraft",
         cli: "materialcraft-cli",
         summary: "MaterialCraft node-based material designer.",
+        url: "https://getartcraft.com/apps/materialcraft",
     },
     Craft {
         name: "pdfcraft",
         label: "PdfCraft",
         cli: "pdfcraft-cli",
         summary: "PdfCraft PDF reader and editor: pages, forms and export.",
+        url: "https://getartcraft.com/apps/pdfcraft",
     },
     Craft {
         name: "photocraft",
         label: "PhotoCraft",
         cli: "photocraft-cli",
         summary: "PhotoCraft photo editor: open, adjust and export images.",
+        url: "https://getartcraft.com/apps/photocraft",
     },
     Craft {
         name: "soundcraft",
         label: "SoundCraft",
         cli: "soundcraft-cli",
         summary: "SoundCraft digital audio workstation: tracks, clips and mixing.",
+        url: "https://getartcraft.com/apps/soundcraft",
     },
     Craft {
         name: "texturecraft",
         label: "TextureCraft",
         cli: "texturecraft-cli",
         summary: "TextureCraft 3D texture painting workflow.",
+        url: "https://getartcraft.com/apps/texturecraft",
     },
     Craft {
         name: "vectorcraft",
         label: "VectorCraft",
         cli: "vectorcraft-cli",
         summary: "VectorCraft vector art tool: paths, shapes and SVG.",
+        url: "https://getartcraft.com/apps/vectorcraft",
     },
     Craft {
         name: "wordcraft",
         label: "WordCraft",
         cli: "wordcraft-cli",
         summary: "WordCraft word processor: documents and .docx export.",
+        url: "https://getartcraft.com/apps/wordcraft",
     },
 ];
 
@@ -136,6 +151,11 @@ mod tests {
             assert_eq!(entry["gated"], true);
             assert_eq!(entry["enabled"], true);
             assert_eq!(entry["summary"], app.summary);
+            assert!(
+                app.url.starts_with("https://getartcraft.com/apps/"),
+                "{} has no ArtCraft page",
+                app.name
+            );
         }
     }
 
