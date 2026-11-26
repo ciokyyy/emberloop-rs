@@ -10,6 +10,7 @@ const figcraft = {
   label: 'FigCraft',
   summary: 'FigCraft design tool.',
   url: 'https://getartcraft.com/apps/figcraft',
+  web: '',
   installed: true
 };
 const photocraft = {
@@ -17,6 +18,15 @@ const photocraft = {
   label: 'PhotoCraft',
   summary: 'PhotoCraft photo editor.',
   url: 'https://getartcraft.com/apps/photocraft',
+  web: '/craft/photocraft/',
+  installed: true
+};
+const pdfcraft = {
+  name: 'pdfcraft',
+  label: 'PdfCraft',
+  summary: 'PdfCraft PDF editor.',
+  url: 'https://getartcraft.com/apps/pdfcraft',
+  web: '',
   installed: false
 };
 
@@ -149,7 +159,7 @@ it('turns the built-in FigCraft server on for a Project and off again', async ()
 });
 
 it('lists every Craft app the daemon reports and switches one on through PATCH', async () => {
-  vi.mocked(api.listCraft).mockResolvedValue([figcraft, photocraft]);
+  vi.mocked(api.listCraft).mockResolvedValue([figcraft, photocraft, pdfcraft]);
   const onupdate = vi.fn();
   vi.mocked(api.updateProject).mockResolvedValue({
     ...project,
@@ -164,12 +174,17 @@ it('lists every Craft app the daemon reports and switches one on through PATCH',
   });
 
   expect(await screen.findByText('PhotoCraft')).toBeTruthy();
+  expect(screen.getByText('PdfCraft')).toBeTruthy();
   expect(screen.getByText('Built-in')).toBeTruthy();
   expect(screen.getByText('Craft apps')).toBeTruthy();
   expect(screen.getByText('not installed')).toBeTruthy();
-  const page = screen.getByRole('link', { name: 'Open PhotoCraft' }) as HTMLAnchorElement;
-  expect(page.href).toBe('https://getartcraft.com/apps/photocraft');
-  expect(page.rel).toBe('noopener');
+  const editor = screen.getByRole('link', { name: 'Open PhotoCraft' }) as HTMLAnchorElement;
+  expect(editor.getAttribute('href')).toBe('/craft/photocraft/');
+  expect(editor.getAttribute('title')).toBe('Open the PhotoCraft editor');
+  expect(editor.rel).toBe('noopener');
+  const page = screen.getByRole('link', { name: 'Open PdfCraft' }) as HTMLAnchorElement;
+  expect(page.href).toBe('https://getartcraft.com/apps/pdfcraft');
+  expect(page.getAttribute('title')).toBe('Open PdfCraft on getartcraft.com');
   const design = screen.getByRole('button', { name: 'Open FigCraft' });
   expect(design.getAttribute('title')).toBe('Open the design view');
   await fireEvent.click(screen.getByRole('switch', { name: 'PhotoCraft enabled' }));

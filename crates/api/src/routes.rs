@@ -1194,8 +1194,10 @@ pub struct CraftAppDto {
     /// Display name in the drawer.
     pub label: String,
     pub summary: String,
-    /// The app's page on getartcraft.com, opened from the drawer.
+    /// The app's page on getartcraft.com, for when its editor is not installed.
     pub url: String,
+    /// The app's web editor under the daemon, empty when its bundle is not installed.
+    pub web: String,
     /// Whether the app's CLI is on the daemon's `PATH`.
     pub installed: bool,
 }
@@ -1208,11 +1210,13 @@ pub struct CraftAppDto {
     )
 )]
 pub async fn list_craft() -> Json<Vec<CraftAppDto>> {
+    let root = tools::craft::web_root();
     let mut apps = vec![CraftAppDto {
         name: tools::figcraft::SERVER.to_string(),
         label: "FigCraft".to_string(),
         summary: tools::figcraft::SUMMARY.to_string(),
         url: "https://getartcraft.com/apps/figcraft".to_string(),
+        web: String::new(),
         installed: tools::craft::installed(tools::figcraft::CLI),
     }];
     apps.extend(tools::craft::APPS.iter().map(|app| CraftAppDto {
@@ -1220,6 +1224,7 @@ pub async fn list_craft() -> Json<Vec<CraftAppDto>> {
         label: app.label.to_string(),
         summary: app.summary.to_string(),
         url: app.url.to_string(),
+        web: tools::craft::editor(&root, app.name).unwrap_or_default(),
         installed: tools::craft::installed(app.cli),
     }));
     Json(apps)

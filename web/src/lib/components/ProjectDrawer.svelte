@@ -42,7 +42,7 @@
       craft = await api.listCraft();
     } catch (problem) {
       // Keep the built-in FigCraft row reachable when the list fails.
-      craft = [{ name: 'figcraft', label: 'FigCraft', summary: '', url: '', installed: true }];
+      craft = [{ name: 'figcraft', label: 'FigCraft', summary: '', url: '', web: '', installed: true }];
       error = problem instanceof Error ? problem.message : String(problem);
     }
   });
@@ -154,14 +154,14 @@
           >
             <ArrowUpRight class="size-4" />
           </button>
-        {:else if app.url}
+        {:else if app.web || app.url}
           <a
             class="icon-btn shrink-0 text-fg-2 hover:text-fg-1"
-            href={app.url}
+            href={app.web || app.url}
             target="_blank"
             rel="noopener"
             aria-label={`Open ${app.label}`}
-            title={`Open ${app.label} on getartcraft.com`}
+            title={app.web ? `Open the ${app.label} editor` : `Open ${app.label} on getartcraft.com`}
           >
             <ArrowUpRight class="size-4" />
           </a>

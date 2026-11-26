@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Install each Craft app's web editor (its release web bundle) under /usr/local/share/craft.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+table="$root/scripts/verify-craft.tsv"
+dest=${EMBERLOOP_CRAFT_WEB:-/usr/local/share/craft}
+want=("$@")
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+install -d "$dest"
+failed=0
+while IFS=$'\t' read -r app cli url; do
+  case "$app" in ''|'#'*) continue ;; esac
+  [ "$app" = figcraft ] && continue
+  if [ ${#want[@]} -gt 0 ]; then
+    picked=0
+    for name in "${want[@]}"; do [ "$name" = "$app" ] && picked=1; done
+    [ "$picked" = 1 ] || continue
+  fi
+  if [ -z "$url" ]; then
+    echo "$app: no web bundle, skipped"
+    continue
+  fi
+  zip="$work/$app.zip"
+  if ! curl --fail --location --silent --show-error --max-time 300 -o "$zip" "$url"; then
+    echo "$app: download failed" >&2
+    failed=1
+    continue
+  fi
+  rm -rf "$work/site" "$dest/$app"
+  mkdir -p "$work/site"
+  if ! python3 -m zipfile -e "$zip" "$work/site"; then
+    echo "$app: not a zip" >&2
+    failed=1
+    continue
+  fi
+  site=$(find "$work/site" -mindepth 1 -maxdepth 1 -type d -print -quit)
+  [ -n "$site" ] || site="$work/site"
+  install -d "$dest/$app"
+  cp -a "$site/." "$dest/$app/"
+  # A glue file in app/ imports ./snippets, but the zip ships snippets at the root.
+  if [ -d "$dest/$app/app" ] && [ -d "$dest/$app/snippets" ] && [ ! -e "$dest/$app/app/snippets" ]; then
+    cp -a "$dest/$app/snippets" "$dest/$app/app/snippets"
+  fi
+  if [ ! -f "$dest/$app/index.html" ]; then
+    echo "$app: no index.html" >&2
+    failed=1
+    continue
+  fi
+  printf '%s: %s under %s\n' "$app" "$(du -sh "$dest/$app" | cut -f1)" "$dest/$app"
+done <"$table"
+exit "$failed"

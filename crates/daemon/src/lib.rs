@@ -685,6 +685,10 @@ impl Daemon {
                 "/figcraft",
                 tower_http::services::ServeDir::new("/usr/local/share/figcraft"),
             )
+            .nest_service(
+                "/craft",
+                tower_http::services::ServeDir::new(tools::craft::web_root()),
+            )
             .merge(proxy::router(self.proxy_state.clone()))
             .fallback(static_asset)
     }

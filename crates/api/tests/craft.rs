@@ -44,5 +44,9 @@ async fn craft_lists_figcraft_first_then_every_verified_app() {
             && app["url"]
                 .as_str()
                 .is_some_and(|url| url.starts_with("https://getartcraft.com/apps/"))
+            && app["web"].as_str().is_some_and(|web| {
+                web.is_empty() || (web.starts_with("/craft/") && web.ends_with('/'))
+            })
     }));
+    assert_eq!(apps[0]["web"], "");
 }

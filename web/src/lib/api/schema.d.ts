@@ -596,8 +596,10 @@ export interface components {
             /** @description `mcp.json` key and the name a Project tool entry carries. */
             name: string;
             summary: string;
-            /** @description The app's page on getartcraft.com, opened from the drawer. */
+            /** @description The app's page on getartcraft.com, for when its editor is not installed. */
             url: string;
+            /** @description The app's web editor under the daemon, empty when its bundle is not installed. */
+            web: string;
         };
         CreateProjectRequest: {
             name: string;

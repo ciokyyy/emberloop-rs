@@ -49,8 +49,10 @@ export interface CraftApp {
   name: string;
   label: string;
   summary: string;
-  /** The app's page on getartcraft.com, opened from the drawer. */
+  /** The app's page on getartcraft.com, for when its editor is not installed. */
   url: string;
+  /** The app's editor under the daemon, empty when its web bundle is not installed. */
+  web: string;
   /** Whether the app's CLI is on the daemon's `PATH`. */
   installed: boolean;
 }

@@ -133,6 +133,22 @@ pub fn installed(cli: &str) -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(cli).is_file()))
 }
 
+/// Where `scripts/install-craft-web` puts each app's web editor; the daemon serves it at `/craft`.
+pub fn web_root() -> std::path::PathBuf {
+    std::env::var_os("EMBERLOOP_CRAFT_WEB").map_or_else(
+        || std::path::PathBuf::from("/usr/local/share/craft"),
+        std::path::PathBuf::from,
+    )
+}
+
+/// The editor's path under the daemon when its bundle sits in `root`, else nothing.
+pub fn editor(root: &std::path::Path, name: &str) -> Option<String> {
+    root.join(name)
+        .join("index.html")
+        .is_file()
+        .then(|| format!("/craft/{name}/"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +198,17 @@ mod tests {
         let mut apps: Vec<(&str, &str)> = APPS.iter().map(|app| (app.name, app.cli)).collect();
         apps.sort_unstable();
         assert_eq!(apps, rows);
+    }
+
+    #[test]
+    fn an_installed_bundle_gets_a_path_under_craft() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(editor(root.path(), "photocraft"), None);
+        std::fs::create_dir(root.path().join("photocraft")).unwrap();
+        std::fs::write(root.path().join("photocraft/index.html"), "").unwrap();
+        assert_eq!(
+            editor(root.path(), "photocraft").as_deref(),
+            Some("/craft/photocraft/")
+        );
     }
 }
